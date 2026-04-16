@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 
 import requests
@@ -9,6 +10,9 @@ from pydantic import BaseModel, Field
 from scrape_engine import run_area_scrape
 
 app = FastAPI(title="Talabat Area Scraper API", version="1.0.0")
+
+# Hard cap so hosted proxies (e.g. Render) return JSON instead of 502 while upstream times out.
+_SCRAPE_WALL_SEC = float(os.getenv("SCRAPER_WALL_CLOCK_SEC", "85"))
 
 
 def verify_api_key(x_api_key: str | None) -> None:
@@ -27,10 +31,13 @@ class ScrapeRequest(BaseModel):
     # Wider spacing + low concurrency defaults reduce Render 502/timeouts on long runs.
     spacing_km: float = Field(default=2.0, ge=0.5, le=3.0)
     concurrency: int = Field(default=1, ge=1, le=6)
-    status_filter: str = Field(default="all")
+    # "live" = exclude closed (includes unknown/open); "all" = no filter; "closed" = closed only.
+    status_filter: str = Field(default="live")
     just_landed_only: bool = False
-    scroll_rounds: int = Field(default=10, ge=4, le=60)
-    scroll_wait_ms: int = Field(default=900, ge=600, le=3000)
+    scroll_rounds: int = Field(default=6, ge=2, le=60)
+    scroll_wait_ms: int = Field(default=650, ge=400, le=3000)
+    # More points = longer runs; omit to use MAX_SCRAPE_SAMPLE_POINTS env (default 1).
+    max_sample_points: int | None = Field(default=None, ge=1, le=200)
 
 
 class GeocodeRequest(BaseModel):
@@ -48,72 +55,35 @@ def geocode(payload: GeocodeRequest, x_api_key: str | None = Header(default=None
     if not payload.query.strip():
         raise HTTPException(status_code=400, detail="query is required")
 
-    arcgis_key = os.getenv("ARCGIS_API_KEY", "").strip()
     google_key = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
-
-    if not arcgis_key and not google_key:
+    if not google_key:
         raise HTTPException(
             status_code=400,
-            detail="No geocoding key configured. Set ARCGIS_API_KEY (preferred) or GOOGLE_MAPS_API_KEY.",
+            detail="GOOGLE_MAPS_API_KEY is not set. Add it to the API service environment on Render.",
         )
 
     query = payload.query.strip()
     attempts = [query, f"{query}, UAE"]
 
     try:
-        # Preferred geocoder: ArcGIS
-        if arcgis_key:
-            for q in attempts:
-                arc_resp = requests.get(
-                    "https://geocode-api.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates",
-                    params={
-                        "f": "json",
-                        "singleLine": q,
-                        "countryCode": "AE",
-                        "maxLocations": 1,
-                        "forStorage": "false",
-                        "token": arcgis_key,
-                    },
-                    timeout=20,
-                )
-                arc_resp.raise_for_status()
-                arc_data = arc_resp.json()
+        google_last_error: str | None = None
 
-                if arc_data.get("error"):
-                    return {
-                        "ok": False,
-                        "provider": "arcgis",
-                        "result": None,
-                        "error": arc_data.get("error"),
-                    }
-
-                candidates = arc_data.get("candidates") or []
-                if candidates:
-                    top = candidates[0]
-                    location = top.get("location") or {}
-                    if location.get("y") is not None and location.get("x") is not None:
-                        return {
-                            "ok": True,
-                            "provider": "arcgis",
-                            "result": {
-                                "lat": float(location.get("y")),
-                                "lng": float(location.get("x")),
-                                "formatted_address": str(top.get("address") or q).strip(),
-                            },
-                        }
-
-        # Fallback geocoder: Google (optional)
-        if google_key:
-            for q in attempts:
+        for q in attempts:
+            zero_for_this_q = False
+            for params in (
+                {"address": q, "key": google_key, "region": "ae", "components": "country:AE"},
+                {"address": q, "key": google_key, "region": "ae"},
+            ):
                 g_resp = requests.get(
                     "https://maps.googleapis.com/maps/api/geocode/json",
-                    params={"address": q, "key": google_key, "region": "ae"},
+                    params=params,
                     timeout=20,
                 )
                 g_resp.raise_for_status()
                 g_data = g_resp.json()
+                status = g_data.get("status")
                 results = g_data.get("results") or []
-                if results:
+                if status == "OK" and results:
                     top = results[0]
                     loc = (top.get("geometry") or {}).get("location") or {}
                     if loc.get("lat") is not None and loc.get("lng") is not None:
@@ -126,8 +96,36 @@ def geocode(payload: GeocodeRequest, x_api_key: str | None = Header(default=None
                                 "formatted_address": str(top.get("formatted_address") or q).strip(),
                             },
                         }
+                if status == "ZERO_RESULTS":
+                    zero_for_this_q = True
+                    break
+                if status == "INVALID_REQUEST" and "components" in params:
+                    continue
+                google_last_error = str(g_data.get("error_message") or status or "google_geocode_error")
+                break
+            if zero_for_this_q:
+                continue
+            if google_last_error is not None:
+                break
 
-        return {"ok": False, "provider": "none", "result": None, "error": "No candidates from providers"}
+        hint = None
+        if google_last_error:
+            hint = (
+                f"Google Geocoding failed ({google_last_error}). "
+                "Confirm GOOGLE_MAPS_API_KEY, Geocoding API enabled, and billing if required."
+            )
+
+        err_payload: dict = {
+            "ok": False,
+            "provider": "none",
+            "result": None,
+            "error": "No candidates from providers",
+        }
+        if google_last_error is not None:
+            err_payload["google_error"] = google_last_error
+        if hint:
+            err_payload["hint"] = hint
+        return err_payload
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Geocode failed: {exc}") from exc
 
@@ -138,19 +136,31 @@ async def scrape(payload: ScrapeRequest, x_api_key: str | None = Header(default=
     if payload.status_filter not in {"all", "live", "closed"}:
         raise HTTPException(status_code=400, detail="status_filter must be one of: all, live, closed")
     try:
-        df = await run_area_scrape(
-            pin_lat=payload.pin_lat,
-            pin_lng=payload.pin_lng,
-            radius_km=payload.radius_km,
-            spacing_km=payload.spacing_km,
-            concurrency=payload.concurrency,
-            status_filter=payload.status_filter,
-            just_landed_only=payload.just_landed_only,
-            scroll_rounds=payload.scroll_rounds,
-            scroll_wait_ms=payload.scroll_wait_ms,
-            progress_cb=None,
+        df = await asyncio.wait_for(
+            run_area_scrape(
+                pin_lat=payload.pin_lat,
+                pin_lng=payload.pin_lng,
+                radius_km=payload.radius_km,
+                spacing_km=payload.spacing_km,
+                concurrency=payload.concurrency,
+                status_filter=payload.status_filter,
+                just_landed_only=payload.just_landed_only,
+                scroll_rounds=payload.scroll_rounds,
+                scroll_wait_ms=payload.scroll_wait_ms,
+                progress_cb=None,
+                max_sample_points=payload.max_sample_points,
+            ),
+            timeout=_SCRAPE_WALL_SEC,
         )
         records = df.to_dict(orient="records")
         return {"count": len(records), "records": records}
+    except TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"Scrape exceeded {_SCRAPE_WALL_SEC:.0f}s wall clock. "
+                "On Render, keep max_sample_points=1 or raise SCRAPER_WALL_CLOCK_SEC / run a larger worker."
+            ),
+        ) from None
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Scrape failed: {exc}") from exc

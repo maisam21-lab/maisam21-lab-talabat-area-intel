@@ -38,5 +38,10 @@ def generate_points_in_radius(center_lat: float, center_lng: float, radius_km: f
             lng += lng_step
         lat += km_to_lat_deg(spacing_km)
 
-    points.append((round(center_lat, 6), round(center_lng, 6)))
-    return list(dict.fromkeys(points))
+    # Pin must be first: single-sample runs must use the user's location, not an arbitrary grid corner.
+    center_pt = (round(center_lat, 6), round(center_lng, 6))
+    ordered = [center_pt]
+    for p in points:
+        if p != center_pt:
+            ordered.append(p)
+    return list(dict.fromkeys(ordered))
