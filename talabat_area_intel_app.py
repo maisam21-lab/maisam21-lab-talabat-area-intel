@@ -29,6 +29,17 @@ def init_state() -> None:
     st.session_state.setdefault("results_fingerprint", None)
 
 
+def _google_maps_frontend_key() -> str:
+    """Optional: same key as backend geocode; used for pydeck Google basemap (English-friendly labels)."""
+    try:
+        s = str(st.secrets.get("GOOGLE_MAPS_API_KEY", "")).strip()
+        if s:
+            return s
+    except Exception:
+        pass
+    return (os.getenv("GOOGLE_MAPS_API_KEY") or "").strip()
+
+
 def _bounds_for_radius(lat: float, lng: float, radius_km: float, pad: float = 1.15) -> tuple[list[float], list[float]]:
     """South-west and north-east corners so the map frames pin + search radius."""
     r = max(radius_km, 0.5) * pad
@@ -51,17 +62,21 @@ def render_pin_map(radius_km: float) -> None:
         control_scale=True,
     )
 
+    # Esri World Street: English-centric labels in UAE (Carto/OSM tiles often switch to Arabic when zoomed in).
     folium.TileLayer(
-        tiles="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
-        attr='© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © CARTO',
-        name="Light (labels)",
-        subdomains="abcd",
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+        attr=(
+            'Tiles © <a href="https://www.esri.com/">Esri</a> '
+            "(HERE, Garmin, OpenStreetMap contributors, GIS user community)"
+        ),
+        name="Street map (English)",
+        max_zoom=19,
     ).add_to(fmap)
     folium.TileLayer(
-        tiles="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
-        attr='© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © CARTO',
-        name="Voyager (roads)",
-        subdomains="abcd",
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr='Tiles © <a href="https://www.esri.com/">Esri</a> (Earthstar Geographics, USDA, USGS, AeroGRID, IGN)',
+        name="Satellite (Esri)",
+        max_zoom=19,
     ).add_to(fmap)
 
     area = folium.FeatureGroup(name="Search area").add_to(fmap)
@@ -118,7 +133,8 @@ def render_pin_map(radius_km: float) -> None:
 
     st.caption(
         "The view frames your pin and scrape radius when they change. "
-        "Click to move the pin. Use the layer control (Light / Voyager), fullscreen, and cursor coordinates (bottom-left)."
+        "Basemaps use Esri (English labels at all zoom levels). "
+        "Click to move the pin. Use the layer control (street / satellite), fullscreen, and cursor coordinates (bottom-left)."
     )
     out = st_folium(
         fmap,
@@ -168,14 +184,28 @@ def render_heatmap(df: pd.DataFrame, pin_lat: float, pin_lng: float, radius_km: 
         zoom=_heatmap_zoom_for_radius(radius_km),
         pitch=22,
     )
-    st.pydeck_chart(
-        pdk.Deck(
+    gkey = _google_maps_frontend_key()
+    if gkey:
+        deck = pdk.Deck(
             layers=[layer],
             initial_view_state=view_state,
-            map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
-        ),
-        use_container_width=True,
-    )
+            map_provider="google_maps",
+            map_style=pdk.map_styles.GOOGLE_ROAD,
+            api_keys={"google_maps": gkey},
+        )
+        st.caption("Heatmap basemap: Google Maps roadmap (English labels).")
+    else:
+        # Carto vector styles often show OSM `name:ar` when zoomed in; no-label avoids mixed scripts without a Maps key.
+        deck = pdk.Deck(
+            layers=[layer],
+            initial_view_state=view_state,
+            map_provider="carto",
+            map_style=pdk.map_styles.LIGHT_NO_LABELS,
+        )
+        st.caption(
+            "Heatmap basemap: labels hidden (add `GOOGLE_MAPS_API_KEY` to Streamlit secrets for a labeled English map)."
+        )
+    st.pydeck_chart(deck, use_container_width=True)
 
 
 def get_frontend_api_key() -> str:
