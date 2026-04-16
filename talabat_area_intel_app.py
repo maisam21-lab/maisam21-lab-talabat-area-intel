@@ -11,6 +11,12 @@ import streamlit as st
 from folium.plugins import Fullscreen, HeatMap, MousePosition
 from streamlit_folium import st_folium
 
+from outbound_prioritization import (
+    MODEL_HELP,
+    add_priority_scores,
+    build_brand_prioritization_table,
+    format_for_dashboard,
+)
 from uae_cities import UAE_CITY_DISPLAY, UAE_CITY_PRESETS
 
 DEFAULT_PIN = (25.2048, 55.2708)
@@ -253,6 +259,59 @@ def get_frontend_api_key() -> str:
     return os.getenv("SCRAPER_API_KEY", "").strip()
 
 
+def render_outbound_prioritization_dashboard(df: pd.DataFrame) -> None:
+    """Brand-level outbound view: cuisine, order/store proxies, weighted priority score."""
+    st.subheader("Outbound prioritization (brand view)")
+    st.caption(
+        "KitchenPark-style lens: rank brands for acquisition outreach using cuisine fit, ratings, reviews, "
+        "delivery fee, and footprint. Talabat does not expose true **last-7-days** orders in this scrape — "
+        "the order column is a **platform proxy** when available."
+    )
+    brand_raw = build_brand_prioritization_table(df)
+    if brand_raw is None or brand_raw.empty:
+        st.info("Not enough data to build a brand-level view.")
+        return
+
+    with st.expander("Prioritization model (weights & definitions)", expanded=False):
+        st.markdown(MODEL_HELP)
+        c1, c2, c3, c4, c5 = st.columns(5)
+        with c1:
+            w_r = st.slider("Rating", 0.0, 1.0, 0.28, 0.01, help="Talabat / Google rating blend per brand")
+        with c2:
+            w_rev = st.slider("Reviews", 0.0, 1.0, 0.22, 0.01, help="Sum of review counts across sampled branches")
+        with c3:
+            w_ord = st.slider("Order proxy", 0.0, 1.0, 0.22, 0.01, help="Talabat estimated_orders when present")
+        with c4:
+            w_del = st.slider("Delivery fee", 0.0, 1.0, 0.14, 0.01, help="Lower median fee → higher score")
+        with c5:
+            w_scale = st.slider("Store footprint", 0.0, 1.0, 0.14, 0.01, help="More stores in sample → higher reach")
+
+    scored = add_priority_scores(
+        brand_raw,
+        w_rating=w_r,
+        w_reviews=w_rev,
+        w_orders=w_ord,
+        w_delivery=w_del,
+        w_scale=w_scale,
+    )
+    view = format_for_dashboard(scored)
+    st.dataframe(view, use_container_width=True, height=380)
+
+    top_n = view.head(18).copy()
+    if not top_n.empty and "Outbound_priority" in top_n.columns:
+        chart_df = top_n.set_index("Brand")["Outbound_priority"].sort_values(ascending=True)
+        st.caption("Top brands by composite **Outbound_priority** (this scrape only).")
+        st.bar_chart(chart_df)
+
+    st.download_button(
+        "Download brand prioritization CSV",
+        data=view.to_csv(index=False).encode("utf-8"),
+        file_name="talabat_outbound_brand_priorities.csv",
+        mime="text/csv",
+        key="dl_brand_priority",
+    )
+
+
 def get_api_base_url() -> str:
     try:
         secret_url = str(st.secrets.get("API_BASE_URL", "")).strip()
@@ -492,6 +551,9 @@ def main() -> None:
     m2.metric("Not closed", int((df["status"] != "closed").sum()))
 
     st.dataframe(df, use_container_width=True, height=420)
+
+    render_outbound_prioritization_dashboard(df)
+
     _hlat = float(city_lat) if is_city_mode else float(st.session_state["pin_lat"])
     _hlng = float(city_lng) if is_city_mode else float(st.session_state["pin_lng"])
     render_heatmap(df, pin_lat=_hlat, pin_lng=_hlng, radius_km=float(radius_km))
