@@ -287,6 +287,8 @@ def main() -> None:
                     st.session_state["pin_label"] = str(result.get("formatted_address") or geocode_query).strip()
                     provider = payload.get("provider", "unknown")
                     st.success(f"Pin set from search ({provider}): {st.session_state['pin_label']}")
+                    if payload.get("note"):
+                        st.info(str(payload["note"]))
                 else:
                     hint = payload.get("hint")
                     if hint:
