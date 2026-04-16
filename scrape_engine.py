@@ -1253,9 +1253,9 @@ async def run_area_scrape(
                     dedupe[ck] = _pick_better_row(pin_lat, pin_lng, cur, r)
         records = list(dedupe.values())
         # Scale down vendor-page enrichment when many grid points (each listing + N enrich URLs is costly on Render).
-        enrich_cap = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "6"))
+        enrich_cap = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "12"))
         n_pts = max(1, len(points))
-        budget = max(2, 14 // n_pts)
+        budget = max(3, 22 // n_pts)
         enrich_max = min(enrich_cap, budget)
         await enrich_vendor_detail_pages(browser, records, max_urls=enrich_max)
         await browser.close()

@@ -6,10 +6,9 @@ import os
 
 import folium
 import pandas as pd
-import pydeck as pdk
 import requests
 import streamlit as st
-from folium.plugins import Fullscreen, MousePosition
+from folium.plugins import Fullscreen, HeatMap, MousePosition
 from streamlit_folium import st_folium
 
 DEFAULT_PIN = (25.2048, 55.2708)
@@ -17,7 +16,12 @@ DEFAULT_PIN = (25.2048, 55.2708)
 # Match backend defaults (sidebar controls removed; tune via API env on Render if needed).
 _DEFAULT_STATUS_FILTER = "live"
 _DEFAULT_JUST_LANDED_ONLY = False
-_DEFAULT_MAX_SAMPLE_POINTS = 2
+# More grid points + deeper scroll = more listing URLs merged (slower; watch SCRAPER_WALL_CLOCK_SEC on Render).
+_DEFAULT_MAX_SAMPLE_POINTS = 3
+_DEFAULT_SPACING_KM = 1.5
+_DEFAULT_SCROLL_ROUNDS = 18
+_DEFAULT_SCROLL_WAIT_MS = 900
+_DEFAULT_CONCURRENCY = 1
 
 
 def init_state() -> None:
@@ -29,17 +33,6 @@ def init_state() -> None:
     st.session_state.setdefault("results_fingerprint", None)
 
 
-def _google_maps_frontend_key() -> str:
-    """Optional: same key as backend geocode; used for pydeck Google basemap (English-friendly labels)."""
-    try:
-        s = str(st.secrets.get("GOOGLE_MAPS_API_KEY", "")).strip()
-        if s:
-            return s
-    except Exception:
-        pass
-    return (os.getenv("GOOGLE_MAPS_API_KEY") or "").strip()
-
-
 def _bounds_for_radius(lat: float, lng: float, radius_km: float, pad: float = 1.15) -> tuple[list[float], list[float]]:
     """South-west and north-east corners so the map frames pin + search radius."""
     r = max(radius_km, 0.5) * pad
@@ -49,20 +42,8 @@ def _bounds_for_radius(lat: float, lng: float, radius_km: float, pad: float = 1.
     return [lat - d_lat, lng - d_lng], [lat + d_lat, lng + d_lng]
 
 
-def render_pin_map(radius_km: float) -> None:
-    lat = float(st.session_state["pin_lat"])
-    lng = float(st.session_state["pin_lng"])
-    label = str(st.session_state.get("pin_label") or "Search pin")
-
-    fmap = folium.Map(
-        location=[lat, lng],
-        tiles=None,
-        zoom_start=12,
-        zoom_control=True,
-        control_scale=True,
-    )
-
-    # Esri World Street: English-centric labels in UAE (Carto/OSM tiles often switch to Arabic when zoomed in).
+def _add_esri_basemaps(fmap: folium.Map) -> None:
+    """Raster tiles with English-centric labels in UAE (same source as pin map)."""
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
         attr=(
@@ -78,6 +59,22 @@ def render_pin_map(radius_km: float) -> None:
         name="Satellite (Esri)",
         max_zoom=19,
     ).add_to(fmap)
+
+
+def render_pin_map(radius_km: float) -> None:
+    lat = float(st.session_state["pin_lat"])
+    lng = float(st.session_state["pin_lng"])
+    label = str(st.session_state.get("pin_label") or "Search pin")
+
+    fmap = folium.Map(
+        location=[lat, lng],
+        tiles=None,
+        zoom_start=12,
+        zoom_control=True,
+        control_scale=True,
+    )
+
+    _add_esri_basemaps(fmap)
 
     area = folium.FeatureGroup(name="Search area").add_to(fmap)
 
@@ -151,16 +148,6 @@ def render_pin_map(radius_km: float) -> None:
         st.toast(f"Pin → {st.session_state['pin_lat']:.5f}, {st.session_state['pin_lng']:.5f}", icon="📍")
 
 
-def _heatmap_zoom_for_radius(radius_km: float) -> float:
-    if radius_km <= 3.0:
-        return 13.0
-    if radius_km <= 8.0:
-        return 12.0
-    if radius_km <= 15.0:
-        return 11.0
-    return 10.0
-
-
 def render_heatmap(df: pd.DataFrame, pin_lat: float, pin_lng: float, radius_km: float) -> None:
     st.subheader("Restaurant Density Heatmap")
     view_df = df.dropna(subset=["lat", "lng"]).copy()
@@ -168,44 +155,68 @@ def render_heatmap(df: pd.DataFrame, pin_lat: float, pin_lng: float, radius_km: 
         st.info("No coordinates available for heatmap.")
         return
 
-    layer = pdk.Layer(
-        "HeatmapLayer",
-        data=view_df,
-        get_position="[lng, lat]",
-        get_weight=1,
-        radiusPixels=45,
-        intensity=1.2,
-        threshold=0.05,
-        opacity=0.8,
+    fmap = folium.Map(
+        location=[float(pin_lat), float(pin_lng)],
+        tiles=None,
+        zoom_start=12,
+        zoom_control=True,
+        control_scale=True,
     )
-    view_state = pdk.ViewState(
-        latitude=float(pin_lat),
-        longitude=float(pin_lng),
-        zoom=_heatmap_zoom_for_radius(radius_km),
-        pitch=22,
+    _add_esri_basemaps(fmap)
+
+    heat_rows: list[list[float]] = []
+    for _, row in view_df.iterrows():
+        try:
+            la = float(row["lat"])
+            ln = float(row["lng"])
+        except (TypeError, ValueError):
+            continue
+        heat_rows.append([la, ln])
+    if heat_rows:
+        HeatMap(
+            heat_rows,
+            min_opacity=0.28,
+            max_zoom=17,
+            radius=28,
+            blur=19,
+            gradient={0.35: "#2563EB", 0.55: "#7C3AED", 0.75: "#F59E0B", 0.95: "#EF4444"},
+        ).add_to(fmap)
+
+    folium.Circle(
+        location=[float(pin_lat), float(pin_lng)],
+        radius=float(radius_km) * 1000.0,
+        color="#1D4ED8",
+        weight=2,
+        fill=True,
+        fill_color="#2563EB",
+        fill_opacity=0.08,
+        tooltip=f"Scrape radius: {radius_km:g} km",
+    ).add_to(fmap)
+    folium.Marker(
+        location=[float(pin_lat), float(pin_lng)],
+        tooltip="Search pin",
+        icon=folium.Icon(color="blue", icon="info-sign"),
+    ).add_to(fmap)
+
+    Fullscreen(position="topright", title="Fullscreen", title_cancel="Exit Full Screen").add_to(fmap)
+    folium.LayerControl(position="topright", collapsed=False).add_to(fmap)
+
+    lats = [float(pin_lat)] + [r[0] for r in heat_rows]
+    lngs = [float(pin_lng)] + [r[1] for r in heat_rows]
+    pad_lat = max(0.002, (max(lats) - min(lats)) * 0.08 + 0.001)
+    pad_lng = max(0.002, (max(lngs) - min(lngs)) * 0.08 + 0.001)
+    sw = [min(lats) - pad_lat, min(lngs) - pad_lng]
+    ne = [max(lats) + pad_lat, max(lngs) + pad_lng]
+    fmap.fit_bounds([sw, ne], padding=(28, 28), max_zoom=16)
+
+    st.caption("Same Esri street/satellite basemaps as the pin map (English labels). Heat layer shows vendor density.")
+    st_folium(
+        fmap,
+        width=1400,
+        height=480,
+        use_container_width=True,
+        key="talabat_heatmap_map",
     )
-    gkey = _google_maps_frontend_key()
-    if gkey:
-        deck = pdk.Deck(
-            layers=[layer],
-            initial_view_state=view_state,
-            map_provider="google_maps",
-            map_style=pdk.map_styles.GOOGLE_ROAD,
-            api_keys={"google_maps": gkey},
-        )
-        st.caption("Heatmap basemap: Google Maps roadmap (English labels).")
-    else:
-        # Carto vector styles often show OSM `name:ar` when zoomed in; no-label avoids mixed scripts without a Maps key.
-        deck = pdk.Deck(
-            layers=[layer],
-            initial_view_state=view_state,
-            map_provider="carto",
-            map_style=pdk.map_styles.LIGHT_NO_LABELS,
-        )
-        st.caption(
-            "Heatmap basemap: labels hidden (add `GOOGLE_MAPS_API_KEY` to Streamlit secrets for a labeled English map)."
-        )
-    st.pydeck_chart(deck, use_container_width=True)
 
 
 def get_frontend_api_key() -> str:
@@ -303,6 +314,10 @@ def main() -> None:
                 "pin_lat": float(st.session_state["pin_lat"]),
                 "pin_lng": float(st.session_state["pin_lng"]),
                 "radius_km": float(radius_km),
+                "spacing_km": _DEFAULT_SPACING_KM,
+                "concurrency": _DEFAULT_CONCURRENCY,
+                "scroll_rounds": _DEFAULT_SCROLL_ROUNDS,
+                "scroll_wait_ms": _DEFAULT_SCROLL_WAIT_MS,
                 "status_filter": _DEFAULT_STATUS_FILTER,
                 "just_landed_only": _DEFAULT_JUST_LANDED_ONLY,
                 "max_sample_points": _DEFAULT_MAX_SAMPLE_POINTS,
@@ -350,6 +365,12 @@ def main() -> None:
         )
 
     st.success(f"Collected {len(df):,} unique vendor rows (deduped by URL).")
+    st.caption(
+        "More filled columns: API env `RESTAURANT_DETAIL_ENRICH_MAX` (vendor pages), "
+        "`GOOGLE_PLACES_ENRICH=1` + Places API on the same key as geocode (phone / Google name), "
+        "`SCRAPER_AGGRESSIVE_LISTING=1` or `SCRAPER_LISTING_SCROLL_ROUNDS` for longer listing scroll. "
+        "If runs time out, lower `max_sample_points` in the app code or raise `SCRAPER_WALL_CLOCK_SEC` on Render."
+    )
     m1, m2 = st.columns(2)
     m1.metric("Total vendors", int(len(df)))
     m2.metric("Not closed", int((df["status"] != "closed").sum()))
