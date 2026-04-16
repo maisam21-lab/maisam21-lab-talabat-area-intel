@@ -192,13 +192,8 @@ def main() -> None:
     if df is None or df.empty:
         if st.session_state.get("last_run_done"):
             st.warning(
-                "Run completed but no rows were captured. Try a larger radius (e.g. 10 km), "
-                "status **all**, and Just Landed **off**."
-            )
-            st.caption(
-                "Empty results usually mean this automation did not reach the same page state as a manual visit "
-                "(e.g. location, timing, or our extraction path). Check the Render API logs for that request and "
-                "confirm the latest backend commit is deployed."
+                "**No restaurants extracted.** Try radius **10 km**, status **all**, Just Landed **off**, then run again. "
+                "If it still returns zero rows, open Render → API service → **Logs** for the failing `/scrape` call."
             )
         else:
             st.info("No results yet. Set pin and click Start Scraping.")
