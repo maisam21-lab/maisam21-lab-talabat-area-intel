@@ -7,14 +7,16 @@ Area-first UAE restaurant intelligence with:
 - status filter (`all`, `live`, `closed`)
 - Just Landed toggle
 - branch-level unique SKU (`branch_sku`)
-- new branch detection vs previous CSV
 - density heatmap
+
+Scraping collects vendor links in the form `https://www.talabat.com/uae/{slug}` (Talabat’s main listing pattern), with `/restaurant/...` as a secondary pattern.
 
 ## Architecture
 
 - `talabat_area_intel_app.py` -> Streamlit frontend (can run on Streamlit Cloud)
 - `scraper_api.py` -> FastAPI scraping backend (run on Render with Docker)
 - `scrape_engine.py` -> shared Playwright scraping engine
+- `talabat_urls.py` -> UAE vendor path rules (`/uae/{slug}`)
 
 ## Local run (all-in-one)
 

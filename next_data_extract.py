@@ -6,7 +6,9 @@ import json
 import re
 from typing import Any
 
-# Typical Talabat restaurant path patterns in JSON and HTML.
+from talabat_urls import UAE_VENDOR_URL_RE, canonical_uae_vendor_url, is_vendor_slug
+
+# Legacy paths (some regions still use /restaurant/).
 _REST_PATH_RE = re.compile(
     r"(?:https://(?:www\.)?talabat\.com)?(/uae/restaurant/[^\"'\\s<>]+|/restaurant/[^\"'\\s<>]+)",
     re.IGNORECASE,
@@ -23,7 +25,7 @@ def parse_next_data_script(text: str) -> dict[str, Any] | None:
 
 
 def collect_restaurant_paths_from_json(obj: Any, seen: set[str]) -> None:
-    """Recursively find restaurant path strings inside arbitrary JSON."""
+    """Recursively find restaurant URLs inside arbitrary JSON."""
     if isinstance(obj, dict):
         for v in obj.values():
             collect_restaurant_paths_from_json(v, seen)
@@ -35,17 +37,24 @@ def collect_restaurant_paths_from_json(obj: Any, seen: set[str]) -> None:
             path = m.group(1).split("?")[0].rstrip("\\")
             if "/restaurant/" in path:
                 seen.add(path)
+        for m in UAE_VENDOR_URL_RE.finditer(obj):
+            slug = m.group(1)
+            if is_vendor_slug(slug):
+                seen.add(canonical_uae_vendor_url(slug))
 
 
 def paths_from_next_data_json(data: dict[str, Any]) -> list[str]:
     seen: set[str] = set()
     collect_restaurant_paths_from_json(data, seen)
-    # Also scan serialized blob for paths nested in escaped strings.
     blob = json.dumps(data)
     for m in _REST_PATH_RE.finditer(blob):
         path = m.group(1).split("?")[0]
         if "/restaurant/" in path:
             seen.add(path)
+    for m in UAE_VENDOR_URL_RE.finditer(blob):
+        slug = m.group(1)
+        if is_vendor_slug(slug):
+            seen.add(canonical_uae_vendor_url(slug))
     return sorted(seen)
 
 

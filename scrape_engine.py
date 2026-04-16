@@ -111,21 +111,44 @@ async def extract_restaurants_from_anchor_links(
     sample_lat: float,
     sample_lng: float,
 ) -> list[RestaurantRecord]:
-    """Primary extractor: all restaurant anchors — survives card/DOM redesigns."""
+    """Primary extractor: UAE vendor links (/uae/{slug}) + legacy /restaurant/ links."""
     payload = await page.evaluate(
         """() => {
-      const nodes = Array.from(document.querySelectorAll('a[href*="/restaurant/"]'));
+      const exclude = new Set([
+        'restaurants','groceries','mart','pharmacy','flowers','en','ar','faq','terms','privacy',
+        'privacy-policy','contact','contact-us','login','register','cart','checkout','cities',
+        'blog','careers','corporate','about','sitemap','order','account','wallet','deals',
+        'dineout','shops'
+      ]);
       const seen = new Set();
       const out = [];
-      for (const a of nodes) {
+      const add = (u, name) => {
+        const c = u.split('?')[0];
+        if (seen.has(c)) return;
+        seen.add(c);
+        out.push({ url: c, name: (name || '').trim() });
+      };
+      for (const a of document.querySelectorAll('a[href]')) {
         let href = a.getAttribute('href') || '';
-        if (!href.includes('/restaurant/')) continue;
+        if (!href || href === '#' || href.startsWith('javascript')) continue;
         if (href.startsWith('/')) href = 'https://www.talabat.com' + href;
-        const u = href.split('?')[0];
-        if (seen.has(u)) continue;
-        seen.add(u);
-        const name = (a.innerText || '').trim().split('\\n')[0].trim();
-        out.push({ url: u, name });
+        if (!href.includes('talabat.com')) continue;
+        try {
+          const u = new URL(href);
+          let parts = u.pathname.split('/').filter(Boolean);
+          if (parts[0] === 'en' || parts[0] === 'ar') parts = parts.slice(1);
+          if (parts.length >= 2 && parts[0] === 'uae') {
+            const seg = parts[1].toLowerCase();
+            if (exclude.has(seg) || seg.length < 3) continue;
+            const canon = 'https://www.talabat.com/uae/' + parts[1];
+            const name = (a.innerText || '').trim().split('\\n')[0].trim();
+            add(canon, name);
+            continue;
+          }
+          if (href.includes('/restaurant/')) {
+            add(href.split('?')[0], (a.innerText || '').trim().split('\\n')[0].trim());
+          }
+        } catch (e) { /* ignore */ }
       }
       return out;
     }"""
