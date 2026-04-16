@@ -484,7 +484,8 @@ def main() -> None:
         "More filled columns: API env `RESTAURANT_DETAIL_ENRICH_MAX` (Talabat vendor pages). "
         "Optional Google-only enrichment: `GOOGLE_PLACES_ENRICH=1` + a Maps key with Places API (skip if you have no GCP). "
         "`SCRAPER_AGGRESSIVE_LISTING=1` or `SCRAPER_LISTING_SCROLL_ROUNDS` for deeper listing scroll. "
-        "If runs time out, lower `max_sample_points` or raise `SCRAPER_WALL_CLOCK_SEC` on Render."
+        "If runs time out, lower `max_sample_points` or raise `SCRAPER_WALL_CLOCK_SEC` on Render. "
+        "If row counts stay tiny (~40), ensure `SCRAPER_LISTING_FAST_PATH` is **not** set on the API (scroll must run)."
     )
     m1, m2 = st.columns(2)
     m1.metric("Rows in export", int(len(df)))

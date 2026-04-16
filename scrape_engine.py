@@ -1050,6 +1050,26 @@ async def enrich_vendor_detail_pages(
     await asyncio.gather(*[one(u) for u in urls])
 
 
+def _union_listing_batches(*batches: list[RestaurantRecord]) -> list[RestaurantRecord]:
+    """Merge listing extracts from the same page visit (e.g. before + after scroll) without duplicate URLs."""
+    seen: set[str] = set()
+    out: list[RestaurantRecord] = []
+    for batch in batches:
+        for r in batch:
+            u = (r.restaurant_url or "").strip().split("?")[0].rstrip("/").lower()
+            key = u if u else r.branch_sku
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(r)
+    return out
+
+
+def _listing_fast_path_enabled() -> bool:
+    """If true, return as soon as the first DOM parse finds links (skips scroll — often ~40 rows only)."""
+    return os.getenv("SCRAPER_LISTING_FAST_PATH", "0").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
 async def scrape_one_point(
     browser,
     pin_lat: float,
@@ -1077,14 +1097,16 @@ async def scrape_one_point(
                 await page.wait_for_timeout(2200)
                 await dismiss_common_overlays(page)
                 await click_just_landed_if_requested(page, just_landed_only)
-                # Fast path: vendor links often appear without long scroll (saves Render gateway timeouts).
-                rows = await extract_restaurants(page, pin_lat, pin_lng, radius_km, sample_lat, sample_lng)
-                if rows:
-                    return rows
+                rows_pre = await extract_restaurants(page, pin_lat, pin_lng, radius_km, sample_lat, sample_lng)
+                if _listing_fast_path_enabled() and rows_pre:
+                    return rows_pre
                 await auto_scroll(page, rounds=scroll_rounds, wait_ms=scroll_wait_ms)
-                rows = await extract_restaurants(page, pin_lat, pin_lng, radius_km, sample_lat, sample_lng)
-                if rows:
-                    return rows
+                rows_post = await extract_restaurants(page, pin_lat, pin_lng, radius_km, sample_lat, sample_lng)
+                merged = _union_listing_batches(rows_pre, rows_post)
+                if merged:
+                    return merged
+                if rows_pre:
+                    return rows_pre
             except Exception:
                 continue
         return []
