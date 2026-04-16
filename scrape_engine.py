@@ -11,8 +11,11 @@ from playwright.async_api import async_playwright
 
 from geo_utils import generate_points_in_radius
 from models import RestaurantRecord, make_branch_sku
+from next_data_extract import normalize_talabat_url, parse_next_data_script, paths_from_next_data_json
 
-BASE_URL = "https://www.talabat.com/uae/restaurants"
+# English listing URL first (more consistent markup); fallback handled in scrape_one_point.
+BASE_URL_PRIMARY = "https://www.talabat.com/en/uae/restaurants"
+BASE_URL_FALLBACK = "https://www.talabat.com/uae/restaurants"
 
 # Required for Chromium in Docker / Render (small /dev/shm, no user namespace sandbox).
 CHROMIUM_LAUNCH_ARGS = [
@@ -67,6 +70,24 @@ async def auto_scroll(page, rounds: int = 22, wait_ms: int = 1300) -> None:
             prev_height = new_height
 
 
+async def dismiss_common_overlays(page) -> None:
+    """Close cookie / region banners that block listing hydration."""
+    for selector in (
+        'button:has-text("Accept")',
+        'button:has-text("Accept all")',
+        '[data-testid*="accept"]',
+        'button[aria-label*="ccept"]',
+    ):
+        try:
+            loc = page.locator(selector).first
+            if await loc.count():
+                await loc.click(timeout=2000)
+                await page.wait_for_timeout(500)
+                break
+        except Exception:
+            pass
+
+
 async def click_just_landed_if_requested(page, just_landed_only: bool) -> None:
     if not just_landed_only:
         return
@@ -82,6 +103,132 @@ async def click_just_landed_if_requested(page, just_landed_only: bool) -> None:
                 pass
 
 
+async def extract_restaurants_from_anchor_links(
+    page,
+    pin_lat: float,
+    pin_lng: float,
+    radius_km: float,
+    sample_lat: float,
+    sample_lng: float,
+) -> list[RestaurantRecord]:
+    """Primary extractor: all restaurant anchors — survives card/DOM redesigns."""
+    payload = await page.evaluate(
+        """() => {
+      const nodes = Array.from(document.querySelectorAll('a[href*="/restaurant/"]'));
+      const seen = new Set();
+      const out = [];
+      for (const a of nodes) {
+        let href = a.getAttribute('href') || '';
+        if (!href.includes('/restaurant/')) continue;
+        if (href.startsWith('/')) href = 'https://www.talabat.com' + href;
+        const u = href.split('?')[0];
+        if (seen.has(u)) continue;
+        seen.add(u);
+        const name = (a.innerText || '').trim().split('\\n')[0].trim();
+        out.push({ url: u, name });
+      }
+      return out;
+    }"""
+    )
+    if not payload:
+        return []
+    now_utc = datetime.now(timezone.utc).isoformat()
+    results: list[RestaurantRecord] = []
+    for item in payload:
+        url = str(item.get("url") or "").strip()
+        name = str(item.get("name") or "").strip()
+        if not url:
+            continue
+        slug_name = url.rstrip("/").split("/")[-1].replace("-", " ").title() if url else ""
+        if not name:
+            name = slug_name
+        branch_name = ""
+        if " - " in name:
+            p1, p2 = name.split(" - ", 1)
+            if p1.strip() and p2.strip():
+                name, branch_name = p1.strip(), p2.strip()
+        lat, lng = sample_lat, sample_lng
+        sku = make_branch_sku(name=name, branch_name=branch_name, url=url, lat=lat, lng=lng)
+        blob = name.lower()
+        results.append(
+            RestaurantRecord(
+                scrape_ts_utc=now_utc,
+                source_pin_lat=pin_lat,
+                source_pin_lng=pin_lng,
+                radius_km=radius_km,
+                source_sample_lat=sample_lat,
+                source_sample_lng=sample_lng,
+                branch_sku=sku,
+                restaurant_name=name,
+                branch_name=branch_name,
+                restaurant_url=url,
+                cuisines="",
+                rating="",
+                eta="",
+                delivery_fee="",
+                min_order="",
+                status=classify_status(blob),
+                just_landed_flag="just landed" in blob,
+                lat=lat,
+                lng=lng,
+            )
+        )
+    return results
+
+
+async def extract_restaurants_from_next_data(
+    page,
+    pin_lat: float,
+    pin_lng: float,
+    radius_km: float,
+    sample_lat: float,
+    sample_lng: float,
+) -> list[RestaurantRecord]:
+    raw = await page.evaluate(
+        """() => {
+      const el = document.getElementById('__NEXT_DATA__');
+      return el ? el.textContent : null;
+    }"""
+    )
+    data = parse_next_data_script(raw or "")
+    if not data:
+        return []
+    paths = paths_from_next_data_json(data)
+    if not paths:
+        return []
+    now_utc = datetime.now(timezone.utc).isoformat()
+    results: list[RestaurantRecord] = []
+    for path in paths:
+        url = normalize_talabat_url(path)
+        slug = url.rstrip("/").split("/")[-1]
+        name = slug.replace("-", " ").title() if slug else "Unknown"
+        sku = make_branch_sku(name=name, branch_name="", url=url, lat=sample_lat, lng=sample_lng)
+        results.append(
+            RestaurantRecord(
+                scrape_ts_utc=now_utc,
+                source_pin_lat=pin_lat,
+                source_pin_lng=pin_lng,
+                radius_km=radius_km,
+                source_sample_lat=sample_lat,
+                source_sample_lng=sample_lng,
+                branch_sku=sku,
+                restaurant_name=name,
+                branch_name="",
+                restaurant_url=url,
+                cuisines="",
+                rating="",
+                eta="",
+                delivery_fee="",
+                min_order="",
+                status="unknown",
+                just_landed_flag=False,
+                lat=sample_lat,
+                lng=sample_lng,
+            )
+        )
+    return results
+
+
 async def extract_restaurants(
     page,
     pin_lat: float,
@@ -90,6 +237,21 @@ async def extract_restaurants(
     sample_lat: float,
     sample_lng: float,
 ) -> list[RestaurantRecord]:
+    # 1) All /restaurant/ links (most robust vs UI redesign)
+    anchor_rows = await extract_restaurants_from_anchor_links(
+        page, pin_lat, pin_lng, radius_km, sample_lat, sample_lng
+    )
+    if anchor_rows:
+        return anchor_rows
+
+    # 2) Next.js embedded JSON
+    next_rows = await extract_restaurants_from_next_data(
+        page, pin_lat, pin_lng, radius_km, sample_lat, sample_lng
+    )
+    if next_rows:
+        return next_rows
+
+    # 3) Legacy card selectors
     cards = None
     for selector in CARD_SELECTORS:
         loc = page.locator(selector)
@@ -223,12 +385,20 @@ async def scrape_one_point(
     )
     page = await context.new_page()
     try:
-        await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=90000)
-        # Avoid networkidle on heavy SPAs: it can hang and cause gateway timeouts on Render.
-        await page.wait_for_timeout(3500)
-        await click_just_landed_if_requested(page, just_landed_only)
-        await auto_scroll(page, rounds=scroll_rounds, wait_ms=scroll_wait_ms)
-        return await extract_restaurants(page, pin_lat, pin_lng, radius_km, sample_lat, sample_lng)
+        # Try English listing URL first, then non-prefixed path (Talabat sometimes varies by locale/route).
+        for listing_url in (BASE_URL_PRIMARY, BASE_URL_FALLBACK):
+            try:
+                await page.goto(listing_url, wait_until="domcontentloaded", timeout=90000)
+                await page.wait_for_timeout(3500)
+                await dismiss_common_overlays(page)
+                await click_just_landed_if_requested(page, just_landed_only)
+                await auto_scroll(page, rounds=scroll_rounds, wait_ms=scroll_wait_ms)
+                rows = await extract_restaurants(page, pin_lat, pin_lng, radius_km, sample_lat, sample_lng)
+                if rows:
+                    return rows
+            except Exception:
+                continue
+        return []
     except Exception:
         return []
     finally:

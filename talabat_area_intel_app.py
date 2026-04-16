@@ -192,11 +192,12 @@ def main() -> None:
     if df is None or df.empty:
         if st.session_state.get("last_run_done"):
             st.warning(
-                "Run completed but no rows were captured. Try radius 10 km, spacing 1.5-2.0 km, "
-                "status=all, and Just Landed off."
+                "Run completed but no rows were captured. Try a larger radius (e.g. 10 km), "
+                "status **all**, and Just Landed **off**."
             )
             st.caption(
-                "If still empty, Talabat may have changed page structure or blocked automated listing reads."
+                "If this persists, the listing page may require a delivery address on Talabat’s side, "
+                "or the session was blocked — check Render logs for the scrape request."
             )
         else:
             st.info("No results yet. Set pin and click Start Scraping.")
