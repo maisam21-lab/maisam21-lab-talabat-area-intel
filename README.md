@@ -24,7 +24,7 @@ py -3 -m playwright install chromium
 py -3 -m streamlit run talabat_area_intel_app.py
 ```
 
-Use frontend mode `Local Playwright`.
+For production, prefer split deployment (frontend + backend API).
 
 ## Split deployment (recommended)
 
@@ -43,14 +43,26 @@ Scrape endpoint:
 
 - `POST /scrape`
 
+Geocode endpoint:
+
+- `POST /geocode`
+- `POST /geocode` and `POST /scrape` require header `X-API-Key` when `SCRAPER_API_KEY` is configured.
+
 ### 2) Frontend on Streamlit Cloud
 
 - Deploy `talabat_area_intel_app.py`
-- In sidebar, select:
-  - `Run mode` = `Remote API (Render)`
-  - `API base URL` = your Render URL (example: `https://your-service.onrender.com`)
+- In sidebar set `API base URL` to your Render URL (example: `https://your-service.onrender.com`)
+- Set `ARCGIS_API_KEY` on Render service env vars (preferred for backend `/geocode`).
+- Optional fallback: `GOOGLE_MAPS_API_KEY`.
+- Set `SCRAPER_API_KEY` on Render service env vars.
+- Set same `SCRAPER_API_KEY` in Streamlit secrets:
 
-The frontend sends scrape jobs to Render and then displays/downloads results.
+```toml
+SCRAPER_API_KEY = "your_strong_shared_secret"
+API_BASE_URL = "https://your-service.onrender.com"
+```
+
+The frontend sends scrape and geocode requests to Render and then displays/downloads results.
 
 ## API payload example
 
@@ -73,4 +85,7 @@ The frontend sends scrape jobs to Render and then displays/downloads results.
 - This uses public website content and selectors that may change over time.
 - Streamlit Cloud alone is not reliable for Playwright subprocess scraping.
 - Keep scraping on backend infrastructure (Render Docker) for stability.
+- Streamlit Cloud frontend should always point to Render backend for scraping/geocoding.
+- Geocoding provider order: ArcGIS first (`ARCGIS_API_KEY`), then Google fallback.
+- Enable `SCRAPER_API_KEY` in production to prevent public API abuse.
 - Use responsibly and in compliance with platform terms and local regulations.

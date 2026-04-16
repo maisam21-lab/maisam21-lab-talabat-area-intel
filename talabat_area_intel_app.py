@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-import sys
-from concurrent.futures import ThreadPoolExecutor
+import os
 
 import folium
 import pandas as pd
@@ -10,8 +8,6 @@ import pydeck as pdk
 import requests
 import streamlit as st
 from streamlit_folium import st_folium
-
-from scrape_engine import run_area_scrape
 
 DEFAULT_PIN = (25.2048, 55.2708)
 
@@ -21,21 +17,6 @@ def init_state() -> None:
     st.session_state.setdefault("pin_lng", DEFAULT_PIN[1])
     st.session_state.setdefault("results_df", pd.DataFrame())
     st.session_state.setdefault("last_run_done", False)
-
-
-def run_async_safely(coro):
-    """Run async Playwright code safely inside Streamlit on Windows."""
-
-    def _runner():
-        if sys.platform.startswith("win"):
-            try:
-                asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-            except Exception:
-                pass
-        return asyncio.run(coro)
-
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        return executor.submit(_runner).result()
 
 
 def render_pin_map(radius_km: float) -> None:
@@ -65,7 +46,7 @@ def render_pin_map(radius_km: float) -> None:
     ).add_to(fmap)
 
     st.caption("Click on the map to update the pin.")
-    out = st_folium(fmap, width=760, height=430)
+    out = st_folium(fmap, width=1400, height=560)
     if out and out.get("last_clicked"):
         st.session_state["pin_lat"] = float(out["last_clicked"]["lat"])
         st.session_state["pin_lng"] = float(out["last_clicked"]["lng"])
@@ -98,6 +79,26 @@ def render_heatmap(df: pd.DataFrame) -> None:
     st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state), use_container_width=True)
 
 
+def get_frontend_api_key() -> str:
+    try:
+        secret = str(st.secrets.get("SCRAPER_API_KEY", "")).strip()
+        if secret:
+            return secret
+    except Exception:
+        pass
+    return os.getenv("SCRAPER_API_KEY", "").strip()
+
+
+def get_api_base_url() -> str:
+    try:
+        secret_url = str(st.secrets.get("API_BASE_URL", "")).strip()
+        if secret_url:
+            return secret_url.rstrip("/")
+    except Exception:
+        pass
+    return os.getenv("API_BASE_URL", "https://maisam21-lab-talabat-area-intel.onrender.com").strip().rstrip("/")
+
+
 def main() -> None:
     st.set_page_config(page_title="Talabat Area Intel", layout="wide")
     init_state()
@@ -107,86 +108,80 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Scrape Controls")
-        run_mode = st.selectbox("Run mode", ["Local Playwright", "Remote API (Render)"])
-        api_base_url = st.text_input("API base URL", value="http://127.0.0.1:8000")
-        radius_choice = st.selectbox("Radius", ["5 km", "10 km", "Custom"])
-        radius_km = 5.0 if radius_choice == "5 km" else 10.0 if radius_choice == "10 km" else st.number_input(
-            "Custom radius (km)", min_value=1.0, max_value=30.0, value=7.0, step=0.5
-        )
-        spacing_km = st.slider("Sample spacing (km)", min_value=0.5, max_value=3.0, value=1.0, step=0.1)
-        concurrency = st.slider("Concurrency", min_value=1, max_value=6, value=3)
-        status_filter = st.selectbox("Status filter", ["all", "live", "closed"])
-        just_landed_only = st.checkbox("Just Landed only", value=False)
-        scroll_rounds = st.slider("Max scroll rounds", min_value=6, max_value=50, value=22)
-        scroll_wait_ms = st.slider("Scroll wait ms", min_value=600, max_value=2500, value=1300, step=100)
+        api_base_url = get_api_base_url()
+        api_key = get_frontend_api_key()
+        headers = {"X-API-Key": api_key} if api_key else {}
+        st.caption(f"Backend: `{api_base_url}`")
+        geocode_query = st.text_input("Search place/address (UAE)", value="")
+        geocode_btn = st.button("Set Pin from Search", use_container_width=True)
+        if geocode_btn:
+            try:
+                g_response = requests.post(
+                    f"{api_base_url.rstrip('/')}/geocode",
+                    json={"query": geocode_query},
+                    headers=headers,
+                    timeout=30,
+                )
+                g_response.raise_for_status()
+                payload = g_response.json()
+                result = payload.get("result")
+                if payload.get("ok") and result:
+                    st.session_state["pin_lat"] = float(result["lat"])
+                    st.session_state["pin_lng"] = float(result["lng"])
+                    st.success(f"Pin set from search: {result.get('formatted_address', geocode_query)}")
+                else:
+                    st.warning("No geocoding result for this query.")
+            except Exception as exc:
+                st.error(f"Geocode failed via backend: {exc}")
 
-        st.markdown("---")
-        st.write("Manual pin override")
+        radius_km = st.number_input("Radius (km)", min_value=1.0, max_value=30.0, value=10.0, step=0.5)
+        status_filter = st.radio("Status filter", ["all", "live", "closed"], horizontal=True)
+        just_landed_only = st.checkbox("Just Landed only", value=False)
+
+    # Main map section (full width)
+    render_pin_map(radius_km=radius_km)
+
+    # Manual pin override moved below the map as requested.
+    st.subheader("Manual Pin Override")
+    mp1, mp2 = st.columns(2)
+    with mp1:
         st.session_state["pin_lat"] = st.number_input("Pin lat", value=float(st.session_state["pin_lat"]), format="%.6f")
+    with mp2:
         st.session_state["pin_lng"] = st.number_input("Pin lng", value=float(st.session_state["pin_lng"]), format="%.6f")
 
-    col_left, col_right = st.columns([1.25, 1.0])
-    with col_left:
-        render_pin_map(radius_km=radius_km)
-    with col_right:
-        st.subheader("Run")
-        st.write(f"Current pin: `{st.session_state['pin_lat']:.6f}, {st.session_state['pin_lng']:.6f}`")
-        st.write(f"Radius: `{radius_km} km`")
-        prev_csv = st.file_uploader("Previous scrape CSV (optional)", type=["csv"])
-        run = st.button("Start Scraping", type="primary", use_container_width=True)
+    st.subheader("Run")
+    st.write(f"Current pin: `{st.session_state['pin_lat']:.6f}, {st.session_state['pin_lng']:.6f}`")
+    st.write(f"Radius: `{radius_km} km`")
+    prev_csv = st.file_uploader("Previous scrape CSV (optional)", type=["csv"])
+    run = st.button("Start Scraping", type="primary", use_container_width=True)
 
     if run:
         progress = st.progress(0.0)
         status_box = st.empty()
-        log_box = st.empty()
-
-        def progress_cb(done: int, total: int, lat: float, lng: float, rows: int) -> None:
-            progress.progress(done / total)
-            status_box.info(f"Processed {done}/{total} points")
-            log_box.write(f"Last point ({lat:.5f}, {lng:.5f}) -> {rows} rows")
 
         with st.spinner("Scraping..."):
-            if run_mode == "Local Playwright":
-                df = run_async_safely(
-                    run_area_scrape(
-                        pin_lat=float(st.session_state["pin_lat"]),
-                        pin_lng=float(st.session_state["pin_lng"]),
-                        radius_km=float(radius_km),
-                        spacing_km=float(spacing_km),
-                        concurrency=int(concurrency),
-                        status_filter=status_filter,
-                        just_landed_only=just_landed_only,
-                        scroll_rounds=int(scroll_rounds),
-                        scroll_wait_ms=int(scroll_wait_ms),
-                        progress_cb=progress_cb,
-                    )
+            payload = {
+                "pin_lat": float(st.session_state["pin_lat"]),
+                "pin_lng": float(st.session_state["pin_lng"]),
+                "radius_km": float(radius_km),
+                "status_filter": status_filter,
+                "just_landed_only": bool(just_landed_only),
+            }
+            try:
+                response = requests.post(
+                    f"{api_base_url.rstrip('/')}/scrape",
+                    json=payload,
+                    headers=headers,
+                    timeout=240,
                 )
-            else:
-                payload = {
-                    "pin_lat": float(st.session_state["pin_lat"]),
-                    "pin_lng": float(st.session_state["pin_lng"]),
-                    "radius_km": float(radius_km),
-                    "spacing_km": float(spacing_km),
-                    "concurrency": int(concurrency),
-                    "status_filter": status_filter,
-                    "just_landed_only": bool(just_landed_only),
-                    "scroll_rounds": int(scroll_rounds),
-                    "scroll_wait_ms": int(scroll_wait_ms),
-                }
-                try:
-                    response = requests.post(
-                        f"{api_base_url.rstrip('/')}/scrape",
-                        json=payload,
-                        timeout=240,
-                    )
-                    response.raise_for_status()
-                    api_data = response.json()
-                    df = pd.DataFrame(api_data.get("records", []))
-                    progress.progress(1.0)
-                    status_box.info("Remote scrape completed")
-                except Exception as exc:
-                    st.error(f"Remote API scrape failed: {exc}")
-                    df = pd.DataFrame()
+                response.raise_for_status()
+                api_data = response.json()
+                df = pd.DataFrame(api_data.get("records", []))
+                progress.progress(1.0)
+                status_box.info("Remote scrape completed")
+            except Exception as exc:
+                st.error(f"Remote API scrape failed: {exc}")
+                df = pd.DataFrame()
 
         if not df.empty:
             df["is_new_since_last_scrape"] = False

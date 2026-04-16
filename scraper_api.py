@@ -1,11 +1,23 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+import os
+
+import requests
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from scrape_engine import run_area_scrape
 
 app = FastAPI(title="Talabat Area Scraper API", version="1.0.0")
+
+
+def verify_api_key(x_api_key: str | None) -> None:
+    expected = os.getenv("SCRAPER_API_KEY", "").strip()
+    # If no key is configured, auth is disabled (useful for local dev).
+    if not expected:
+        return
+    if not x_api_key or x_api_key.strip() != expected:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
 
 class ScrapeRequest(BaseModel):
@@ -20,13 +32,91 @@ class ScrapeRequest(BaseModel):
     scroll_wait_ms: int = Field(default=1300, ge=600, le=3000)
 
 
+class GeocodeRequest(BaseModel):
+    query: str
+
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
 
 
+@app.post("/geocode")
+def geocode(payload: GeocodeRequest, x_api_key: str | None = Header(default=None)) -> dict:
+    verify_api_key(x_api_key)
+    if not payload.query.strip():
+        raise HTTPException(status_code=400, detail="query is required")
+
+    arcgis_key = os.getenv("ARCGIS_API_KEY", "").strip()
+    google_key = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
+
+    if not arcgis_key and not google_key:
+        raise HTTPException(
+            status_code=400,
+            detail="No geocoding key configured. Set ARCGIS_API_KEY (preferred) or GOOGLE_MAPS_API_KEY.",
+        )
+
+    try:
+        # Preferred geocoder: ArcGIS
+        if arcgis_key:
+            arc_resp = requests.get(
+                "https://geocode-api.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates",
+                params={
+                    "f": "json",
+                    "singleLine": payload.query.strip(),
+                    "countryCode": "ARE",
+                    "maxLocations": 1,
+                    "token": arcgis_key,
+                },
+                timeout=20,
+            )
+            arc_resp.raise_for_status()
+            arc_data = arc_resp.json()
+            candidates = arc_data.get("candidates") or []
+            if candidates:
+                top = candidates[0]
+                location = top.get("location") or {}
+                return {
+                    "ok": True,
+                    "provider": "arcgis",
+                    "result": {
+                        "lat": float(location.get("y")),
+                        "lng": float(location.get("x")),
+                        "formatted_address": str(top.get("address") or payload.query).strip(),
+                    },
+                }
+
+        # Fallback geocoder: Google (optional)
+        if google_key:
+            g_resp = requests.get(
+                "https://maps.googleapis.com/maps/api/geocode/json",
+                params={"address": payload.query.strip(), "key": google_key, "region": "ae"},
+                timeout=20,
+            )
+            g_resp.raise_for_status()
+            g_data = g_resp.json()
+            results = g_data.get("results") or []
+            if results:
+                top = results[0]
+                loc = (top.get("geometry") or {}).get("location") or {}
+                return {
+                    "ok": True,
+                    "provider": "google",
+                    "result": {
+                        "lat": float(loc["lat"]),
+                        "lng": float(loc["lng"]),
+                        "formatted_address": str(top.get("formatted_address") or payload.query).strip(),
+                    },
+                }
+
+        return {"ok": False, "result": None}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Geocode failed: {exc}") from exc
+
+
 @app.post("/scrape")
-async def scrape(payload: ScrapeRequest) -> dict:
+async def scrape(payload: ScrapeRequest, x_api_key: str | None = Header(default=None)) -> dict:
+    verify_api_key(x_api_key)
     if payload.status_filter not in {"all", "live", "closed"}:
         raise HTTPException(status_code=400, detail="status_filter must be one of: all, live, closed")
     try:
