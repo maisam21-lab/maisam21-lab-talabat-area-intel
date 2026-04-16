@@ -56,60 +56,77 @@ def geocode(payload: GeocodeRequest, x_api_key: str | None = Header(default=None
             detail="No geocoding key configured. Set ARCGIS_API_KEY (preferred) or GOOGLE_MAPS_API_KEY.",
         )
 
+    query = payload.query.strip()
+    attempts = [query, f"{query}, UAE"]
+
     try:
         # Preferred geocoder: ArcGIS
         if arcgis_key:
-            arc_resp = requests.get(
-                "https://geocode-api.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates",
-                params={
-                    "f": "json",
-                    "singleLine": payload.query.strip(),
-                    "countryCode": "ARE",
-                    "maxLocations": 1,
-                    "token": arcgis_key,
-                },
-                timeout=20,
-            )
-            arc_resp.raise_for_status()
-            arc_data = arc_resp.json()
-            candidates = arc_data.get("candidates") or []
-            if candidates:
-                top = candidates[0]
-                location = top.get("location") or {}
-                return {
-                    "ok": True,
-                    "provider": "arcgis",
-                    "result": {
-                        "lat": float(location.get("y")),
-                        "lng": float(location.get("x")),
-                        "formatted_address": str(top.get("address") or payload.query).strip(),
+            for q in attempts:
+                arc_resp = requests.get(
+                    "https://geocode-api.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates",
+                    params={
+                        "f": "json",
+                        "singleLine": q,
+                        "countryCode": "AE",
+                        "maxLocations": 1,
+                        "forStorage": "false",
+                        "token": arcgis_key,
                     },
-                }
+                    timeout=20,
+                )
+                arc_resp.raise_for_status()
+                arc_data = arc_resp.json()
+
+                if arc_data.get("error"):
+                    return {
+                        "ok": False,
+                        "provider": "arcgis",
+                        "result": None,
+                        "error": arc_data.get("error"),
+                    }
+
+                candidates = arc_data.get("candidates") or []
+                if candidates:
+                    top = candidates[0]
+                    location = top.get("location") or {}
+                    if location.get("y") is not None and location.get("x") is not None:
+                        return {
+                            "ok": True,
+                            "provider": "arcgis",
+                            "result": {
+                                "lat": float(location.get("y")),
+                                "lng": float(location.get("x")),
+                                "formatted_address": str(top.get("address") or q).strip(),
+                            },
+                        }
 
         # Fallback geocoder: Google (optional)
         if google_key:
-            g_resp = requests.get(
-                "https://maps.googleapis.com/maps/api/geocode/json",
-                params={"address": payload.query.strip(), "key": google_key, "region": "ae"},
-                timeout=20,
-            )
-            g_resp.raise_for_status()
-            g_data = g_resp.json()
-            results = g_data.get("results") or []
-            if results:
-                top = results[0]
-                loc = (top.get("geometry") or {}).get("location") or {}
-                return {
-                    "ok": True,
-                    "provider": "google",
-                    "result": {
-                        "lat": float(loc["lat"]),
-                        "lng": float(loc["lng"]),
-                        "formatted_address": str(top.get("formatted_address") or payload.query).strip(),
-                    },
-                }
+            for q in attempts:
+                g_resp = requests.get(
+                    "https://maps.googleapis.com/maps/api/geocode/json",
+                    params={"address": q, "key": google_key, "region": "ae"},
+                    timeout=20,
+                )
+                g_resp.raise_for_status()
+                g_data = g_resp.json()
+                results = g_data.get("results") or []
+                if results:
+                    top = results[0]
+                    loc = (top.get("geometry") or {}).get("location") or {}
+                    if loc.get("lat") is not None and loc.get("lng") is not None:
+                        return {
+                            "ok": True,
+                            "provider": "google",
+                            "result": {
+                                "lat": float(loc["lat"]),
+                                "lng": float(loc["lng"]),
+                                "formatted_address": str(top.get("formatted_address") or q).strip(),
+                            },
+                        }
 
-        return {"ok": False, "result": None}
+        return {"ok": False, "provider": "none", "result": None, "error": "No candidates from providers"}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Geocode failed: {exc}") from exc
 

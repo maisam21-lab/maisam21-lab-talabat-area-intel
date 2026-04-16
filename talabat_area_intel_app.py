@@ -128,9 +128,10 @@ def main() -> None:
                 if payload.get("ok") and result:
                     st.session_state["pin_lat"] = float(result["lat"])
                     st.session_state["pin_lng"] = float(result["lng"])
-                    st.success(f"Pin set from search: {result.get('formatted_address', geocode_query)}")
+                    provider = payload.get("provider", "unknown")
+                    st.success(f"Pin set from search ({provider}): {result.get('formatted_address', geocode_query)}")
                 else:
-                    st.warning("No geocoding result for this query.")
+                    st.warning(f"No geocoding result. Provider response: {payload.get('error', 'no details')}")
             except Exception as exc:
                 st.error(f"Geocode failed via backend: {exc}")
 
@@ -152,7 +153,6 @@ def main() -> None:
     st.subheader("Run")
     st.write(f"Current pin: `{st.session_state['pin_lat']:.6f}, {st.session_state['pin_lng']:.6f}`")
     st.write(f"Radius: `{radius_km} km`")
-    prev_csv = st.file_uploader("Previous scrape CSV (optional)", type=["csv"])
     run = st.button("Start Scraping", type="primary", use_container_width=True)
 
     if run:
@@ -174,7 +174,9 @@ def main() -> None:
                     headers=headers,
                     timeout=240,
                 )
-                response.raise_for_status()
+                if response.status_code >= 400:
+                    detail = response.text[:500]
+                    raise RuntimeError(f"{response.status_code} {response.reason}: {detail}")
                 api_data = response.json()
                 df = pd.DataFrame(api_data.get("records", []))
                 progress.progress(1.0)
@@ -183,16 +185,6 @@ def main() -> None:
                 st.error(f"Remote API scrape failed: {exc}")
                 df = pd.DataFrame()
 
-        if not df.empty:
-            df["is_new_since_last_scrape"] = False
-            if prev_csv is not None:
-                try:
-                    prev_df = pd.read_csv(prev_csv)
-                    if "branch_sku" in prev_df.columns:
-                        prev_set = set(prev_df["branch_sku"].dropna().astype(str))
-                        df["is_new_since_last_scrape"] = ~df["branch_sku"].astype(str).isin(prev_set)
-                except Exception:
-                    pass
         st.session_state["results_df"] = df
         st.session_state["last_run_done"] = True
 
@@ -211,10 +203,9 @@ def main() -> None:
         return
 
     st.success(f"Collected {len(df):,} unique branch records.")
-    m1, m2, m3 = st.columns(3)
+    m1, m2 = st.columns(2)
     m1.metric("Total branches", int(len(df)))
     m2.metric("Live", int((df["status"] == "live").sum()))
-    m3.metric("New vs previous", int(df.get("is_new_since_last_scrape", pd.Series(dtype=bool)).sum()))
 
     st.dataframe(df, use_container_width=True, height=420)
     render_heatmap(df)
