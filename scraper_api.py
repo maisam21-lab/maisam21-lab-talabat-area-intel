@@ -11,6 +11,9 @@ from scrape_engine import run_area_scrape
 
 app = FastAPI(title="Talabat Area Scraper API", version="1.0.0")
 
+# Geocoding: Google is optional. Without GCP, omit GOOGLE_MAPS_API_KEY or set GEOCODE_USE_GOOGLE=0 and use
+# OpenStreetMap Nominatim (GEOCODE_FALLBACK_NOMINATIM=1 default).
+
 # Wall clock for one /scrape (Playwright + enrichment). Render free tier often ~100s HTTP limit; set env per plan.
 _SCRAPE_WALL_SEC = float(os.getenv("SCRAPER_WALL_CLOCK_SEC", "120"))
 
@@ -51,6 +54,11 @@ _DEFAULT_NOMINATIM_UA = "TalabatAreaIntel/1.0 (+https://github.com/maisam21-lab/
 
 def _nominatim_enabled() -> bool:
     return os.getenv("GEOCODE_FALLBACK_NOMINATIM", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _google_geocode_enabled() -> bool:
+    """Set GEOCODE_USE_GOOGLE=0 to skip Google entirely (OpenStreetMap Nominatim only; no GCP needed)."""
+    return os.getenv("GEOCODE_USE_GOOGLE", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
 def _geocode_nominatim(query: str) -> dict | None:
@@ -116,7 +124,7 @@ def geocode(payload: GeocodeRequest, x_api_key: str | None = Header(default=None
     google_last_error: str | None = None
 
     try:
-        if google_key:
+        if google_key and _google_geocode_enabled():
             for q in attempts:
                 zero_for_this_q = False
                 for params in (
@@ -173,31 +181,32 @@ def geocode(payload: GeocodeRequest, x_api_key: str | None = Header(default=None
                 }
                 if google_last_error:
                     out["note"] = (
-                        "Google Geocoding was not used successfully; coordinates from OpenStreetMap Nominatim. "
-                        "Enable Geocoding API on your Google project for primary results."
+                        "Coordinates from OpenStreetMap Nominatim (Google Geocoding did not return a result). "
+                        "No Google Cloud account is required. Remove GOOGLE_MAPS_API_KEY or set GEOCODE_USE_GOOGLE=0 "
+                        "to use OSM only."
                     )
-                elif not google_key:
+                elif not google_key or not _google_geocode_enabled():
                     out["note"] = (
-                        "No GOOGLE_MAPS_API_KEY; using OpenStreetMap Nominatim. "
-                        "Set a Google key + enable Geocoding API for Google results."
+                        "Geocoding uses OpenStreetMap Nominatim only — no Google Cloud account or API key needed."
                     )
                 return out
 
         hint_parts = [
-            "No geocoding result. ",
+            "No geocoding result for this query. Try a more specific place name (e.g. \"Dubai Marina, UAE\"). ",
         ]
-        if google_last_error:
+        if google_last_error and _google_geocode_enabled():
             hint_parts.append(
-                f"Google: {google_last_error} — In Google Cloud Console open APIs & Services → Library, "
-                "search **Geocoding API**, click **Enable**, and ensure billing is active if required. "
-                "Your key must allow the Geocoding API (API key restrictions). "
+                f"Google error: {google_last_error}. "
+                "If you do not use Google Cloud, remove GOOGLE_MAPS_API_KEY from the API service env or set "
+                "GEOCODE_USE_GOOGLE=0 so only OpenStreetMap is used. "
             )
-        elif google_key:
+        elif google_key and _google_geocode_enabled():
             hint_parts.append("Google returned no results for this query. ")
-        else:
-            hint_parts.append("GOOGLE_MAPS_API_KEY is not set on the API service. ")
+        elif not google_key:
+            hint_parts.append("Using OSM Nominatim (no Google key). ")
         hint_parts.append(
-            "You can also rely on the OSM fallback: keep GEOCODE_FALLBACK_NOMINATIM=1 (default) on the API."
+            "Ensure GEOCODE_FALLBACK_NOMINATIM=1 (default) on the API. "
+            "Geocoding does not require Google Cloud when that fallback is on."
         )
 
         err_payload: dict = {

@@ -258,13 +258,18 @@ def main() -> None:
 
     st.title("Talabat UAE Area Intel")
     st.caption(
-        "English interface and English map search results for international teams. "
-        "Address search uses English place names; basemaps favour Latin-script labels (Esri). "
-        "Restaurant names in the table follow Talabat's listings (Arabic or English depending on vendor)."
+        "**No Google Cloud required** for search or scraping. "
+        "Place search uses OpenStreetMap (Nominatim) unless you add a Maps API key and enable Google Geocoding. "
+        "Maps use Esri tiles (English-friendly labels). "
+        "Restaurant names in the table come from Talabat."
     )
 
     with st.sidebar:
         st.header("Scrape Controls")
+        st.caption(
+            "Address search works **without** Google: the API uses OpenStreetMap geocoding by default. "
+            "Remove `GOOGLE_MAPS_API_KEY` from Render or set `GEOCODE_USE_GOOGLE=0` if you do not use GCP."
+        )
         api_base_url = get_api_base_url()
         api_key = get_frontend_api_key()
         headers = {"X-API-Key": api_key} if api_key else {}
@@ -385,10 +390,10 @@ def main() -> None:
 
     st.success(f"Collected {len(df):,} unique vendor rows (deduped by URL).")
     st.caption(
-        "More filled columns: API env `RESTAURANT_DETAIL_ENRICH_MAX` (vendor pages), "
-        "`GOOGLE_PLACES_ENRICH=1` + Places API on the same key as geocode (phone / Google name), "
-        "`SCRAPER_AGGRESSIVE_LISTING=1` or `SCRAPER_LISTING_SCROLL_ROUNDS` for longer listing scroll. "
-        "If runs time out, lower `max_sample_points` in the app code or raise `SCRAPER_WALL_CLOCK_SEC` on Render."
+        "More filled columns: API env `RESTAURANT_DETAIL_ENRICH_MAX` (Talabat vendor pages). "
+        "Optional Google-only enrichment: `GOOGLE_PLACES_ENRICH=1` + a Maps key with Places API (skip if you have no GCP). "
+        "`SCRAPER_AGGRESSIVE_LISTING=1` or `SCRAPER_LISTING_SCROLL_ROUNDS` for deeper listing scroll. "
+        "If runs time out, lower `max_sample_points` or raise `SCRAPER_WALL_CLOCK_SEC` on Render."
     )
     m1, m2 = st.columns(2)
     m1.metric("Total vendors", int(len(df)))
