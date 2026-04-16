@@ -43,20 +43,31 @@ def _bounds_for_radius(lat: float, lng: float, radius_km: float, pad: float = 1.
 
 
 def _add_esri_basemaps(fmap: folium.Map) -> None:
-    """Raster tiles with English-centric labels in UAE (same source as pin map)."""
+    """Esri street + satellite; satellite is imagery-only until the reference overlay is on."""
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
         attr=(
             'Tiles © <a href="https://www.esri.com/">Esri</a> '
             "(HERE, Garmin, OpenStreetMap contributors, GIS user community)"
         ),
-        name="Street map (English)",
+        name="Street map (roads & names · English)",
         max_zoom=19,
     ).add_to(fmap)
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         attr='Tiles © <a href="https://www.esri.com/">Esri</a> (Earthstar Geographics, USDA, USGS, AeroGRID, IGN)',
-        name="Satellite (Esri)",
+        name="Satellite (photos only — no text on this layer)",
+        max_zoom=19,
+    ).add_to(fmap)
+    # Raster imagery has no labels; this Esri reference layer adds place / boundary names (English-biased).
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+        attr='Labels © <a href="https://www.esri.com/">Esri</a>',
+        name="+ English place & boundary names (overlay — use with satellite)",
+        overlay=True,
+        control=True,
+        opacity=0.92,
+        show=True,
         max_zoom=19,
     ).add_to(fmap)
 
@@ -112,7 +123,7 @@ def render_pin_map(radius_km: float) -> None:
         location=[lat, lng],
         tooltip=f"Pin · {radius_km:g} km search",
         popup=folium.Popup(popup_html, max_width=280),
-        icon=folium.Icon(color="blue", icon="info-sign"),
+        icon=folium.Icon(color="blue"),
     ).add_to(area)
 
     Fullscreen(position="topright", title="Fullscreen", title_cancel="Exit Full Screen").add_to(fmap)
@@ -129,9 +140,10 @@ def render_pin_map(radius_km: float) -> None:
     fmap.fit_bounds([sw, ne], padding=(24, 24), max_zoom=16)
 
     st.caption(
-        "The view frames your pin and scrape radius when they change. "
-        "Basemaps use Esri (English labels at all zoom levels). "
-        "Click to move the pin. Use the layer control (street / satellite), fullscreen, and cursor coordinates (bottom-left)."
+        "**Satellite** is aerial imagery only (no street names on that layer). "
+        "Use **Street map** for full road labels, or keep **Satellite** and leave the "
+        "**+ English place & boundary names** overlay checked (added on top). "
+        "Click to move the pin; layer control is top-right."
     )
     out = st_folium(
         fmap,
@@ -195,7 +207,7 @@ def render_heatmap(df: pd.DataFrame, pin_lat: float, pin_lng: float, radius_km: 
     folium.Marker(
         location=[float(pin_lat), float(pin_lng)],
         tooltip="Search pin",
-        icon=folium.Icon(color="blue", icon="info-sign"),
+        icon=folium.Icon(color="blue"),
     ).add_to(fmap)
 
     Fullscreen(position="topright", title="Fullscreen", title_cancel="Exit Full Screen").add_to(fmap)
@@ -209,7 +221,10 @@ def render_heatmap(df: pd.DataFrame, pin_lat: float, pin_lng: float, radius_km: 
     ne = [max(lats) + pad_lat, max(lngs) + pad_lng]
     fmap.fit_bounds([sw, ne], padding=(28, 28), max_zoom=16)
 
-    st.caption("Same Esri street/satellite basemaps as the pin map (English labels). Heat layer shows vendor density.")
+    st.caption(
+        "Same basemaps as the pin map: **Street** has full labels; **Satellite** is photos-only unless the "
+        "**+ English place & boundary names** overlay is on. Heat layer shows vendor density."
+    )
     st_folium(
         fmap,
         width=1400,
