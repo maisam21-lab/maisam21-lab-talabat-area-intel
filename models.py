@@ -43,6 +43,11 @@ class RestaurantRecord:
     currency: str
     recently_added_90d: str
     has_offers: str
+    # From __NEXT_DATA__ when Talabat exposes counts; otherwise empty
+    estimated_orders: str
+    # Google Places (Text Search + Details) when GOOGLE_PLACES_ENRICH is enabled
+    google_place_id: str
+    google_maps_name: str
     lat: float
     lng: float
 

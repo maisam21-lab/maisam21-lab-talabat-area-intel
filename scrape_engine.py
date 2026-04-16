@@ -14,6 +14,7 @@ from playwright.async_api import async_playwright
 from geo_utils import generate_points_in_radius, haversine_km
 from models import RestaurantRecord, make_branch_sku
 from next_data_extract import normalize_talabat_url, parse_next_data_script, paths_from_next_data_json
+from places_enrich import enrich_records_with_google_places
 
 # English listing URL first (more consistent markup); fallback handled in scrape_one_point.
 BASE_URL_PRIMARY = "https://www.talabat.com/en/uae/restaurants"
@@ -260,6 +261,9 @@ async def extract_restaurants_from_anchor_links(
                 currency="",
                 recently_added_90d="",
                 has_offers="",
+                estimated_orders="",
+                google_place_id="",
+                google_maps_name="",
                 lat=lat,
                 lng=lng,
             )
@@ -332,6 +336,9 @@ async def extract_restaurants_from_next_data(
                 currency="",
                 recently_added_90d="",
                 has_offers="",
+                estimated_orders="",
+                google_place_id="",
+                google_maps_name="",
                 lat=sample_lat,
                 lng=sample_lng,
             )
@@ -486,6 +493,9 @@ async def extract_restaurants(
                     currency="",
                     recently_added_90d="",
                     has_offers="",
+                    estimated_orders="",
+                    google_place_id="",
+                    google_maps_name="",
                     lat=lat,
                     lng=lng,
                 )
@@ -610,6 +620,28 @@ def _walk_next_data_vendor_fields(obj: Any, acc: dict[str, list]) -> None:
                     "1",
                 ):
                     acc.setdefault("recent_90_yes", [True])
+                elif (
+                    any(
+                        x in kl
+                        for x in (
+                            "ordercount",
+                            "totalorders",
+                            "orderscount",
+                            "lifetimeorders",
+                            "completedorders",
+                            "deliveredorders",
+                            "vendororders",
+                            "restaurantorders",
+                        )
+                    )
+                    or ("order" in kl and "count" in kl and "id" not in kl)
+                ) and re.fullmatch(r"[\d,]+", vs.replace(" ", "")):
+                    try:
+                        n = int(vs.replace(",", "").replace(" ", ""))
+                        if 0 <= n < 10**12:
+                            acc.setdefault("order_counts", []).append(n)
+                    except ValueError:
+                        pass
                 elif "cuisine" in kl or kl in ("tags", "labels", "categories"):
                     if len(vs) > 1:
                         acc.setdefault("cuisines", []).append(vs[:800])
@@ -692,6 +724,15 @@ def _walk_next_data_vendor_fields(obj: Any, acc: dict[str, list]) -> None:
                 elif ("branch" in kl and "id" in kl) or kl.endswith("branchid"):
                     if fv > 0:
                         acc.setdefault("branch_ids", []).append(str(int(fv)))
+                elif (
+                    "order" in kl
+                    and "id" not in kl
+                    and any(x in kl for x in ("count", "total", "volume", "lifetime", "completed", "delivered"))
+                    and fv >= 0
+                    and fv < 10**12
+                    and fv == int(fv)
+                ):
+                    acc.setdefault("order_counts", []).append(int(fv))
                 elif kl in ("lat", "latitude") and -90 < fv < 90:
                     acc.setdefault("lats", []).append(fv)
                 elif kl in ("lng", "lon", "longitude") and -180 < fv < 180:
@@ -757,6 +798,7 @@ def _finalize_vendor_enrichment(acc: dict[str, list]) -> dict[str, str | float |
         "currency": "",
         "recently_added_90d": "",
         "has_offers": "",
+        "estimated_orders": "",
         "lat": None,
         "lng": None,
     }
@@ -872,6 +914,10 @@ def _finalize_vendor_enrichment(acc: dict[str, list]) -> dict[str, str | float |
         )
     out["currency"] = cur
 
+    oc = acc.get("order_counts", [])
+    if oc:
+        out["estimated_orders"] = str(max(oc))
+
     return out
 
 
@@ -984,6 +1030,8 @@ async def enrich_vendor_detail_pages(
             row.recently_added_90d = str(d["recently_added_90d"])
         if d.get("has_offers"):
             row.has_offers = str(d["has_offers"])
+        if d.get("estimated_orders"):
+            row.estimated_orders = str(d["estimated_orders"])
         lat, lng = d.get("lat"), d.get("lng")
         if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
             if -90 < float(lat) < 90 and -180 < float(lng) < 180:
@@ -1086,12 +1134,42 @@ def _pick_better_row(
             r.delivered_by_talabat,
             r.payment_methods,
             r.currency,
+            r.estimated_orders,
+            r.google_place_id,
+            r.google_maps_name,
         ):
             if (x or "").strip():
                 n += 1
         return n
 
     return b if meta_score(b) > meta_score(a) else a
+
+
+def _listing_scroll_params(rounds: int, wait_ms: int) -> tuple[int, int]:
+    """Tune scroll depth: env overrides, optional aggressive floor for more listing URLs (slower)."""
+    r, w = rounds, wait_ms
+    er = os.getenv("SCRAPER_LISTING_SCROLL_ROUNDS")
+    if er:
+        try:
+            r = int(er.strip())
+        except ValueError:
+            pass
+    ew = os.getenv("SCRAPER_LISTING_SCROLL_WAIT_MS")
+    if ew:
+        try:
+            w = int(ew.strip())
+        except ValueError:
+            pass
+    if os.getenv("SCRAPER_AGGRESSIVE_LISTING", "").strip().lower() in ("1", "true", "yes", "y", "on"):
+        try:
+            r = max(r, int(os.getenv("SCRAPER_LISTING_SCROLL_ROUNDS_AGGRESSIVE", "38")))
+        except ValueError:
+            r = max(r, 38)
+        try:
+            w = max(w, int(os.getenv("SCRAPER_LISTING_SCROLL_WAIT_MS_AGGRESSIVE", "1100")))
+        except ValueError:
+            w = max(w, 1100)
+    return max(1, r), max(200, w)
 
 
 def _cap_sample_points(points: list[tuple[float, float]], max_pts: int) -> list[tuple[float, float]]:
@@ -1127,6 +1205,7 @@ async def run_area_scrape(
     else:
         max_pts = int(os.getenv("MAX_SCRAPE_SAMPLE_POINTS", "2"))
     points = _cap_sample_points(points, max_pts)
+    scroll_rounds, scroll_wait_ms = _listing_scroll_params(scroll_rounds, scroll_wait_ms)
     sem = asyncio.Semaphore(concurrency)
     records: list[RestaurantRecord] = []
 
@@ -1180,6 +1259,8 @@ async def run_area_scrape(
         enrich_max = min(enrich_cap, budget)
         await enrich_vendor_detail_pages(browser, records, max_urls=enrich_max)
         await browser.close()
+
+    enrich_records_with_google_places(records)
 
     df = pd.DataFrame([r.to_dict() for r in records])
     if df.empty:
