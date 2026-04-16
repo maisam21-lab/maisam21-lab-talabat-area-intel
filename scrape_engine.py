@@ -1125,7 +1125,7 @@ async def run_area_scrape(
     if max_sample_points is not None:
         max_pts = max_sample_points
     else:
-        max_pts = int(os.getenv("MAX_SCRAPE_SAMPLE_POINTS", "3"))
+        max_pts = int(os.getenv("MAX_SCRAPE_SAMPLE_POINTS", "2"))
     points = _cap_sample_points(points, max_pts)
     sem = asyncio.Semaphore(concurrency)
     records: list[RestaurantRecord] = []
@@ -1173,7 +1173,11 @@ async def run_area_scrape(
                 else:
                     dedupe[ck] = _pick_better_row(pin_lat, pin_lng, cur, r)
         records = list(dedupe.values())
-        enrich_max = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "24"))
+        # Scale down vendor-page enrichment when many grid points (each listing + N enrich URLs is costly on Render).
+        enrich_cap = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "6"))
+        n_pts = max(1, len(points))
+        budget = max(2, 14 // n_pts)
+        enrich_max = min(enrich_cap, budget)
         await enrich_vendor_detail_pages(browser, records, max_urls=enrich_max)
         await browser.close()
 

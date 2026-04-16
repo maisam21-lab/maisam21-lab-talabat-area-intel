@@ -11,8 +11,8 @@ from scrape_engine import run_area_scrape
 
 app = FastAPI(title="Talabat Area Scraper API", version="1.0.0")
 
-# Hard cap so hosted proxies (e.g. Render) return JSON instead of 502 while upstream times out.
-_SCRAPE_WALL_SEC = float(os.getenv("SCRAPER_WALL_CLOCK_SEC", "85"))
+# Wall clock for one /scrape (Playwright + enrichment). Render free tier often ~100s HTTP limit; set env per plan.
+_SCRAPE_WALL_SEC = float(os.getenv("SCRAPER_WALL_CLOCK_SEC", "120"))
 
 
 def verify_api_key(x_api_key: str | None) -> None:
@@ -158,8 +158,9 @@ async def scrape(payload: ScrapeRequest, x_api_key: str | None = Header(default=
         raise HTTPException(
             status_code=504,
             detail=(
-                f"Scrape exceeded {_SCRAPE_WALL_SEC:.0f}s wall clock. "
-                "On Render, keep max_sample_points=1 or raise SCRAPER_WALL_CLOCK_SEC / run a larger worker."
+                f"Scrape exceeded {_SCRAPE_WALL_SEC:.0f}s wall clock (SCRAPER_WALL_CLOCK_SEC). "
+                "Lower Grid sample points in the app, set RESTAURANT_DETAIL_ENRICH_MAX smaller on the API, "
+                "or raise SCRAPER_WALL_CLOCK_SEC / upgrade Render if your tier allows longer HTTP requests."
             ),
         ) from None
     except Exception as exc:

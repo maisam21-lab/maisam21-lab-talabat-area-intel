@@ -247,10 +247,10 @@ def main() -> None:
             "Grid sample points",
             min_value=1,
             max_value=30,
-            value=4,
+            value=2,
             step=1,
-            help="Talabat listing is loaded once per browser location. Use 3–6 to mix several spots in your "
-            "radius so results change with area; higher values take longer on the API.",
+            help="Each point runs a full browser listing pass; values above 2–3 often hit API time limits on "
+            "hosted Render. Increase only on a larger worker or after raising SCRAPER_WALL_CLOCK_SEC.",
         )
 
     st.subheader("Interactive search map")
