@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import math
 import os
 
@@ -43,7 +44,6 @@ def render_pin_map(radius_km: float) -> None:
         zoom_start=12,
         zoom_control=True,
         control_scale=True,
-        attr_control=True,
     )
 
     folium.TileLayer(
@@ -83,9 +83,10 @@ def render_pin_map(radius_km: float) -> None:
         tooltip="Pin precision",
     ).add_to(area)
 
+    safe_label = html.escape(label)
     popup_html = (
         f"<div style='min-width:200px;font-size:13px'>"
-        f"<b style='color:#1e3a8a'>{label}</b><br>"
+        f"<b style='color:#1e3a8a'>{safe_label}</b><br>"
         f"<span style='color:#444'>{lat:.6f}, {lng:.6f}</span><br>"
         f"<span style='color:#64748b'>Radius: <b>{radius_km:g} km</b></span>"
         f"</div>"
@@ -94,16 +95,16 @@ def render_pin_map(radius_km: float) -> None:
         location=[lat, lng],
         tooltip=f"Pin · {radius_km:g} km search",
         popup=folium.Popup(popup_html, max_width=280),
-        icon=folium.Icon(color="darkblue", icon="map-marker"),
+        icon=folium.Icon(color="blue", icon="info-sign"),
     ).add_to(area)
 
-    Fullscreen(position="topright", title="Fullscreen", title_cancel="Exit").add_to(fmap)
+    Fullscreen(position="topright", title="Fullscreen", title_cancel="Exit Full Screen").add_to(fmap)
+    # num_digits only — lat_formatter/lng_formatter expect JS functions and can blank the map if misused.
     MousePosition(
         position="bottomleft",
         separator=" · ",
         prefix="Cursor: ",
-        lat_formatter="{:+.5f}",
-        lng_formatter="{:+.5f}",
+        num_digits=5,
     ).add_to(fmap)
     folium.LayerControl(position="topright", collapsed=False).add_to(fmap)
 
@@ -114,7 +115,14 @@ def render_pin_map(radius_km: float) -> None:
         "The view frames your pin and scrape radius when they change. "
         "Click to move the pin. Use the layer control (Light / Voyager), fullscreen, and cursor coordinates (bottom-left)."
     )
-    out = st_folium(fmap, width=None, height=520, use_container_width=True, returned_objects=["last_clicked"])
+    out = st_folium(
+        fmap,
+        width=1400,
+        height=520,
+        use_container_width=True,
+        returned_objects=["last_clicked"],
+        key="talabat_pin_map",
+    )
     if out and out.get("last_clicked"):
         st.session_state["pin_lat"] = float(out["last_clicked"]["lat"])
         st.session_state["pin_lng"] = float(out["last_clicked"]["lng"])
