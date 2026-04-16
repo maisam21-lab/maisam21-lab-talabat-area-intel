@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: talabat-area-scraper-api
+    env: docker
+    dockerfilePath: ./Dockerfile.api
+    autoDeploy: true
+    healthCheckPath: /health

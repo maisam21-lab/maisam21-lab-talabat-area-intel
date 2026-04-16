@@ -1,0 +1,9 @@
+streamlit
+playwright
+pandas
+pydeck
+folium
+streamlit-folium
+fastapi
+uvicorn
+requests
