@@ -80,7 +80,7 @@ def enrich_records_with_google_places(records: list[RestaurantRecord]) -> None:
         parts.append("United Arab Emirates")
         query = " ".join(parts)
 
-        params: dict[str, str] = {"query": query, "key": key}
+        params: dict[str, str] = {"query": query, "key": key, "language": "en"}
         try:
             ref_lat = float(row.lat)
             ref_lng = float(row.lng)
@@ -127,7 +127,12 @@ def enrich_records_with_google_places(records: list[RestaurantRecord]) -> None:
         try:
             dr = session.get(
                 DETAILS_URL,
-                params={"place_id": place_id, "fields": fields, "key": key},
+                params={
+                    "place_id": place_id,
+                    "fields": fields,
+                    "key": key,
+                    "language": "en",
+                },
                 timeout=14,
             )
             dr.raise_for_status()

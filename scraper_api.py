@@ -71,8 +71,14 @@ def geocode(payload: GeocodeRequest, x_api_key: str | None = Header(default=None
         for q in attempts:
             zero_for_this_q = False
             for params in (
-                {"address": q, "key": google_key, "region": "ae", "components": "country:AE"},
-                {"address": q, "key": google_key, "region": "ae"},
+                {
+                    "address": q,
+                    "key": google_key,
+                    "region": "ae",
+                    "components": "country:AE",
+                    "language": "en",
+                },
+                {"address": q, "key": google_key, "region": "ae", "language": "en"},
             ):
                 g_resp = requests.get(
                     "https://maps.googleapis.com/maps/api/geocode/json",

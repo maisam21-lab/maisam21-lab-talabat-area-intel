@@ -50,7 +50,7 @@ def _add_esri_basemaps(fmap: folium.Map) -> None:
             'Tiles © <a href="https://www.esri.com/">Esri</a> '
             "(HERE, Garmin, OpenStreetMap contributors, GIS user community)"
         ),
-        name="Street map (roads & names · English)",
+        name="Street map (English labels)",
         max_zoom=19,
     ).add_to(fmap)
     folium.TileLayer(
@@ -63,7 +63,7 @@ def _add_esri_basemaps(fmap: folium.Map) -> None:
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
         attr='Labels © <a href="https://www.esri.com/">Esri</a>',
-        name="+ English place & boundary names (overlay — use with satellite)",
+        name="Place names overlay (English · use with satellite)",
         overlay=True,
         control=True,
         opacity=0.92,
@@ -140,10 +140,8 @@ def render_pin_map(radius_km: float) -> None:
     fmap.fit_bounds([sw, ne], padding=(24, 24), max_zoom=16)
 
     st.caption(
-        "**Satellite** is aerial imagery only (no street names on that layer). "
-        "Use **Street map** for full road labels, or keep **Satellite** and leave the "
-        "**+ English place & boundary names** overlay checked (added on top). "
-        "Click to move the pin; layer control is top-right."
+        "**Satellite** is photos only (no street text). For English road names use **Street map**, "
+        "or keep **Place names overlay** on. Layer control: top-right. Click map to move pin."
     )
     out = st_folium(
         fmap,
@@ -222,8 +220,8 @@ def render_heatmap(df: pd.DataFrame, pin_lat: float, pin_lng: float, radius_km: 
     fmap.fit_bounds([sw, ne], padding=(28, 28), max_zoom=16)
 
     st.caption(
-        "Same basemaps as the pin map: **Street** has full labels; **Satellite** is photos-only unless the "
-        "**+ English place & boundary names** overlay is on. Heat layer shows vendor density."
+        "Same English-first basemaps as the pin map. **Street** = full English-style road labels; "
+        "**Satellite** + **Place names overlay** for labels. Heat = vendor density."
     )
     st_folium(
         fmap,
@@ -255,11 +253,15 @@ def get_api_base_url() -> str:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Talabat Area Intel", layout="wide")
+    st.set_page_config(page_title="Talabat Area Intel (English)", layout="wide")
     init_state()
 
     st.title("Talabat UAE Area Intel")
-    st.caption("Visual map pin + radius scraping + new branch tracking + heatmap.")
+    st.caption(
+        "English interface and English map search results for international teams. "
+        "Address search uses English place names; basemaps favour Latin-script labels (Esri). "
+        "Restaurant names in the table follow Talabat's listings (Arabic or English depending on vendor)."
+    )
 
     with st.sidebar:
         st.header("Scrape Controls")
