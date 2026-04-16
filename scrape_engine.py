@@ -11,6 +11,15 @@ from geo_utils import generate_points_in_radius
 from models import RestaurantRecord, make_branch_sku
 
 BASE_URL = "https://www.talabat.com/uae/restaurants"
+
+# Required for Chromium in Docker / Render (small /dev/shm, no user namespace sandbox).
+CHROMIUM_LAUNCH_ARGS = [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--disable-software-rasterizer",
+]
 CARD_SELECTORS = [
     '[data-testid*="restaurant"]',
     'a[href*="/restaurant/"]',
@@ -240,7 +249,10 @@ async def run_area_scrape(
     sem = asyncio.Semaphore(concurrency)
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(
+            headless=True,
+            args=CHROMIUM_LAUNCH_ARGS,
+        )
         done = 0
         total = len(points)
 
