@@ -14,6 +14,11 @@ from streamlit_folium import st_folium
 
 DEFAULT_PIN = (25.2048, 55.2708)
 
+# Match backend defaults (sidebar controls removed; tune via API env on Render if needed).
+_DEFAULT_STATUS_FILTER = "live"
+_DEFAULT_JUST_LANDED_ONLY = False
+_DEFAULT_MAX_SAMPLE_POINTS = 2
+
 
 def init_state() -> None:
     st.session_state.setdefault("pin_lat", DEFAULT_PIN[0])
@@ -234,24 +239,6 @@ def main() -> None:
                 st.error(f"Geocode failed via backend: {exc}")
 
         radius_km = st.number_input("Radius (km)", min_value=1.0, max_value=30.0, value=10.0, step=0.5)
-        status_filter = st.radio(
-            "Status filter",
-            ["live", "all", "closed"],
-            index=0,
-            horizontal=True,
-            key="status_filter_default_live",
-            help="Default is live: hide closed vendors (unknown rows still show). Use all or closed only when needed.",
-        )
-        just_landed_only = st.checkbox("Just Landed only", value=False)
-        max_sample_points = st.number_input(
-            "Grid sample points",
-            min_value=1,
-            max_value=30,
-            value=2,
-            step=1,
-            help="Each point runs a full browser listing pass; values above 2–3 often hit API time limits on "
-            "hosted Render. Increase only on a larger worker or after raising SCRAPER_WALL_CLOCK_SEC.",
-        )
 
     st.subheader("Interactive search map")
     render_pin_map(radius_km=radius_km)
@@ -274,9 +261,6 @@ def main() -> None:
             f"{float(st.session_state['pin_lat']):.6f}",
             f"{float(st.session_state['pin_lng']):.6f}",
             str(radius_km),
-            str(int(max_sample_points)),
-            status_filter,
-            str(bool(just_landed_only)),
         ]
     )
 
@@ -289,9 +273,9 @@ def main() -> None:
                 "pin_lat": float(st.session_state["pin_lat"]),
                 "pin_lng": float(st.session_state["pin_lng"]),
                 "radius_km": float(radius_km),
-                "status_filter": status_filter,
-                "just_landed_only": bool(just_landed_only),
-                "max_sample_points": int(max_sample_points),
+                "status_filter": _DEFAULT_STATUS_FILTER,
+                "just_landed_only": _DEFAULT_JUST_LANDED_ONLY,
+                "max_sample_points": _DEFAULT_MAX_SAMPLE_POINTS,
             }
             try:
                 response = requests.post(
@@ -331,7 +315,7 @@ def main() -> None:
         and st.session_state.get("results_fingerprint") != current_fingerprint
     ):
         st.warning(
-            "**Pin, radius, or sample settings changed** since the table below was built. "
+            "**Pin or radius changed** since the table below was built. "
             "Click **Start Scraping** again to refresh results for the current map."
         )
 
