@@ -172,7 +172,7 @@ def main() -> None:
                     f"{api_base_url.rstrip('/')}/scrape",
                     json=payload,
                     headers=headers,
-                    timeout=240,
+                    timeout=600,
                 )
                 if response.status_code >= 400:
                     detail = response.text[:500]

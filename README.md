@@ -55,6 +55,8 @@ Geocode endpoint:
 - Set `ARCGIS_API_KEY` on Render service env vars (preferred for backend `/geocode`).
 - Optional fallback: `GOOGLE_MAPS_API_KEY`.
 - Set `SCRAPER_API_KEY` on Render service env vars.
+- Optional tuning (Render stability):
+  - `MAX_SCRAPE_SAMPLE_POINTS` (default `8`) caps how many pin samples one `/scrape` run will visit (raise carefully; long runs can hit HTTP timeouts).
 - Set same `SCRAPER_API_KEY` in Streamlit secrets:
 
 ```toml

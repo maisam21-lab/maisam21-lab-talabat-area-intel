@@ -24,12 +24,13 @@ class ScrapeRequest(BaseModel):
     pin_lat: float
     pin_lng: float
     radius_km: float = Field(default=5.0, ge=1.0, le=30.0)
-    spacing_km: float = Field(default=1.0, ge=0.5, le=3.0)
-    concurrency: int = Field(default=3, ge=1, le=6)
+    # Wider spacing + low concurrency defaults reduce Render 502/timeouts on long runs.
+    spacing_km: float = Field(default=2.0, ge=0.5, le=3.0)
+    concurrency: int = Field(default=1, ge=1, le=6)
     status_filter: str = Field(default="all")
     just_landed_only: bool = False
-    scroll_rounds: int = Field(default=22, ge=6, le=60)
-    scroll_wait_ms: int = Field(default=1300, ge=600, le=3000)
+    scroll_rounds: int = Field(default=10, ge=4, le=60)
+    scroll_wait_ms: int = Field(default=900, ge=600, le=3000)
 
 
 class GeocodeRequest(BaseModel):

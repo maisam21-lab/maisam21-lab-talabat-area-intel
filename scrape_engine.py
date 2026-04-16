@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import math
+import os
 import re
 from datetime import datetime, timezone
 
@@ -222,8 +224,8 @@ async def scrape_one_point(
     page = await context.new_page()
     try:
         await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=90000)
-        await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(2500)
+        # Avoid networkidle on heavy SPAs: it can hang and cause gateway timeouts on Render.
+        await page.wait_for_timeout(3500)
         await click_just_landed_if_requested(page, just_landed_only)
         await auto_scroll(page, rounds=scroll_rounds, wait_ms=scroll_wait_ms)
         return await extract_restaurants(page, pin_lat, pin_lng, radius_km, sample_lat, sample_lng)
@@ -231,6 +233,19 @@ async def scrape_one_point(
         return []
     finally:
         await context.close()
+
+
+def _cap_sample_points(points: list[tuple[float, float]], max_pts: int) -> list[tuple[float, float]]:
+    """Subsample grid points to stay within Render time/memory limits."""
+    if max_pts < 1:
+        max_pts = 1
+    if len(points) <= max_pts:
+        return points
+    step = max(1, math.ceil(len(points) / max_pts))
+    sampled = points[::step]
+    if len(sampled) > max_pts:
+        sampled = sampled[:max_pts]
+    return list(dict.fromkeys(sampled))
 
 
 async def run_area_scrape(
@@ -246,6 +261,8 @@ async def run_area_scrape(
     progress_cb=None,
 ) -> pd.DataFrame:
     points = generate_points_in_radius(pin_lat, pin_lng, radius_km, spacing_km)
+    max_pts = int(os.getenv("MAX_SCRAPE_SAMPLE_POINTS", "8"))
+    points = _cap_sample_points(points, max_pts)
     sem = asyncio.Semaphore(concurrency)
 
     async with async_playwright() as p:
