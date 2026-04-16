@@ -48,6 +48,8 @@ class RestaurantRecord:
     # Google Places (Text Search + Details) when GOOGLE_PLACES_ENRICH is enabled
     google_place_id: str
     google_maps_name: str
+    # UAE city preset used for this run (e.g. Dubai); empty if custom pin-only scrape
+    scrape_city: str
     lat: float
     lng: float
 

@@ -11,6 +11,8 @@ import streamlit as st
 from folium.plugins import Fullscreen, HeatMap, MousePosition
 from streamlit_folium import st_folium
 
+from uae_cities import UAE_CITY_DISPLAY, UAE_CITY_PRESETS
+
 DEFAULT_PIN = (25.2048, 55.2708)
 
 # Match backend defaults (sidebar controls removed; tune via API env on Render if needed).
@@ -22,6 +24,8 @@ _DEFAULT_SPACING_KM = 1.5
 _DEFAULT_SCROLL_ROUNDS = 18
 _DEFAULT_SCROLL_WAIT_MS = 900
 _DEFAULT_CONCURRENCY = 1
+
+_CITY_SLUGS = ["dubai", "sharjah", "abudhabi", "alain", "ajman"]
 
 
 def init_state() -> None:
@@ -72,10 +76,17 @@ def _add_esri_basemaps(fmap: folium.Map) -> None:
     ).add_to(fmap)
 
 
-def render_pin_map(radius_km: float) -> None:
-    lat = float(st.session_state["pin_lat"])
-    lng = float(st.session_state["pin_lng"])
-    label = str(st.session_state.get("pin_label") or "Search pin")
+def render_pin_map(
+    radius_km: float,
+    *,
+    pin_lat: float | None = None,
+    pin_lng: float | None = None,
+    pin_label: str | None = None,
+    lock_pin: bool = False,
+) -> None:
+    lat = float(pin_lat if pin_lat is not None else st.session_state["pin_lat"])
+    lng = float(pin_lng if pin_lng is not None else st.session_state["pin_lng"])
+    label = str(pin_label if pin_label is not None else st.session_state.get("pin_label") or "Search pin")
 
     fmap = folium.Map(
         location=[lat, lng],
@@ -151,7 +162,7 @@ def render_pin_map(radius_km: float) -> None:
         returned_objects=["last_clicked"],
         key="talabat_pin_map",
     )
-    if out and out.get("last_clicked"):
+    if out and out.get("last_clicked") and not lock_pin:
         st.session_state["pin_lat"] = float(out["last_clicked"]["lat"])
         st.session_state["pin_lng"] = float(out["last_clicked"]["lng"])
         st.session_state["pin_label"] = "Custom pin (map)"
@@ -258,23 +269,68 @@ def main() -> None:
 
     st.title("Talabat UAE Area Intel")
     st.caption(
-        "**No Google Cloud required** for search or scraping. "
-        "Place search uses OpenStreetMap (Nominatim) unless you add a Maps API key and enable Google Geocoding. "
-        "Maps use Esri tiles (English-friendly labels). "
-        "Restaurant names in the table come from Talabat."
+        "**KitchenPark / expansion analytics:** compare cities for outbound acquisition using cuisine, ratings, "
+        "delivery signals, and coverage. **No Google Cloud required** for search or scraping. "
+        "Maps use Esri (English-friendly labels)."
     )
 
     with st.sidebar:
         st.header("Scrape Controls")
         st.caption(
-            "Address search works **without** Google: the API uses OpenStreetMap geocoding by default. "
-            "Remove `GOOGLE_MAPS_API_KEY` from Render or set `GEOCODE_USE_GOOGLE=0` if you do not use GCP."
+            "Address search works **without** Google (OpenStreetMap). "
+            "Remove `GOOGLE_MAPS_API_KEY` or set `GEOCODE_USE_GOOGLE=0` if you do not use GCP."
         )
         api_base_url = get_api_base_url()
         api_key = get_frontend_api_key()
         headers = {"X-API-Key": api_key} if api_key else {}
-        geocode_query = st.text_input("Search place/address (UAE)", value="")
-        geocode_btn = st.button("Set Pin from Search", use_container_width=True)
+
+        area_mode = st.radio(
+            "Area mode",
+            ["UAE city (KitchenPark)", "Custom pin"],
+            index=0,
+            help="City mode uses fixed UAE centers (Dubai, Sharjah, Abu Dhabi, Al Ain, Ajman). "
+            "Custom pin uses the map and manual coordinates.",
+        )
+        is_city_mode = area_mode.startswith("UAE")
+        city_key = "dubai"
+        city_lat, city_lng = DEFAULT_PIN[0], DEFAULT_PIN[1]
+        city_suggested_r = 12.0
+        if is_city_mode:
+            city_key = st.selectbox(
+                "City",
+                _CITY_SLUGS,
+                format_func=lambda k: UAE_CITY_DISPLAY[k],
+                index=0,
+            )
+            city_lat, city_lng, city_suggested_r = UAE_CITY_PRESETS[city_key]
+            st.caption(f"Suggested radius for this emirate: **{city_suggested_r:g} km** (adjust below).")
+            st.session_state["pin_lat"] = float(city_lat)
+            st.session_state["pin_lng"] = float(city_lng)
+            st.session_state["pin_label"] = f"{UAE_CITY_DISPLAY[city_key]} (city preset)"
+
+        dedupe_by_url = st.checkbox(
+            "Dedupe: one row per vendor URL",
+            value=False,
+            help="Off (default): keep every listing row — same brand can appear for different branches / grid samples. "
+            "On: collapse to one row per restaurant link.",
+        )
+
+        radius_km = st.number_input(
+            "Radius (km)",
+            min_value=1.0,
+            max_value=40.0,
+            value=float(city_suggested_r if is_city_mode else 10.0),
+            step=0.5,
+            key="scrape_radius_km_widget",
+        )
+
+        if not is_city_mode:
+            geocode_query = st.text_input("Search place/address (UAE)", value="")
+            geocode_btn = st.button("Set Pin from Search", use_container_width=True)
+        else:
+            geocode_query = ""
+            geocode_btn = False
+
         if geocode_btn:
             try:
                 g_response = requests.post(
@@ -303,26 +359,45 @@ def main() -> None:
             except Exception as exc:
                 st.error(f"Geocode failed via backend: {exc}")
 
-        radius_km = st.number_input("Radius (km)", min_value=1.0, max_value=30.0, value=10.0, step=0.5)
-
     st.subheader("Interactive search map")
-    render_pin_map(radius_km=radius_km)
+    if is_city_mode:
+        render_pin_map(
+            radius_km,
+            pin_lat=float(city_lat),
+            pin_lng=float(city_lng),
+            pin_label=UAE_CITY_DISPLAY[city_key],
+            lock_pin=True,
+        )
+    else:
+        render_pin_map(radius_km)
 
-    # Manual pin override moved below the map as requested.
-    st.subheader("Manual Pin Override")
-    mp1, mp2 = st.columns(2)
-    with mp1:
-        st.session_state["pin_lat"] = st.number_input("Pin lat", value=float(st.session_state["pin_lat"]), format="%.6f")
-    with mp2:
-        st.session_state["pin_lng"] = st.number_input("Pin lng", value=float(st.session_state["pin_lng"]), format="%.6f")
+    if not is_city_mode:
+        st.subheader("Manual Pin Override")
+        mp1, mp2 = st.columns(2)
+        with mp1:
+            st.session_state["pin_lat"] = st.number_input(
+                "Pin lat", value=float(st.session_state["pin_lat"]), format="%.6f"
+            )
+        with mp2:
+            st.session_state["pin_lng"] = st.number_input(
+                "Pin lng", value=float(st.session_state["pin_lng"]), format="%.6f"
+            )
+    else:
+        st.caption("Switch to **Custom pin** to move the pin by hand or use geocode search.")
 
     st.subheader("Run")
-    st.write(f"Current pin: `{st.session_state['pin_lat']:.6f}, {st.session_state['pin_lng']:.6f}`")
-    st.write(f"Radius: `{radius_km} km`")
+    if is_city_mode:
+        st.write(f"**City:** `{UAE_CITY_DISPLAY[city_key]}` · center `{city_lat:.6f}, {city_lng:.6f}`")
+    else:
+        st.write(f"Current pin: `{st.session_state['pin_lat']:.6f}, {st.session_state['pin_lng']:.6f}`")
+    st.write(f"Radius: `{radius_km} km` · Dedupe by URL: `{dedupe_by_url}`")
     run = st.button("Start Scraping", type="primary", use_container_width=True)
 
     current_fingerprint = "|".join(
         [
+            area_mode,
+            city_key if is_city_mode else "custom",
+            str(dedupe_by_url),
             f"{float(st.session_state['pin_lat']):.6f}",
             f"{float(st.session_state['pin_lng']):.6f}",
             str(radius_km),
@@ -335,8 +410,6 @@ def main() -> None:
 
         with st.spinner("Scraping..."):
             payload = {
-                "pin_lat": float(st.session_state["pin_lat"]),
-                "pin_lng": float(st.session_state["pin_lng"]),
                 "radius_km": float(radius_km),
                 "spacing_km": _DEFAULT_SPACING_KM,
                 "concurrency": _DEFAULT_CONCURRENCY,
@@ -345,7 +418,16 @@ def main() -> None:
                 "status_filter": _DEFAULT_STATUS_FILTER,
                 "just_landed_only": _DEFAULT_JUST_LANDED_ONLY,
                 "max_sample_points": _DEFAULT_MAX_SAMPLE_POINTS,
+                "dedupe_by_vendor_url": dedupe_by_url,
             }
+            if is_city_mode:
+                payload["city"] = city_key
+                payload["pin_lat"] = float(city_lat)
+                payload["pin_lng"] = float(city_lng)
+            else:
+                payload["city"] = None
+                payload["pin_lat"] = float(st.session_state["pin_lat"])
+                payload["pin_lng"] = float(st.session_state["pin_lng"])
             try:
                 response = requests.post(
                     f"{api_base_url.rstrip('/')}/scrape",
@@ -358,6 +440,8 @@ def main() -> None:
                     raise RuntimeError(f"{response.status_code} {response.reason}: {detail}")
                 api_data = response.json()
                 df = pd.DataFrame(api_data.get("records", []))
+                st.session_state["last_dedupe_by_url"] = bool(api_data.get("dedupe_by_vendor_url", False))
+                st.session_state["last_scrape_city"] = api_data.get("city")
                 progress.progress(1.0)
                 status_box.info("Remote scrape completed")
             except Exception as exc:
@@ -384,11 +468,18 @@ def main() -> None:
         and st.session_state.get("results_fingerprint") != current_fingerprint
     ):
         st.warning(
-            "**Pin or radius changed** since the table below was built. "
-            "Click **Start Scraping** again to refresh results for the current map."
+            "**Area settings changed** since the table below was built. "
+            "Click **Start Scraping** again to refresh."
         )
 
-    st.success(f"Collected {len(df):,} unique vendor rows (deduped by URL).")
+    dedupe_done = bool(st.session_state.get("last_dedupe_by_url", False))
+    if dedupe_done:
+        st.success(f"Collected **{len(df):,}** rows (one row per vendor URL).")
+    else:
+        st.success(
+            f"Collected **{len(df):,}** listing rows (dedupe **off** — same brand may appear for branches / samples). "
+            "Use `scrape_city` and `branch_sku` for analysis."
+        )
     st.caption(
         "More filled columns: API env `RESTAURANT_DETAIL_ENRICH_MAX` (Talabat vendor pages). "
         "Optional Google-only enrichment: `GOOGLE_PLACES_ENRICH=1` + a Maps key with Places API (skip if you have no GCP). "
@@ -396,16 +487,13 @@ def main() -> None:
         "If runs time out, lower `max_sample_points` or raise `SCRAPER_WALL_CLOCK_SEC` on Render."
     )
     m1, m2 = st.columns(2)
-    m1.metric("Total vendors", int(len(df)))
+    m1.metric("Rows in export", int(len(df)))
     m2.metric("Not closed", int((df["status"] != "closed").sum()))
 
     st.dataframe(df, use_container_width=True, height=420)
-    render_heatmap(
-        df,
-        pin_lat=float(st.session_state["pin_lat"]),
-        pin_lng=float(st.session_state["pin_lng"]),
-        radius_km=float(radius_km),
-    )
+    _hlat = float(city_lat) if is_city_mode else float(st.session_state["pin_lat"])
+    _hlng = float(city_lng) if is_city_mode else float(st.session_state["pin_lng"])
+    render_heatmap(df, pin_lat=_hlat, pin_lng=_hlng, radius_km=float(radius_km))
 
     c1, c2 = st.columns(2)
     c1.download_button(

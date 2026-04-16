@@ -8,6 +8,7 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from scrape_engine import run_area_scrape
+from uae_cities import resolve_city
 
 app = FastAPI(title="Talabat Area Scraper API", version="1.0.0")
 
@@ -28,9 +29,9 @@ def verify_api_key(x_api_key: str | None) -> None:
 
 
 class ScrapeRequest(BaseModel):
-    pin_lat: float
-    pin_lng: float
-    radius_km: float = Field(default=5.0, ge=1.0, le=30.0)
+    pin_lat: float = Field(default=25.2048, description="Search center latitude (ignored when city is set)")
+    pin_lng: float = Field(default=55.2708, description="Search center longitude (ignored when city is set)")
+    radius_km: float = Field(default=12.0, ge=1.0, le=40.0)
     # Wider spacing + low concurrency defaults reduce Render 502/timeouts on long runs.
     spacing_km: float = Field(default=1.5, ge=0.5, le=3.0)
     concurrency: int = Field(default=1, ge=1, le=6)
@@ -41,6 +42,16 @@ class ScrapeRequest(BaseModel):
     scroll_wait_ms: int = Field(default=900, ge=400, le=3000)
     # More points = longer runs; omit to use MAX_SCRAPE_SAMPLE_POINTS env (default 1).
     max_sample_points: int | None = Field(default=None, ge=1, le=200)
+    # KitchenPark / multi-city expansion: dubai | sharjah | abudhabi | alain | ajman — overrides pin to city center.
+    city: str | None = Field(
+        default=None,
+        description="Optional UAE city preset (centers the scrape; use with radius_km)",
+    )
+    # False = keep duplicate vendor URLs from different grid samples (branches / areas for acquisition analysis).
+    dedupe_by_vendor_url: bool = Field(
+        default=False,
+        description="If true, collapse to one row per vendor URL. If false, keep all listing rows.",
+    )
 
 
 class GeocodeRequest(BaseModel):
@@ -228,11 +239,27 @@ async def scrape(payload: ScrapeRequest, x_api_key: str | None = Header(default=
     verify_api_key(x_api_key)
     if payload.status_filter not in {"all", "live", "closed"}:
         raise HTTPException(status_code=400, detail="status_filter must be one of: all, live, closed")
+
+    pin_lat = float(payload.pin_lat)
+    pin_lng = float(payload.pin_lng)
+    scrape_city_label = ""
+    if payload.city and str(payload.city).strip():
+        resolved = resolve_city(payload.city)
+        if not resolved:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Unknown city. Use one of: dubai, sharjah, abudhabi, alain, ajman "
+                    "(or aliases such as 'Abu Dhabi', 'Al Ain')."
+                ),
+            )
+        pin_lat, pin_lng, _default_radius, scrape_city_label = resolved
+
     try:
         df = await asyncio.wait_for(
             run_area_scrape(
-                pin_lat=payload.pin_lat,
-                pin_lng=payload.pin_lng,
+                pin_lat=pin_lat,
+                pin_lng=pin_lng,
                 radius_km=payload.radius_km,
                 spacing_km=payload.spacing_km,
                 concurrency=payload.concurrency,
@@ -242,11 +269,22 @@ async def scrape(payload: ScrapeRequest, x_api_key: str | None = Header(default=
                 scroll_wait_ms=payload.scroll_wait_ms,
                 progress_cb=None,
                 max_sample_points=payload.max_sample_points,
+                dedupe_by_vendor_url=payload.dedupe_by_vendor_url,
+                scrape_city=scrape_city_label,
             ),
             timeout=_SCRAPE_WALL_SEC,
         )
         records = df.to_dict(orient="records")
-        return {"count": len(records), "records": records}
+        out: dict = {
+            "count": len(records),
+            "records": records,
+            "dedupe_by_vendor_url": payload.dedupe_by_vendor_url,
+            "pin_lat": pin_lat,
+            "pin_lng": pin_lng,
+        }
+        if scrape_city_label:
+            out["city"] = scrape_city_label
+        return out
     except TimeoutError:
         raise HTTPException(
             status_code=504,

@@ -264,6 +264,7 @@ async def extract_restaurants_from_anchor_links(
                 estimated_orders="",
                 google_place_id="",
                 google_maps_name="",
+                scrape_city="",
                 lat=lat,
                 lng=lng,
             )
@@ -339,6 +340,7 @@ async def extract_restaurants_from_next_data(
                 estimated_orders="",
                 google_place_id="",
                 google_maps_name="",
+                scrape_city="",
                 lat=sample_lat,
                 lng=sample_lng,
             )
@@ -496,6 +498,7 @@ async def extract_restaurants(
                     estimated_orders="",
                     google_place_id="",
                     google_maps_name="",
+                    scrape_city="",
                     lat=lat,
                     lng=lng,
                 )
@@ -1197,6 +1200,9 @@ async def run_area_scrape(
     scroll_wait_ms: int,
     progress_cb=None,
     max_sample_points: int | None = None,
+    *,
+    dedupe_by_vendor_url: bool = False,
+    scrape_city: str = "",
 ) -> pd.DataFrame:
     points = generate_points_in_radius(pin_lat, pin_lng, radius_km, spacing_km)
     # Multiple samples merge different listing slices; default 3 balances area coverage vs Render timeouts.
@@ -1239,19 +1245,29 @@ async def run_area_scrape(
 
         batches = await asyncio.gather(*[worker(pt) for pt in points])
 
-        dedupe: dict[str, RestaurantRecord] = {}
-        for batch in batches:
-            for r in batch:
-                ck = _canonical_vendor_url(r.restaurant_url)
-                if not ck:
-                    dedupe[r.branch_sku] = r
-                    continue
-                cur = dedupe.get(ck)
-                if cur is None:
-                    dedupe[ck] = r
-                else:
-                    dedupe[ck] = _pick_better_row(pin_lat, pin_lng, cur, r)
-        records = list(dedupe.values())
+        if dedupe_by_vendor_url:
+            dedupe: dict[str, RestaurantRecord] = {}
+            for batch in batches:
+                for r in batch:
+                    ck = _canonical_vendor_url(r.restaurant_url)
+                    if not ck:
+                        dedupe[r.branch_sku] = r
+                        continue
+                    cur = dedupe.get(ck)
+                    if cur is None:
+                        dedupe[ck] = r
+                    else:
+                        dedupe[ck] = _pick_better_row(pin_lat, pin_lng, cur, r)
+            records = list(dedupe.values())
+        else:
+            records = []
+            for batch in batches:
+                records.extend(batch)
+
+        city_tag = (scrape_city or "").strip()
+        if city_tag:
+            for r in records:
+                r.scrape_city = city_tag
         # Scale down vendor-page enrichment when many grid points (each listing + N enrich URLs is costly on Render).
         enrich_cap = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "12"))
         n_pts = max(1, len(points))
