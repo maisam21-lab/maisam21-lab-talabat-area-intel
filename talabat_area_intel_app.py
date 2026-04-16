@@ -196,8 +196,9 @@ def main() -> None:
                 "status **all**, and Just Landed **off**."
             )
             st.caption(
-                "If this persists, the listing page may require a delivery address on Talabat’s side, "
-                "or the session was blocked — check Render logs for the scrape request."
+                "Empty results usually mean this automation did not reach the same page state as a manual visit "
+                "(e.g. location, timing, or our extraction path). Check the Render API logs for that request and "
+                "confirm the latest backend commit is deployed."
             )
         else:
             st.info("No results yet. Set pin and click Start Scraping.")
