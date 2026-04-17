@@ -1,0 +1,16 @@
+---
+description: After implementing agreed changes, commit and push to origin so Render/deploy stays in sync.
+alwaysApply: true
+---
+
+# Git: commit and push agreed changes
+
+When you and the user agree on a batch of code or config changes in this repo:
+
+1. Stage all relevant files (`git add` for the touched paths, or `git add -A` when the whole change set is intentional).
+2. Write a clear commit message (what changed and why, in full sentences).
+3. Run `git commit` and `git push` to `origin` on the current branch (usually `main`), unless the user explicitly asks to skip push or use a feature branch.
+
+Do not leave agreed work only on disk without committing—deployed apps (e.g. Render) track the remote.
+
+If push fails (auth, network), report the error and what remains to do; do not claim the push succeeded.

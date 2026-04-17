@@ -5,3 +5,6 @@ services:
     dockerfilePath: ./Dockerfile.api
     autoDeploy: true
     healthCheckPath: /health
+    envVars:
+      - key: SCRAPER_WALL_CLOCK_SEC
+        value: "600"

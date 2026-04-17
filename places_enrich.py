@@ -20,6 +20,18 @@ def _truthy(val: str | None) -> bool:
     return (val or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def google_places_enrich_effective(force: bool | None) -> bool:
+    """Whether Places enrichment should run for this scrape (per-request override or env)."""
+    if force is False:
+        return False
+    key = (os.getenv("GOOGLE_MAPS_API_KEY") or "").strip()
+    if not key:
+        return False
+    if force is True:
+        return True
+    return _truthy(os.getenv("GOOGLE_PLACES_ENRICH"))
+
+
 def _pick_closest_result(
     results: list[dict],
     ref_lat: float,
@@ -43,10 +55,10 @@ def _pick_closest_result(
     return None
 
 
-def enrich_records_with_google_places(records: list[RestaurantRecord]) -> None:
+def enrich_records_with_google_places(records: list[RestaurantRecord], *, force: bool | None = None) -> None:
     if not records:
         return
-    if not _truthy(os.getenv("GOOGLE_PLACES_ENRICH")):
+    if not google_places_enrich_effective(force):
         return
     key = (os.getenv("GOOGLE_MAPS_API_KEY") or "").strip()
     if not key:
@@ -122,6 +134,12 @@ def enrich_records_with_google_places(records: list[RestaurantRecord]) -> None:
                 "formatted_phone_number",
                 "international_phone_number",
                 "business_status",
+                "formatted_address",
+                "website",
+                "url",
+                "types",
+                "editorial_summary",
+                "opening_hours",
             ]
         )
         try:
@@ -153,6 +171,25 @@ def enrich_records_with_google_places(records: list[RestaurantRecord]) -> None:
 
         phone = (res.get("international_phone_number") or res.get("formatted_phone_number") or "").strip()
         gname = (res.get("name") or "").strip()
+        faddr = (res.get("formatted_address") or "").strip()
+        gweb = (res.get("website") or "").strip()
+        maps_url = (res.get("url") or "").strip()
+        types = res.get("types") or []
+        type_str = ""
+        if isinstance(types, list) and types:
+            type_str = ", ".join(str(t) for t in types if t)[:400]
+        ed = res.get("editorial_summary") or {}
+        ed_text = ""
+        if isinstance(ed, dict):
+            ed_text = (ed.get("overview") or "").strip()
+        elif isinstance(ed, str):
+            ed_text = ed.strip()
+        oh = res.get("opening_hours") or {}
+        oh_snip = ""
+        if isinstance(oh, dict):
+            wt = oh.get("weekday_text")
+            if isinstance(wt, list) and wt:
+                oh_snip = " | ".join(str(x) for x in wt if x)[:800]
 
         row.google_place_id = place_id
         if gname:
@@ -161,6 +198,20 @@ def enrich_records_with_google_places(records: list[RestaurantRecord]) -> None:
                 row.legal_name = gname
         if phone and not has_phone:
             row.contact_phone = phone
+        if faddr:
+            row.google_formatted_address = faddr[:500]
+        if maps_url:
+            row.google_maps_link = maps_url[:500]
+        if type_str:
+            row.google_primary_type = type_str[:400]
+        if gweb:
+            row.google_business_website = gweb[:500]
+            if not (row.vendor_website or "").strip():
+                row.vendor_website = gweb[:500]
+        if ed_text and len(ed_text) > len((row.vendor_description or "").strip()):
+            row.vendor_description = ed_text[:1500]
+        if oh_snip and len(oh_snip) > len((row.opening_hours_snippet or "").strip()):
+            row.opening_hours_snippet = oh_snip
 
         done += 1
         time.sleep(0.12)

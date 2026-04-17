@@ -2,23 +2,35 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import os
+import random
 import re
+import traceback
 from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
 from playwright.async_api import async_playwright
 
-from geo_utils import generate_points_in_radius, haversine_km
-from models import RestaurantRecord, make_branch_sku
+from geo_utils import generate_points_in_radius, haversine_km, haversine_series_km_from_pin, refine_grid_spacing
+from listing_urls import capped_listing_urls
+from pin_resolve import resolve_pin_area_label
+from models import (
+    RestaurantRecord,
+    brand_display_name_from_listing,
+    make_branch_sku,
+    make_brand_id,
+    talabat_listing_slug_from_url,
+)
+from html_enrichment import merge_html_into_accumulator
+from remote_html_fetch import fetch_remote_vendor_html
 from next_data_extract import normalize_talabat_url, parse_next_data_script, paths_from_next_data_json
-from places_enrich import enrich_records_with_google_places
+from nominatim_enrich import enrich_records_reverse_geocode
+from places_enrich import enrich_records_with_google_places, google_places_enrich_effective
 
-# English listing URL first (more consistent markup); fallback handled in scrape_one_point.
-BASE_URL_PRIMARY = "https://www.talabat.com/en/uae/restaurants"
-BASE_URL_FALLBACK = "https://www.talabat.com/uae/restaurants"
+logger = logging.getLogger("talabat_area_intel.scrape")
 
 # Required for Chromium in Docker / Render (small /dev/shm, no user namespace sandbox).
 CHROMIUM_LAUNCH_ARGS = [
@@ -91,19 +103,49 @@ def parse_lat_lng(text: str) -> tuple[float | None, float | None]:
 
 
 async def auto_scroll(page, rounds: int = 22, wait_ms: int = 1300) -> None:
+    """Scroll until listing links stop growing (Talabat uses infinite scroll; body height can plateau early)."""
     prev_height = 0
-    steady_rounds = 0
+    steady_height = 0
+    prev_link_count: int | None = None
+    steady_links = 0
+    need_link_steady = int(os.getenv("SCRAPER_SCROLL_STEADY_LINK_ROUNDS", "3"))
     for _ in range(rounds):
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         await page.wait_for_timeout(wait_ms)
         new_height = await page.evaluate("document.body.scrollHeight")
+        n_links = await page.evaluate(
+            """() => {
+              const s = new Set();
+              for (const a of document.querySelectorAll('a[href]')) {
+                let h = a.getAttribute('href') || '';
+                if (h.startsWith('/')) h = 'https://www.talabat.com' + h;
+                if (!h.includes('talabat.com')) continue;
+                if (h.includes('/restaurant/') || h.includes('/uae/')) s.add(h.split('?')[0]);
+              }
+              return s.size;
+            }"""
+        )
+        try:
+            n_links = int(n_links)
+        except (TypeError, ValueError):
+            n_links = prev_link_count if prev_link_count is not None else 0
         if new_height == prev_height:
-            steady_rounds += 1
-            if steady_rounds >= 2:
-                break
+            steady_height += 1
         else:
-            steady_rounds = 0
+            steady_height = 0
             prev_height = new_height
+        if prev_link_count is None:
+            prev_link_count = n_links
+            steady_links = 0
+        elif n_links == prev_link_count:
+            steady_links += 1
+        else:
+            steady_links = 0
+            prev_link_count = n_links
+        if steady_links >= need_link_steady:
+            break
+        if steady_height >= 3 and prev_link_count is not None and prev_link_count > 0:
+            break
 
 
 async def dismiss_common_overlays(page) -> None:
@@ -221,6 +263,9 @@ async def extract_restaurants_from_anchor_links(
                 name, branch_name = p1.strip(), p2.strip()
         lat, lng = sample_lat, sample_lng
         sku = make_branch_sku(name=name, branch_name=branch_name, url=url, lat=lat, lng=lng)
+        bd = brand_display_name_from_listing(name, branch_name)
+        bid = make_brand_id(bd)
+        tslug = talabat_listing_slug_from_url(url)
         blob = f"{snippet}\n{name}".lower()
         jl, jld = parse_just_landed_from_text(f"{snippet}\n{name}")
         results.append(
@@ -232,6 +277,9 @@ async def extract_restaurants_from_anchor_links(
                 source_sample_lat=sample_lat,
                 source_sample_lng=sample_lng,
                 branch_sku=sku,
+                brand_id=bid,
+                brand_display_name=(bd or "")[:200],
+                talabat_listing_slug=tslug,
                 restaurant_name=name,
                 legal_name="",
                 branch_name=branch_name,
@@ -264,7 +312,19 @@ async def extract_restaurants_from_anchor_links(
                 estimated_orders="",
                 google_place_id="",
                 google_maps_name="",
+                vendor_website="",
+                vendor_email="",
+                vendor_social="",
+                vendor_description="",
+                tax_or_license_hint="",
+                opening_hours_snippet="",
+                google_formatted_address="",
+                google_business_website="",
+                google_maps_link="",
+                google_primary_type="",
+                reverse_geocode_address="",
                 scrape_city="",
+                scrape_target_label="",
                 lat=lat,
                 lng=lng,
             )
@@ -296,9 +356,12 @@ async def extract_restaurants_from_next_data(
     results: list[RestaurantRecord] = []
     for path in paths:
         url = normalize_talabat_url(path)
-        slug = url.rstrip("/").split("/")[-1]
-        name = slug.replace("-", " ").title() if slug else "Unknown"
+        path_slug = url.rstrip("/").split("/")[-1]
+        name = path_slug.replace("-", " ").title() if path_slug else "Unknown"
         sku = make_branch_sku(name=name, branch_name="", url=url, lat=sample_lat, lng=sample_lng)
+        bd = brand_display_name_from_listing(name, "")
+        bid = make_brand_id(bd)
+        tslug = talabat_listing_slug_from_url(url)
         results.append(
             RestaurantRecord(
                 scrape_ts_utc=now_utc,
@@ -308,6 +371,9 @@ async def extract_restaurants_from_next_data(
                 source_sample_lat=sample_lat,
                 source_sample_lng=sample_lng,
                 branch_sku=sku,
+                brand_id=bid,
+                brand_display_name=(bd or "")[:200],
+                talabat_listing_slug=tslug,
                 restaurant_name=name,
                 legal_name="",
                 branch_name="",
@@ -340,12 +406,49 @@ async def extract_restaurants_from_next_data(
                 estimated_orders="",
                 google_place_id="",
                 google_maps_name="",
+                vendor_website="",
+                vendor_email="",
+                vendor_social="",
+                vendor_description="",
+                tax_or_license_hint="",
+                opening_hours_snippet="",
+                google_formatted_address="",
+                google_business_website="",
+                google_maps_link="",
+                google_primary_type="",
+                reverse_geocode_address="",
                 scrape_city="",
+                scrape_target_label="",
                 lat=sample_lat,
                 lng=sample_lng,
             )
         )
     return results
+
+
+def _merge_restaurant_rows_by_url(*batches: list[RestaurantRecord]) -> list[RestaurantRecord]:
+    """Union anchors + __NEXT_DATA__ paths; same Talabat URL often appears in both with different name quality."""
+
+    def score(row: RestaurantRecord) -> tuple[int, int, int]:
+        name = (row.restaurant_name or "").strip()
+        branch = (row.branch_name or "").strip()
+        blob = f"{name} {branch}".lower()
+        jl_boost = 1 if row.just_landed == "yes" else 0
+        status_boost = 1 if row.status and row.status != "unknown" else 0
+        return (jl_boost + status_boost, len(branch), len(name))
+
+    best: dict[str, RestaurantRecord] = {}
+    for batch in batches:
+        for r in batch:
+            key = _canonical_vendor_url(r.restaurant_url)
+            if not key:
+                key = (r.branch_sku or "").strip().lower()
+            cur = best.get(key)
+            if cur is None:
+                best[key] = r
+            elif score(r) > score(cur):
+                best[key] = r
+    return list(best.values())
 
 
 async def extract_restaurants(
@@ -356,19 +459,16 @@ async def extract_restaurants(
     sample_lat: float,
     sample_lng: float,
 ) -> list[RestaurantRecord]:
-    # 1) All /restaurant/ links (most robust vs UI redesign)
+    # 1–2) Anchors and __NEXT_DATA__ together (previously we returned anchors only and dropped JSON-only vendors).
     anchor_rows = await extract_restaurants_from_anchor_links(
         page, pin_lat, pin_lng, radius_km, sample_lat, sample_lng
     )
-    if anchor_rows:
-        return anchor_rows
-
-    # 2) Next.js embedded JSON
     next_rows = await extract_restaurants_from_next_data(
         page, pin_lat, pin_lng, radius_km, sample_lat, sample_lng
     )
-    if next_rows:
-        return next_rows
+    merged = _merge_restaurant_rows_by_url(anchor_rows, next_rows)
+    if merged:
+        return merged
 
     # 3) Legacy card selectors
     cards = None
@@ -456,6 +556,9 @@ async def extract_restaurants(
             lat, lng = sample_lat, sample_lng
 
         sku = make_branch_sku(name=name, branch_name=branch_name, url=url, lat=lat, lng=lng)
+        bd = brand_display_name_from_listing(name, branch_name)
+        bid = make_brand_id(bd)
+        tslug = talabat_listing_slug_from_url(url)
         if name or url:
             results.append(
                 RestaurantRecord(
@@ -466,6 +569,9 @@ async def extract_restaurants(
                     source_sample_lat=sample_lat,
                     source_sample_lng=sample_lng,
                     branch_sku=sku,
+                    brand_id=bid,
+                    brand_display_name=(bd or "")[:200],
+                    talabat_listing_slug=tslug,
                     restaurant_name=name,
                     legal_name="",
                     branch_name=branch_name,
@@ -498,7 +604,19 @@ async def extract_restaurants(
                     estimated_orders="",
                     google_place_id="",
                     google_maps_name="",
+                    vendor_website="",
+                    vendor_email="",
+                    vendor_social="",
+                    vendor_description="",
+                    tax_or_license_hint="",
+                    opening_hours_snippet="",
+                    google_formatted_address="",
+                    google_business_website="",
+                    google_maps_link="",
+                    google_primary_type="",
+                    reverse_geocode_address="",
                     scrape_city="",
+                    scrape_target_label="",
                     lat=lat,
                     lng=lng,
                 )
@@ -507,6 +625,10 @@ async def extract_restaurants(
 
 
 _TEL_HREF_RE = re.compile(r"""href=["']tel:([^"'\s>]+)""", re.I)
+_NEXT_DATA_BLOCK = re.compile(
+    r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+    re.I | re.S,
+)
 _CURRENCY_CODES = ("JOD", "AED", "SAR", "KWD", "BHD", "QAR", "USD", "EGP", "OMR")
 
 
@@ -549,6 +671,40 @@ def _pick_best_phone(cands: list[str]) -> str:
         if len(d) >= 8 and len(d) >= best_d:
             best, best_d = c, len(d)
     return best
+
+
+def _merge_vendor_html_into_accumulator(html: str | None, acc: dict[str, list]) -> None:
+    """Tel links, HTML/JSON-LD/meta harvest, and __NEXT_DATA__ JSON walk into acc."""
+    if not html:
+        return
+    for m in _TEL_HREF_RE.finditer(html):
+        acc.setdefault("phones", []).append(m.group(1).strip())
+    merge_html_into_accumulator(html, acc)
+    m = _NEXT_DATA_BLOCK.search(html)
+    if not m:
+        return
+    raw = m.group(1).strip()
+    if not raw:
+        return
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return
+    if isinstance(data, dict):
+        _walk_next_data_vendor_fields(data, acc)
+
+
+def _pick_vendor_website(urls: list[str]) -> str:
+    best = ""
+    for u in urls:
+        ul = u.lower()
+        if "talabat." in ul:
+            continue
+        if "google." in ul and "maps" in ul:
+            continue
+        if len(u) > len(best):
+            best = u
+    return best[:500]
 
 
 def _walk_next_data_vendor_fields(obj: Any, acc: dict[str, list]) -> None:
@@ -645,6 +801,32 @@ def _walk_next_data_vendor_fields(obj: Any, acc: dict[str, list]) -> None:
                             acc.setdefault("order_counts", []).append(n)
                     except ValueError:
                         pass
+                elif "@" in vs and (
+                    "email" in kl or kl.endswith("mail") or "contactemail" in kl or kl == "e-mail"
+                ):
+                    acc.setdefault("emails", []).append(vs[:200])
+                elif vs.startswith("http") and any(
+                    x in kl
+                    for x in (
+                        "website",
+                        "homepage",
+                        "externallink",
+                        "vendorurl",
+                        "restauranturl",
+                        "brandurl",
+                    )
+                ):
+                    if "talabat." not in vs.lower():
+                        acc.setdefault("external_websites", []).append(vs[:500])
+                elif any(x in kl for x in ("vat", "trn", "taxnumber", "taxid", "licensenumber", "tradereg")) or (
+                    "tax" in kl and "rate" not in kl and "id" in kl
+                ):
+                    if 4 < len(vs) < 120 and re.search(r"\d", vs):
+                        acc.setdefault("tax_hints", []).append(vs[:120])
+                elif ("description" in kl or "about" in kl or "bio" in kl) and "short" not in kl and len(vs) > 35:
+                    acc.setdefault("descriptions", []).append(vs[:1200])
+                elif any(p in vs.lower() for p in ("instagram.com", "facebook.com", "tiktok.com", "twitter.com", "x.com")):
+                    acc.setdefault("social_urls", []).append(vs[:280])
                 elif "cuisine" in kl or kl in ("tags", "labels", "categories"):
                     if len(vs) > 1:
                         acc.setdefault("cuisines", []).append(vs[:800])
@@ -802,6 +984,12 @@ def _finalize_vendor_enrichment(acc: dict[str, list]) -> dict[str, str | float |
         "recently_added_90d": "",
         "has_offers": "",
         "estimated_orders": "",
+        "vendor_website": "",
+        "vendor_email": "",
+        "vendor_social": "",
+        "vendor_description": "",
+        "tax_or_license_hint": "",
+        "opening_hours_snippet": "",
         "lat": None,
         "lng": None,
     }
@@ -921,41 +1109,50 @@ def _finalize_vendor_enrichment(acc: dict[str, list]) -> dict[str, str | float |
     if oc:
         out["estimated_orders"] = str(max(oc))
 
+    emails = acc.get("emails", [])
+    if emails:
+        out["vendor_email"] = max(emails, key=len)[:200]
+    ext = acc.get("external_websites", [])
+    if ext:
+        out["vendor_website"] = _pick_vendor_website([str(x) for x in ext])
+    soc = acc.get("social_urls", [])
+    if soc:
+        out["vendor_social"] = " | ".join(dict.fromkeys(str(x) for x in soc))[:800]
+    desc = acc.get("descriptions", [])
+    if desc:
+        out["vendor_description"] = max(desc, key=len)[:1500]
+    tax = acc.get("tax_hints", [])
+    if tax:
+        out["tax_or_license_hint"] = max(tax, key=len)[:200]
+    oh = acc.get("opening_hours_snippets", [])
+    if oh:
+        out["opening_hours_snippet"] = max(oh, key=len)[:800]
+
     return out
 
 
 async def _fetch_vendor_page_enrichment(browser, url: str) -> dict[str, str | float | None]:
     """Open vendor page (English) and mine __NEXT_DATA__, tel: links, and vendor metadata."""
-    ctx = await browser.new_context(
-        locale="en-US",
-        extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
-        viewport={"width": 1280, "height": 800},
-    )
+    ctx = await browser.new_context(**_vendor_browser_context_kwargs())
     page = await ctx.new_page()
     acc: dict[str, list] = {}
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=25000)
-        await page.wait_for_timeout(600)
+        await page.goto(url, wait_until=_vendor_goto_wait_until(), timeout=25000)
+        await page.wait_for_timeout(600 if not _env_truthy(os.getenv("SCRAPER_HUMANIZE")) else 1100)
         html = await page.content()
-        for m in _TEL_HREF_RE.finditer(html):
-            acc.setdefault("phones", []).append(m.group(1).strip())
-        raw = await page.evaluate(
-            """() => {
-          const el = document.getElementById('__NEXT_DATA__');
-          return el ? el.textContent : null;
-        }"""
-        )
-        if raw:
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                data = None
-            if isinstance(data, dict):
-                _walk_next_data_vendor_fields(data, acc)
+        _merge_vendor_html_into_accumulator(html, acc)
     except Exception:
         pass
     finally:
         await ctx.close()
+
+    # Second pass: managed scraper HTML (different IP / rendering) merges into the same acc.
+    try:
+        html_remote = await asyncio.to_thread(fetch_remote_vendor_html, url)
+        _merge_vendor_html_into_accumulator(html_remote, acc)
+    except Exception:
+        pass
+
     return _finalize_vendor_enrichment(acc)
 
 
@@ -977,6 +1174,9 @@ async def enrich_vendor_detail_pages(
         by_url.setdefault(u, []).append(r)
     urls = list(by_url.keys())[:max_urls]
     sem = asyncio.Semaphore(3)
+    done = 0
+    total = len(urls)
+    logger.info("enrichment_start urls=%s rows=%s max_urls=%s", total, len(records), max_urls)
 
     def _apply(row: RestaurantRecord, d: dict[str, str | float | None]) -> None:
         if d.get("contact_phone"):
@@ -1040,14 +1240,42 @@ async def enrich_vendor_detail_pages(
             if -90 < float(lat) < 90 and -180 < float(lng) < 180:
                 row.lat = float(lat)
                 row.lng = float(lng)
+        if d.get("vendor_website"):
+            vw = str(d["vendor_website"]).strip()
+            if len(vw) > len((row.vendor_website or "").strip()):
+                row.vendor_website = vw
+        if d.get("vendor_email"):
+            ve = str(d["vendor_email"]).strip()
+            if len(ve) > len((row.vendor_email or "").strip()):
+                row.vendor_email = ve
+        if d.get("vendor_social"):
+            vs = str(d["vendor_social"]).strip()
+            if len(vs) > len((row.vendor_social or "").strip()):
+                row.vendor_social = vs
+        if d.get("vendor_description"):
+            vd = str(d["vendor_description"]).strip()
+            if len(vd) > len((row.vendor_description or "").strip()):
+                row.vendor_description = vd
+        if d.get("tax_or_license_hint"):
+            th = str(d["tax_or_license_hint"]).strip()
+            if len(th) > len((row.tax_or_license_hint or "").strip()):
+                row.tax_or_license_hint = th
+        if d.get("opening_hours_snippet"):
+            ohs = str(d["opening_hours_snippet"]).strip()
+            if len(ohs) > len((row.opening_hours_snippet or "").strip()):
+                row.opening_hours_snippet = ohs
 
     async def one(u: str) -> None:
+        nonlocal done
         async with sem:
             d = await _fetch_vendor_page_enrichment(browser, u)
             for row in by_url[u]:
                 _apply(row, d)
+            done += 1
+            logger.info("enrichment_progress %s/%s url=%s", done, total, u)
 
     await asyncio.gather(*[one(u) for u in urls])
+    logger.info("enrichment_done urls=%s rows=%s", total, len(records))
 
 
 def _union_listing_batches(*batches: list[RestaurantRecord]) -> list[RestaurantRecord]:
@@ -1070,6 +1298,168 @@ def _listing_fast_path_enabled() -> bool:
     return os.getenv("SCRAPER_LISTING_FAST_PATH", "0").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _env_truthy(val: str | None) -> bool:
+    return (val or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+_DEFAULT_CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
+
+
+def _scraper_user_agent() -> str:
+    return (os.getenv("SCRAPER_USER_AGENT") or "").strip() or _DEFAULT_CHROME_UA
+
+
+def _extra_http_headers_merge() -> dict[str, str]:
+    """Browser-like headers for listing/vendor navigation (override/extend via SCRAPER_EXTRA_HTTP_HEADERS_JSON)."""
+    headers: dict[str, str] = {
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+    }
+    raw = (os.getenv("SCRAPER_EXTRA_HTTP_HEADERS_JSON") or "").strip()
+    if not raw:
+        return headers
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if isinstance(k, str) and isinstance(v, str):
+                    headers[k] = v
+    except json.JSONDecodeError:
+        logger.warning("SCRAPER_EXTRA_HTTP_HEADERS_JSON is not valid JSON; ignoring")
+    return headers
+
+
+def _listing_goto_wait_until() -> str:
+    v = (os.getenv("SCRAPER_LISTING_GOTO_WAIT_UNTIL") or "domcontentloaded").strip().lower()
+    if v not in ("commit", "domcontentloaded", "load", "networkidle"):
+        return "domcontentloaded"
+    return v
+
+
+def _vendor_goto_wait_until() -> str:
+    v = (os.getenv("SCRAPER_VENDOR_GOTO_WAIT_UNTIL") or "domcontentloaded").strip().lower()
+    if v not in ("commit", "domcontentloaded", "load", "networkidle"):
+        return "domcontentloaded"
+    return v
+
+
+def _post_navigation_wait_ms() -> int:
+    base = int(os.getenv("SCRAPER_POST_NAV_WAIT_MS", "2200"))
+    if _env_truthy(os.getenv("SCRAPER_HUMANIZE")):
+        base = max(base, int(os.getenv("SCRAPER_POST_NAV_WAIT_MS_HUMANIZE", "3800")))
+        base += random.randint(0, max(0, int(os.getenv("SCRAPER_HUMANIZE_JITTER_MS", "900"))))
+    return base
+
+
+def _listing_browser_context_kwargs(sample_lat: float, sample_lng: float) -> dict[str, Any]:
+    tz = (os.getenv("SCRAPER_TIMEZONE_ID") or "Asia/Dubai").strip()
+    w = int(os.getenv("SCRAPER_VIEWPORT_W", "1440"))
+    h = int(os.getenv("SCRAPER_VIEWPORT_H", "900"))
+    return {
+        "geolocation": {"latitude": float(sample_lat), "longitude": float(sample_lng)},
+        "permissions": ["geolocation"],
+        "locale": "en-US",
+        "timezone_id": tz,
+        "user_agent": _scraper_user_agent(),
+        "viewport": {"width": w, "height": h},
+        "device_scale_factor": float(os.getenv("SCRAPER_DEVICE_SCALE", "1") or "1"),
+        "color_scheme": "light",
+        "has_touch": False,
+        "extra_http_headers": _extra_http_headers_merge(),
+    }
+
+
+def _vendor_browser_context_kwargs() -> dict[str, Any]:
+    tz = (os.getenv("SCRAPER_TIMEZONE_ID") or "Asia/Dubai").strip()
+    return {
+        "locale": "en-US",
+        "timezone_id": tz,
+        "user_agent": _scraper_user_agent(),
+        "viewport": {"width": 1280, "height": 800},
+        "device_scale_factor": float(os.getenv("SCRAPER_DEVICE_SCALE", "1") or "1"),
+        "color_scheme": "light",
+        "has_touch": False,
+        "extra_http_headers": _extra_http_headers_merge(),
+    }
+
+
+def _listing_url_with_page_param(base_url: str, page_num: int) -> str:
+    """Append/replace ``page=`` query (same pattern as legacy area listing scrapers)."""
+    if page_num <= 1:
+        return base_url
+    if "?" in base_url:
+        if re.search(r"[?&]page=\d+", base_url):
+            return re.sub(r"page=\d+", f"page={page_num}", base_url, count=1)
+        return f"{base_url}&page={page_num}"
+    return f"{base_url}?page={page_num}"
+
+
+async def _detect_listing_last_page_number(page) -> int:
+    """Read Talabat listing pagination (``ul[data-test='pagination']``) when present."""
+    try:
+        pagination = await page.query_selector("ul[data-test='pagination']")
+        if not pagination:
+            return 1
+        items = await pagination.query_selector_all("li[data-testid='paginate-link']")
+        if not items or len(items) < 2:
+            return 1
+        last_page_item = items[-2]
+        link = await last_page_item.query_selector("a[page]")
+        if not link:
+            return 1
+        attr = await link.get_attribute("page")
+        if attr and str(attr).isdigit():
+            return max(1, int(attr))
+    except Exception:
+        return 1
+    return 1
+
+
+def radius_slack_km(radius_km: float) -> float:
+    return max(0.15, min(2.0, float(radius_km) * 0.04))
+
+
+def compute_radius_stats(
+    df: pd.DataFrame,
+    pin_lat: float,
+    pin_lng: float,
+    radius_km: float,
+) -> tuple[pd.Series, dict[str, int | float]]:
+    """Per-row distance from pin plus counts used in scrape_run_meta and tests."""
+    slack = radius_slack_km(radius_km)
+    if df.empty or "lat" not in df.columns or "lng" not in df.columns:
+        return pd.Series(dtype=float), {
+            "rows_with_coordinates": 0,
+            "rows_missing_coordinates": 0,
+            "inside_radius_row_count": 0,
+            "outside_radius_row_count": 0,
+            "radius_slack_km": round(slack, 4),
+        }
+    latnum = pd.to_numeric(df["lat"], errors="coerce")
+    lngnum = pd.to_numeric(df["lng"], errors="coerce")
+    valid = latnum.notna() & lngnum.notna()
+    d = haversine_series_km_from_pin(float(pin_lat), float(pin_lng), latnum, lngnum)
+    r = float(radius_km)
+    inside = valid & (d <= r + slack)
+    outside = valid & (d > r + slack)
+    stats: dict[str, int | float] = {
+        "rows_with_coordinates": int(valid.sum()),
+        "rows_missing_coordinates": int((~valid).sum()),
+        "inside_radius_row_count": int(inside.sum()),
+        "outside_radius_row_count": int(outside.sum()),
+        "radius_slack_km": round(slack, 4),
+    }
+    return d, stats
+
+
 async def scrape_one_point(
     browser,
     pin_lat: float,
@@ -1080,38 +1470,73 @@ async def scrape_one_point(
     just_landed_only: bool,
     scroll_rounds: int,
     scroll_wait_ms: int,
+    *,
+    listing_cuisine_sweep: bool = False,
 ) -> list[RestaurantRecord]:
-    context = await browser.new_context(
-        geolocation={"latitude": sample_lat, "longitude": sample_lng},
-        permissions=["geolocation"],
-        locale="en-US",
-        extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
-        viewport={"width": 1440, "height": 900},
-    )
+    # Optional ``?page=`` pagination for hub listing URLs (similar idea to community listing scrapers that
+    # walk ``ul[data-test='pagination']`` — e.g. github.com/Dataloops-code/Talabat-Restaurants1-Scraper-python).
+    paginate_listings = _env_truthy(os.getenv("SCRAPER_LISTING_PAGE_PAGINATION"))
+    max_listing_pages = max(1, int(os.getenv("SCRAPER_LISTING_MAX_PAGES", "25")))
+    page_gap_sec = max(0.0, float(os.getenv("SCRAPER_LISTING_PAGE_GAP_SEC", "1.5")))
+    context = await browser.new_context(**_listing_browser_context_kwargs(sample_lat, sample_lng))
     page = await context.new_page()
+    listing_urls = capped_listing_urls(listing_cuisine_sweep)
+    allow_fast = _listing_fast_path_enabled() and not listing_cuisine_sweep and not paginate_listings
+    merged_all: list[RestaurantRecord] = []
+    strict = _env_truthy(os.getenv("SCRAPER_STRICT_LISTING_ERRORS"))
+    post_nav_ms = _post_navigation_wait_ms()
+    goto_until = _listing_goto_wait_until()
     try:
-        # Try English listing URL first, then non-prefixed path (Talabat sometimes varies by locale/route).
-        for listing_url in (BASE_URL_PRIMARY, BASE_URL_FALLBACK):
+        for listing_url in listing_urls:
             try:
-                await page.goto(listing_url, wait_until="domcontentloaded", timeout=60000)
-                await page.wait_for_timeout(2200)
+                await page.goto(listing_url, wait_until=goto_until, timeout=60000)
+                await page.wait_for_timeout(post_nav_ms)
                 await dismiss_common_overlays(page)
                 await click_just_landed_if_requested(page, just_landed_only)
                 rows_pre = await extract_restaurants(page, pin_lat, pin_lng, radius_km, sample_lat, sample_lng)
-                if _listing_fast_path_enabled() and rows_pre:
+                if allow_fast and rows_pre:
                     return rows_pre
                 await auto_scroll(page, rounds=scroll_rounds, wait_ms=scroll_wait_ms)
                 rows_post = await extract_restaurants(page, pin_lat, pin_lng, radius_km, sample_lat, sample_lng)
-                merged = _union_listing_batches(rows_pre, rows_post)
-                if merged:
-                    return merged
-                if rows_pre:
-                    return rows_pre
-            except Exception:
+                block = _union_listing_batches(rows_pre, rows_post)
+                merged_all = _union_listing_batches(merged_all, block)
+
+                if paginate_listings:
+                    last_page = await _detect_listing_last_page_number(page)
+                    last_page = min(last_page, max_listing_pages)
+                    if last_page > 1:
+                        logger.info(
+                            "listing_pagination url=%s sample=(%.5f,%.5f) pages=%s (cap=%s)",
+                            listing_url,
+                            sample_lat,
+                            sample_lng,
+                            last_page,
+                            max_listing_pages,
+                        )
+                    for pnum in range(2, last_page + 1):
+                        purl = _listing_url_with_page_param(listing_url, pnum)
+                        await page.goto(purl, wait_until=goto_until, timeout=60000)
+                        await page.wait_for_timeout(post_nav_ms)
+                        await dismiss_common_overlays(page)
+                        await click_just_landed_if_requested(page, just_landed_only)
+                        rows_pre2 = await extract_restaurants(page, pin_lat, pin_lng, radius_km, sample_lat, sample_lng)
+                        await auto_scroll(page, rounds=scroll_rounds, wait_ms=scroll_wait_ms)
+                        rows_post2 = await extract_restaurants(page, pin_lat, pin_lng, radius_km, sample_lat, sample_lng)
+                        block2 = _union_listing_batches(rows_pre2, rows_post2)
+                        merged_all = _union_listing_batches(merged_all, block2)
+                        if page_gap_sec > 0:
+                            await asyncio.sleep(page_gap_sec)
+            except Exception as exc:
+                logger.warning("listing scrape failed url=%s sample=(%.5f,%.5f): %s", listing_url, sample_lat, sample_lng, exc)
+                if strict:
+                    raise
                 continue
-        return []
-    except Exception:
-        return []
+        return merged_all
+    except Exception as exc:
+        logger.error("scrape_one_point aborted sample=(%.5f,%.5f): %s", sample_lat, sample_lng, exc)
+        if strict:
+            raise
+        return merged_all
     finally:
         await context.close()
 
@@ -1162,6 +1587,10 @@ def _pick_better_row(
             r.estimated_orders,
             r.google_place_id,
             r.google_maps_name,
+            r.vendor_website,
+            r.vendor_email,
+            r.vendor_description,
+            r.reverse_geocode_address,
         ):
             if (x or "").strip():
                 n += 1
@@ -1225,84 +1654,294 @@ async def run_area_scrape(
     *,
     dedupe_by_vendor_url: bool = False,
     scrape_city: str = "",
+    high_volume: bool = False,
+    scrape_target_label: str = "",
+    meta_out: dict | None = None,
+    google_places_enrich: bool | None = None,
 ) -> pd.DataFrame:
-    points = generate_points_in_radius(pin_lat, pin_lng, radius_km, spacing_km)
-    # Multiple samples merge different listing slices; default 3 balances area coverage vs Render timeouts.
+    last_step = "init"
+    hv = bool(high_volume) or _env_truthy(os.getenv("SCRAPER_HIGH_VOLUME"))
+    resolved_area = ""
+    if meta_out is not None:
+        meta_out.setdefault("effective_scrape_pin_lat", round(float(pin_lat), 6))
+        meta_out.setdefault("effective_scrape_pin_lng", round(float(pin_lng), 6))
+        meta_out.setdefault("effective_radius_km", float(radius_km))
+        meta_out.setdefault("last_completed_step", last_step)
+        meta_out["radius_km"] = float(radius_km)
+        meta_out["scrape_city_label"] = (scrape_city or "").strip()
+        meta_out["scrape_target_label"] = (scrape_target_label or "").strip()
+        meta_out["listing_entry_urls_sample"] = capped_listing_urls(hv)[:6]
+        meta_out["high_volume_mode"] = bool(hv)
+        meta_out["scraper_humanize"] = _env_truthy(os.getenv("SCRAPER_HUMANIZE"))
+        meta_out["google_places_enrich_request"] = google_places_enrich
+        meta_out["google_places_enrich_effective"] = google_places_enrich_effective(google_places_enrich)
+        try:
+            resolved_area = await asyncio.to_thread(resolve_pin_area_label, float(pin_lat), float(pin_lng))
+        except Exception:
+            resolved_area = ""
+        meta_out["resolved_area_nearest"] = resolved_area
     if max_sample_points is not None:
         max_pts = max_sample_points
     else:
-        max_pts = int(os.getenv("MAX_SCRAPE_SAMPLE_POINTS", "2"))
+        max_pts = int(os.getenv("MAX_SCRAPE_SAMPLE_POINTS", "6"))
+    if hv:
+        last_step = "build_dense_grid"
+        if meta_out is not None:
+            meta_out["last_completed_step"] = last_step
+        cap_c = int(os.getenv("SCRAPER_MAX_SAMPLE_POINTS_CAP", "220"))
+        max_pts = max(max_pts, int(os.getenv("SCRAPER_HIGH_VOLUME_MIN_SAMPLES", "90")))
+        max_pts = min(max_pts, cap_c)
+        target = int(os.getenv("SCRAPER_MIN_GRID_POINTS", "90"))
+        floor = float(os.getenv("SCRAPER_SPACING_FLOOR_KM", "0.38"))
+        start_sp = min(float(spacing_km), float(os.getenv("SCRAPER_HIGH_VOLUME_START_SPACING_KM", "1.05")))
+        points = refine_grid_spacing(
+            pin_lat,
+            pin_lng,
+            radius_km,
+            start_sp,
+            target_count=min(target, cap_c),
+            spacing_floor=floor,
+        )
+    else:
+        last_step = "build_grid"
+        if meta_out is not None:
+            meta_out["last_completed_step"] = last_step
+        points = generate_points_in_radius(pin_lat, pin_lng, radius_km, spacing_km)
+    # Multiple geolocation samples merge different "near me" listing slices (Talabat caps each view ~100–200).
     points = _cap_sample_points(points, max_pts)
+    if meta_out is not None:
+        meta_out["grid_size"] = int(len(points))
+        meta_out["last_completed_step"] = "grid_capped"
     scroll_rounds, scroll_wait_ms = _listing_scroll_params(scroll_rounds, scroll_wait_ms)
+    if _env_truthy(os.getenv("SCRAPER_HUMANIZE")):
+        scroll_wait_ms = int(scroll_wait_ms * float(os.getenv("SCRAPER_HUMANIZE_SCROLL_WAIT_MULT", "1.12")))
     sem = asyncio.Semaphore(concurrency)
     records: list[RestaurantRecord] = []
+    raw_listing_count = 0
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=CHROMIUM_LAUNCH_ARGS,
+    logger.info(
+        "scrape pin=(%.5f,%.5f) r=%.2fkm grid_pts=%d resolved_area=%r hv=%s",
+        pin_lat,
+        pin_lng,
+        radius_km,
+        len(points),
+        resolved_area,
+        hv,
+    )
+
+    browser = None
+    try:
+        last_step = "launch_playwright"
+        if meta_out is not None:
+            meta_out["last_completed_step"] = last_step
+        async with async_playwright() as p:
+            last_step = "launch_browser"
+            if meta_out is not None:
+                meta_out["last_completed_step"] = last_step
+            browser = await p.chromium.launch(
+                headless=True,
+                args=CHROMIUM_LAUNCH_ARGS,
+            )
+            done = 0
+            total = len(points)
+            per_point_timeout = max(
+                30.0,
+                float(os.getenv("SCRAPER_PER_POINT_TIMEOUT_SEC", "90")),
+            )
+
+            async def worker(pt: tuple[float, float]) -> list[RestaurantRecord]:
+                nonlocal done
+                lat, lng = pt
+                async with sem:
+                    try:
+                        rows = await asyncio.wait_for(
+                            scrape_one_point(
+                                browser=browser,
+                                pin_lat=pin_lat,
+                                pin_lng=pin_lng,
+                                radius_km=radius_km,
+                                sample_lat=lat,
+                                sample_lng=lng,
+                                just_landed_only=just_landed_only,
+                                scroll_rounds=scroll_rounds,
+                                scroll_wait_ms=scroll_wait_ms,
+                                listing_cuisine_sweep=hv,
+                            ),
+                            timeout=per_point_timeout,
+                        )
+                    except TimeoutError:
+                        logger.warning(
+                            "sample_timeout sample=(%.5f,%.5f) timeout=%ss",
+                            lat,
+                            lng,
+                            per_point_timeout,
+                        )
+                        rows = []
+                done += 1
+                if progress_cb:
+                    progress_cb(done, total, lat, lng, len(rows))
+                return rows
+
+            last_step = "scrape_grid_points"
+            if meta_out is not None:
+                meta_out["last_completed_step"] = last_step
+            batches = await asyncio.gather(*[worker(pt) for pt in points])
+
+            last_step = "merge_batches"
+            if meta_out is not None:
+                meta_out["last_completed_step"] = last_step
+            if dedupe_by_vendor_url:
+                dedupe: dict[str, RestaurantRecord] = {}
+                for batch in batches:
+                    for r in batch:
+                        ck = _canonical_vendor_url(r.restaurant_url)
+                        if not ck:
+                            dedupe[r.branch_sku] = r
+                            continue
+                        cur = dedupe.get(ck)
+                        if cur is None:
+                            dedupe[ck] = r
+                        else:
+                            dedupe[ck] = _pick_better_row(pin_lat, pin_lng, cur, r)
+                records = list(dedupe.values())
+            else:
+                records = []
+                for batch in batches:
+                    records.extend(batch)
+
+            raw_listing_count = len(records)
+            if meta_out is not None:
+                meta_out["raw_listing_row_count"] = raw_listing_count
+
+            city_tag = (scrape_city or "").strip()
+            if city_tag:
+                for r in records:
+                    r.scrape_city = city_tag
+            tgt = (scrape_target_label or "").strip()
+            if tgt:
+                tv = tgt[:240]
+                for r in records:
+                    r.scrape_target_label = tv
+            # Scale down vendor-page enrichment when many grid points (each listing + N enrich URLs is costly on Render).
+            enrich_cap = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "12"))
+            n_pts = max(1, len(points))
+            budget = max(3, 22 // n_pts)
+            if float(radius_km) >= float(os.getenv("SCRAPER_BIG_RADIUS_KM", "18")):
+                budget = min(budget, int(os.getenv("SCRAPER_BIG_RADIUS_ENRICH_BUDGET", "2")))
+            enrich_max = min(enrich_cap, budget)
+            if meta_out is not None:
+                meta_out["enrich_max_urls"] = int(enrich_max)
+                meta_out["last_completed_step"] = "enrichment_start"
+            await enrich_vendor_detail_pages(browser, records, max_urls=enrich_max)
+            if meta_out is not None:
+                meta_out["last_completed_step"] = "enrichment_done"
+            await browser.close()
+            browser = None
+    except Exception as exc:
+        if meta_out is not None:
+            meta_out["last_completed_step"] = last_step
+            meta_out["pipeline_error"] = str(exc)[:500]
+        logger.error(
+            "run_area_scrape_failed pin=(%.5f,%.5f) radius=%.2f grid=%s raw=%s step=%s\n%s",
+            pin_lat,
+            pin_lng,
+            float(radius_km),
+            (meta_out or {}).get("grid_size"),
+            raw_listing_count,
+            last_step,
+            traceback.format_exc(),
         )
-        done = 0
-        total = len(points)
+        raise
+    finally:
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                logger.warning("browser_close_failed step=%s", last_step)
 
-        async def worker(pt: tuple[float, float]) -> list[RestaurantRecord]:
-            nonlocal done
-            lat, lng = pt
-            async with sem:
-                rows = await scrape_one_point(
-                    browser=browser,
-                    pin_lat=pin_lat,
-                    pin_lng=pin_lng,
-                    radius_km=radius_km,
-                    sample_lat=lat,
-                    sample_lng=lng,
-                    just_landed_only=just_landed_only,
-                    scroll_rounds=scroll_rounds,
-                    scroll_wait_ms=scroll_wait_ms,
-                )
-            done += 1
-            if progress_cb:
-                progress_cb(done, total, lat, lng, len(rows))
-            return rows
-
-        batches = await asyncio.gather(*[worker(pt) for pt in points])
-
-        if dedupe_by_vendor_url:
-            dedupe: dict[str, RestaurantRecord] = {}
-            for batch in batches:
-                for r in batch:
-                    ck = _canonical_vendor_url(r.restaurant_url)
-                    if not ck:
-                        dedupe[r.branch_sku] = r
-                        continue
-                    cur = dedupe.get(ck)
-                    if cur is None:
-                        dedupe[ck] = r
-                    else:
-                        dedupe[ck] = _pick_better_row(pin_lat, pin_lng, cur, r)
-            records = list(dedupe.values())
-        else:
-            records = []
-            for batch in batches:
-                records.extend(batch)
-
-        city_tag = (scrape_city or "").strip()
-        if city_tag:
-            for r in records:
-                r.scrape_city = city_tag
-        # Scale down vendor-page enrichment when many grid points (each listing + N enrich URLs is costly on Render).
-        enrich_cap = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "12"))
-        n_pts = max(1, len(points))
-        budget = max(3, 22 // n_pts)
-        enrich_max = min(enrich_cap, budget)
-        await enrich_vendor_detail_pages(browser, records, max_urls=enrich_max)
-        await browser.close()
-
-    enrich_records_with_google_places(records)
+    if meta_out is not None:
+        meta_out["last_completed_step"] = "post_enrichment"
+    enrich_records_with_google_places(records, force=google_places_enrich)
+    if meta_out is not None:
+        meta_out["last_completed_step"] = "google_places_done"
+    enrich_records_reverse_geocode(records)
+    if meta_out is not None:
+        meta_out["last_completed_step"] = "reverse_geocode_done"
 
     df = pd.DataFrame([r.to_dict() for r in records])
     if df.empty:
+        if meta_out is not None:
+            meta_out["rows_before_radius_filter"] = 0
+            meta_out["rows_after_radius_filter"] = 0
+            meta_out["rows_excluded_outside_radius"] = 0
+            meta_out["rows_with_coordinates"] = 0
+            meta_out["rows_missing_coordinates"] = 0
+            meta_out["inside_radius_row_count"] = 0
+            meta_out["outside_radius_row_count"] = 0
+        logger.info("scrape done empty raw_listing=%s", raw_listing_count)
         return df
+
+    before_radius = int(len(df))
+    dist_series, rad_stats = compute_radius_stats(df, pin_lat, pin_lng, radius_km)
+    df = df.assign(distance_km_from_pin=dist_series)
+    slack = float(rad_stats["radius_slack_km"])
+    r_cap = float(radius_km) + slack
+    inside_mask = pd.to_numeric(df["distance_km_from_pin"], errors="coerce") <= r_cap
+    df_in = df.loc[inside_mask].copy()
+    df_in["distance_km_from_pin"] = pd.to_numeric(df_in["distance_km_from_pin"], errors="coerce").round(3)
+
+    latnum = pd.to_numeric(df["lat"], errors="coerce")
+    lngnum = pd.to_numeric(df["lng"], errors="coerce")
+    valid = latnum.notna() & lngnum.notna()
+    sample_idx = df.index[valid][:8]
+    for idx in sample_idx:
+        row = df.loc[idx]
+        try:
+            dkm = float(row["distance_km_from_pin"])
+            logger.info(
+                "branch_coord_sample name=%r lat=%s lng=%s distance_km_from_pin=%.3f",
+                (str(row.get("restaurant_name", "")) or "")[:80],
+                row.get("lat"),
+                row.get("lng"),
+                dkm,
+            )
+        except (TypeError, ValueError):
+            logger.info(
+                "branch_coord_sample name=%r lat=%s lng=%s distance_km_from_pin=nan",
+                (str(row.get("restaurant_name", "")) or "")[:80],
+                row.get("lat"),
+                row.get("lng"),
+            )
+
+    df = df_in
+    if meta_out is not None:
+        meta_out["rows_before_radius_filter"] = before_radius
+        meta_out["radius_slack_km"] = slack
+        meta_out["rows_after_radius_filter"] = int(len(df))
+        meta_out["rows_excluded_outside_radius"] = int(before_radius - len(df))
+        meta_out["rows_with_coordinates"] = rad_stats["rows_with_coordinates"]
+        meta_out["rows_missing_coordinates"] = rad_stats["rows_missing_coordinates"]
+        meta_out["inside_radius_row_count"] = rad_stats["inside_radius_row_count"]
+        meta_out["outside_radius_row_count"] = rad_stats["outside_radius_row_count"]
+    logger.info(
+        "scrape raw_listing=%s before_radius=%s after_radius=%s excluded_radius=%s "
+        "coords=%s inside=%s outside=%s missing_coords=%s",
+        raw_listing_count,
+        before_radius,
+        len(df),
+        before_radius - len(df),
+        rad_stats["rows_with_coordinates"],
+        rad_stats["inside_radius_row_count"],
+        rad_stats["outside_radius_row_count"],
+        rad_stats["rows_missing_coordinates"],
+    )
+
+    if just_landed_only:
+        jl = df["just_landed"].astype(str).str.lower().eq("yes")
+        ra = df["recently_added_90d"].astype(str).str.lower().eq("yes")
+        df = df[jl | ra].copy()
+        if df.empty:
+            return df.reset_index(drop=True)
     if status_filter == "closed":
         df = df[df["status"] == "closed"].copy()
     elif status_filter == "live":

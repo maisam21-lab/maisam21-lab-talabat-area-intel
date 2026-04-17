@@ -49,6 +49,9 @@ def _primary_cuisine(cuisines: Any) -> str:
 
 
 def _brand_key(row: pd.Series) -> str:
+    bid = str(row.get("brand_id") or "").strip()
+    if bid:
+        return f"brand_id:{bid}"
     rid = str(row.get("talabat_restaurant_id") or "").strip()
     if rid:
         return f"id:{rid}"
@@ -96,6 +99,8 @@ def build_brand_prioritization_table(df: pd.DataFrame) -> pd.DataFrame:
     work = df.copy()
     for c in (
         "talabat_restaurant_id",
+        "brand_id",
+        "brand_display_name",
         "restaurant_name",
         "cuisines",
         "estimated_orders",
@@ -105,6 +110,7 @@ def build_brand_prioritization_table(df: pd.DataFrame) -> pd.DataFrame:
         "google_reviews_count",
         "delivery_fee",
         "scrape_city",
+        "scrape_target_label",
     ):
         if c not in work.columns:
             work[c] = ""
@@ -146,6 +152,10 @@ def build_brand_prioritization_table(df: pd.DataFrame) -> pd.DataFrame:
         rev_sum = _sum_reviews(g)
         med_fee = _median_delivery_fee_aed(g["delivery_fee"]) if "delivery_fee" in g else None
         cities = sorted({str(x).strip() for x in g["scrape_city"].dropna().astype(str) if str(x).strip()})
+        targets = sorted({str(x).strip() for x in g["scrape_target_label"].dropna().astype(str) if str(x).strip()})
+        bid_series = g["brand_id"].astype(str).str.strip()
+        bid_series = bid_series[bid_series != ""]
+        brand_id_cell = str(bid_series.iloc[0]) if len(bid_series) else ""
 
         opr = None
         if est_proxy is not None and n_stores > 0:
@@ -154,6 +164,7 @@ def build_brand_prioritization_table(df: pd.DataFrame) -> pd.DataFrame:
         rows.append(
             {
                 "_brand_key": key,
+                "brand_id": brand_id_cell,
                 "Brand": display_name[:200],
                 "Primary Cuisine": primary,
                 "Est_orders_proxy": est_proxy,
@@ -163,6 +174,7 @@ def build_brand_prioritization_table(df: pd.DataFrame) -> pd.DataFrame:
                 "_reviews_sum": rev_sum,
                 "_median_delivery_aed": med_fee,
                 "Cities_present": ", ".join(cities) if cities else "",
+                "Targets_present": ", ".join(targets) if targets else "",
             }
         )
 
@@ -255,17 +267,21 @@ def format_for_dashboard(brand_df: pd.DataFrame) -> pd.DataFrame:
             "Est_orders_proxy": "Est. orders (Talabat proxy)",
             "Number of Stores": "Number of Stores",
             "Orders_per_restaurant": "Orders per restaurant",
+            "brand_id": "Brand ID",
+            "Targets_present": "Target labels",
         }
     )
     cols = [
         "Target_tier",
         "Outbound_priority",
+        "Brand ID",
         "Brand",
         "Primary Cuisine",
         "Est. orders (Talabat proxy)",
         "Number of Stores",
         "Orders per restaurant",
         "Cities_present",
+        "Target labels",
     ]
     cols = [c for c in cols if c in d.columns]
     return d[cols].sort_values("Outbound_priority", ascending=False)
@@ -276,7 +292,7 @@ MODEL_HELP = (
     "- **Primary Cuisine**: first cuisine tag from Talabat listing text.\n"
     "- **Est. orders (Talabat proxy)**: best aggregate of `estimated_orders` from the scrape when Talabat exposes it "
     "(not guaranteed to be last 7 days).\n"
-    "- **Number of Stores**: rows grouped by Talabat restaurant id, else by brand name stem.\n"
+    "- **Number of Stores**: rows grouped by **brand_id** when present, else Talabat restaurant id, else brand name stem.\n"
     "- **Orders per restaurant**: proxy ÷ store count when a proxy exists.\n"
     "- **Outbound_priority**: weighted blend of rating quality, review volume, order proxy, cheaper delivery fee, "
     "and footprint (more stores → higher reach). Tiers **S/A/B/C** are quantiles within this run.\n"

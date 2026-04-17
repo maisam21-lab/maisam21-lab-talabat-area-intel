@@ -1,6 +1,7 @@
 streamlit
 playwright
 pandas
+numpy
 folium
 streamlit-folium
 fastapi

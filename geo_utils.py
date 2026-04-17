@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+import pandas as pd
+
 
 def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     earth_radius_km = 6371.0
@@ -11,6 +14,24 @@ def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     dl = math.radians(lng2 - lng1)
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return 2 * earth_radius_km * math.asin(math.sqrt(a))
+
+
+def haversine_series_km_from_pin(
+    pin_lat: float,
+    pin_lng: float,
+    lat_col: pd.Series,
+    lng_col: pd.Series,
+) -> pd.Series:
+    """Vectorized great-circle distance (km) from one pin to each row; NaN where coords invalid."""
+    lat1 = np.radians(float(pin_lat))
+    lng1 = np.radians(float(pin_lng))
+    lat2 = np.radians(pd.to_numeric(lat_col, errors="coerce"))
+    lng2 = np.radians(pd.to_numeric(lng_col, errors="coerce"))
+    dlat = lat2 - lat1
+    dlng = lng2 - lng1
+    a = np.sin(dlat / 2.0) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlng / 2.0) ** 2
+    c = 2 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
+    return pd.Series(6371.0 * c, index=lat_col.index)
 
 
 def km_to_lat_deg(km: float) -> float:
@@ -45,3 +66,30 @@ def generate_points_in_radius(center_lat: float, center_lng: float, radius_km: f
         if p != center_pt:
             ordered.append(p)
     return list(dict.fromkeys(ordered))
+
+
+def refine_grid_spacing(
+    center_lat: float,
+    center_lng: float,
+    radius_km: float,
+    spacing_km: float,
+    *,
+    target_count: int,
+    spacing_floor: float = 0.35,
+    max_iterations: int = 28,
+) -> list[tuple[float, float]]:
+    """Shrink spacing until the circle contains at least ``target_count`` sample points (or floor reached)."""
+    sp = max(spacing_floor, float(spacing_km))
+    floor = max(0.25, float(spacing_floor))
+    target = max(1, int(target_count))
+    best = generate_points_in_radius(center_lat, center_lng, radius_km, sp)
+    for _ in range(max_iterations):
+        pts = generate_points_in_radius(center_lat, center_lng, radius_km, sp)
+        if len(pts) >= target:
+            return pts
+        best = pts
+        new_sp = max(floor, sp * 0.86)
+        if abs(new_sp - sp) < 1e-6:
+            return best
+        sp = new_sp
+    return best
