@@ -10,7 +10,6 @@ import re
 import traceback
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlparse
 
 import pandas as pd
 from playwright.async_api import async_playwright
@@ -28,7 +27,6 @@ from models import (
 from html_enrichment import merge_html_into_accumulator
 from remote_html_fetch import fetch_remote_vendor_html
 from next_data_extract import normalize_talabat_url, parse_next_data_script, paths_from_next_data_json
-from talabat_urls import canonical_uae_vendor_url, is_vendor_slug
 from nominatim_enrich import enrich_records_reverse_geocode
 from places_enrich import enrich_records_with_google_places, google_places_enrich_effective
 
@@ -1641,286 +1639,6 @@ def _cap_sample_points(points: list[tuple[float, float]], max_pts: int) -> list[
     return list(dict.fromkeys(sampled))
 
 
-def normalize_seed_vendor_urls(raw: list[str] | None, *, max_urls: int) -> list[str]:
-    """Dedupe Talabat vendor URLs from CSV lines or plain URLs; canonicalize ``/uae/{slug}`` when applicable."""
-    if not raw or max_urls < 1:
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    for line in raw:
-        s = (line or "").strip()
-        if not s or s.startswith("#"):
-            continue
-        if "," in s:
-            first_field = s.split(",", 1)[0].strip()
-            if "talabat.com" in first_field:
-                s = first_field
-        if "talabat.com" not in s:
-            continue
-        u = s.split("?", 1)[0].rstrip("/")
-        if not u.startswith("http"):
-            u = normalize_talabat_url(u)
-        parts = [p for p in urlparse(u).path.split("/") if p]
-        if parts and parts[0].lower() in ("en", "ar"):
-            parts = parts[1:]
-        norm = u
-        if len(parts) >= 2 and parts[0].lower() == "uae" and parts[1].lower() != "restaurant":
-            seg = parts[1]
-            if is_vendor_slug(seg):
-                norm = canonical_uae_vendor_url(seg)
-        key = norm.lower()
-        if key not in seen:
-            seen.add(key)
-            out.append(norm)
-        if len(out) >= max_urls:
-            break
-    return out
-
-
-def build_restaurant_records_from_seed_urls(
-    urls: list[str],
-    *,
-    pin_lat: float,
-    pin_lng: float,
-    radius_km: float,
-) -> list[RestaurantRecord]:
-    """Minimal listing rows so ``enrich_vendor_detail_pages`` + Places can fill the ``RestaurantRecord`` model."""
-    now_utc = datetime.now(timezone.utc).isoformat()
-    sample_lat, sample_lng = float(pin_lat), float(pin_lng)
-    results: list[RestaurantRecord] = []
-    for url in urls:
-        u = (url or "").strip().split("?", 1)[0].rstrip("/")
-        if not u:
-            continue
-        slug_name = u.split("/")[-1].replace("-", " ").title() if u else ""
-        name = slug_name or "Unknown"
-        branch_name = ""
-        if " - " in name:
-            p1, p2 = name.split(" - ", 1)
-            if p1.strip() and p2.strip():
-                name, branch_name = p1.strip(), p2.strip()
-        lat, lng = sample_lat, sample_lng
-        sku = make_branch_sku(name=name, branch_name=branch_name, url=u, lat=lat, lng=lng)
-        bd = brand_display_name_from_listing(name, branch_name)
-        bid = make_brand_id(bd)
-        tslug = talabat_listing_slug_from_url(u)
-        blob = name.lower()
-        jl, jld = parse_just_landed_from_text(name)
-        results.append(
-            RestaurantRecord(
-                scrape_ts_utc=now_utc,
-                source_pin_lat=float(pin_lat),
-                source_pin_lng=float(pin_lng),
-                radius_km=float(radius_km),
-                source_sample_lat=sample_lat,
-                source_sample_lng=sample_lng,
-                branch_sku=sku,
-                brand_id=bid,
-                brand_display_name=(bd or "")[:200],
-                talabat_listing_slug=tslug,
-                restaurant_name=name,
-                legal_name="",
-                branch_name=branch_name,
-                restaurant_url=u,
-                talabat_restaurant_id="",
-                talabat_branch_id="",
-                contact_phone="",
-                cuisines="",
-                rating="",
-                reviews_count="",
-                eta="",
-                delivery_fee="",
-                min_order="",
-                area_label="",
-                status=classify_status(blob),
-                just_landed=jl,
-                just_landed_date=jld,
-                google_rating="",
-                google_reviews_count="",
-                rating_source="",
-                highly_rated_google="",
-                is_pro_vendor="",
-                free_delivery="",
-                delivered_by_talabat="",
-                preorder_available="",
-                payment_methods="",
-                currency="",
-                recently_added_90d="",
-                has_offers="",
-                estimated_orders="",
-                google_place_id="",
-                google_maps_name="",
-                vendor_website="",
-                vendor_email="",
-                vendor_social="",
-                vendor_description="",
-                tax_or_license_hint="",
-                opening_hours_snippet="",
-                google_formatted_address="",
-                google_business_website="",
-                google_maps_link="",
-                google_primary_type="",
-                reverse_geocode_address="",
-                scrape_city="",
-                scrape_target_label="",
-                lat=lat,
-                lng=lng,
-            )
-        )
-    return results
-
-
-async def run_seed_vendor_url_scrape(
-    pin_lat: float,
-    pin_lng: float,
-    radius_km: float,
-    seed_urls: list[str],
-    *,
-    vendor_detail_enrich_max: int | None,
-    dedupe_by_vendor_url: bool,
-    status_filter: str,
-    just_landed_only: bool,
-    scrape_city: str,
-    scrape_target_label: str,
-    meta_out: dict | None,
-    google_places_enrich: bool | None,
-) -> pd.DataFrame:
-    """Skip geo grid listing; open vendor pages for Talabat fields, then Places / Nominatim and radius filters."""
-    last_step = "seed_build_records"
-    records = build_restaurant_records_from_seed_urls(
-        seed_urls,
-        pin_lat=pin_lat,
-        pin_lng=pin_lng,
-        radius_km=radius_km,
-    )
-    if dedupe_by_vendor_url:
-        by_canon: dict[str, RestaurantRecord] = {}
-        for r in records:
-            ck = _canonical_vendor_url(r.restaurant_url)
-            if ck and ck in by_canon:
-                by_canon[ck] = _pick_better_row(pin_lat, pin_lng, by_canon[ck], r)
-            elif ck:
-                by_canon[ck] = r
-            else:
-                by_canon[r.branch_sku] = r
-        records = list(by_canon.values())
-
-    raw_listing_count = len(records)
-    if meta_out is not None:
-        meta_out["raw_listing_row_count"] = raw_listing_count
-        meta_out["last_completed_step"] = last_step
-        meta_out["grid_size"] = 0
-
-    cap_api = int(os.getenv("SCRAPER_SEED_ENRICH_MAX_CAP_API", "80"))
-    default_enrich = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "12"))
-    em = int(vendor_detail_enrich_max) if vendor_detail_enrich_max is not None else default_enrich
-    enrich_max = max(1, min(em, len(records), cap_api))
-
-    city_tag = (scrape_city or "").strip()
-    if city_tag:
-        for r in records:
-            r.scrape_city = city_tag
-    tgt = (scrape_target_label or "").strip()
-    if tgt:
-        tv = tgt[:240]
-        for r in records:
-            r.scrape_target_label = tv
-
-    browser = None
-    try:
-        last_step = "launch_playwright"
-        if meta_out is not None:
-            meta_out["enrich_max_urls"] = int(enrich_max)
-            meta_out["last_completed_step"] = last_step
-        async with async_playwright() as p:
-            last_step = "launch_browser"
-            if meta_out is not None:
-                meta_out["last_completed_step"] = last_step
-            browser = await p.chromium.launch(
-                headless=True,
-                args=CHROMIUM_LAUNCH_ARGS,
-            )
-            last_step = "enrichment_start"
-            if meta_out is not None:
-                meta_out["last_completed_step"] = last_step
-            await enrich_vendor_detail_pages(browser, records, max_urls=enrich_max)
-            if meta_out is not None:
-                meta_out["last_completed_step"] = "enrichment_done"
-            await browser.close()
-            browser = None
-    except Exception as exc:
-        if meta_out is not None:
-            meta_out["last_completed_step"] = last_step
-            meta_out["pipeline_error"] = str(exc)[:500]
-        logger.error(
-            "run_seed_vendor_url_scrape_failed pin=(%.5f,%.5f) raw=%s step=%s\n%s",
-            pin_lat,
-            pin_lng,
-            raw_listing_count,
-            last_step,
-            traceback.format_exc(),
-        )
-        raise
-    finally:
-        if browser is not None:
-            try:
-                await browser.close()
-            except Exception:
-                logger.warning("browser_close_failed step=%s", last_step)
-
-    if meta_out is not None:
-        meta_out["last_completed_step"] = "post_enrichment"
-    enrich_records_with_google_places(records, force=google_places_enrich)
-    if meta_out is not None:
-        meta_out["last_completed_step"] = "google_places_done"
-    enrich_records_reverse_geocode(records)
-    if meta_out is not None:
-        meta_out["last_completed_step"] = "reverse_geocode_done"
-
-    df = pd.DataFrame([r.to_dict() for r in records])
-    if df.empty:
-        if meta_out is not None:
-            meta_out["rows_before_radius_filter"] = 0
-            meta_out["rows_after_radius_filter"] = 0
-            meta_out["rows_excluded_outside_radius"] = 0
-            meta_out["rows_with_coordinates"] = 0
-            meta_out["rows_missing_coordinates"] = 0
-            meta_out["inside_radius_row_count"] = 0
-            meta_out["outside_radius_row_count"] = 0
-        return df
-
-    before_radius = int(len(df))
-    dist_series, rad_stats = compute_radius_stats(df, pin_lat, pin_lng, radius_km)
-    df = df.assign(distance_km_from_pin=dist_series)
-    slack = float(rad_stats["radius_slack_km"])
-    r_cap = float(radius_km) + slack
-    inside_mask = pd.to_numeric(df["distance_km_from_pin"], errors="coerce") <= r_cap
-    df_in = df.loc[inside_mask].copy()
-    df_in["distance_km_from_pin"] = pd.to_numeric(df_in["distance_km_from_pin"], errors="coerce").round(3)
-    df = df_in
-    if meta_out is not None:
-        meta_out["rows_before_radius_filter"] = before_radius
-        meta_out["radius_slack_km"] = slack
-        meta_out["rows_after_radius_filter"] = int(len(df))
-        meta_out["rows_excluded_outside_radius"] = int(before_radius - len(df))
-        meta_out["rows_with_coordinates"] = rad_stats["rows_with_coordinates"]
-        meta_out["rows_missing_coordinates"] = rad_stats["rows_missing_coordinates"]
-        meta_out["inside_radius_row_count"] = rad_stats["inside_radius_row_count"]
-        meta_out["outside_radius_row_count"] = rad_stats["outside_radius_row_count"]
-
-    if just_landed_only:
-        jl = df["just_landed"].astype(str).str.lower().eq("yes")
-        ra = df["recently_added_90d"].astype(str).str.lower().eq("yes")
-        df = df[jl | ra].copy()
-        if df.empty:
-            return df.reset_index(drop=True)
-    if status_filter == "closed":
-        df = df[df["status"] == "closed"].copy()
-    elif status_filter == "live":
-        df = df[df["status"] != "closed"].copy()
-    return df.reset_index(drop=True)
-
-
 async def run_area_scrape(
     pin_lat: float,
     pin_lng: float,
@@ -1940,8 +1658,6 @@ async def run_area_scrape(
     scrape_target_label: str = "",
     meta_out: dict | None = None,
     google_places_enrich: bool | None = None,
-    seed_vendor_urls: list[str] | None = None,
-    vendor_detail_enrich_max: int | None = None,
 ) -> pd.DataFrame:
     last_step = "init"
     hv = bool(high_volume) or _env_truthy(os.getenv("SCRAPER_HIGH_VOLUME"))
@@ -1964,32 +1680,6 @@ async def run_area_scrape(
         except Exception:
             resolved_area = ""
         meta_out["resolved_area_nearest"] = resolved_area
-
-    seed_max = int(os.getenv("SCRAPER_SEED_URL_LIST_MAX", "180"))
-    seeds = normalize_seed_vendor_urls(seed_vendor_urls, max_urls=seed_max)
-    if seeds:
-        if meta_out is not None:
-            meta_out["pipeline_mode"] = "seed_vendor_urls"
-            meta_out["seed_url_input_count"] = len(seed_vendor_urls or [])
-            meta_out["seed_url_deduped_count"] = len(seeds)
-            meta_out["seed_url_list_max"] = seed_max
-            meta_out["high_volume_mode"] = False
-            meta_out["listing_entry_urls_sample"] = seeds[:6]
-            meta_out["last_completed_step"] = "seed_urls_pipeline"
-        return await run_seed_vendor_url_scrape(
-            pin_lat,
-            pin_lng,
-            radius_km,
-            seeds,
-            vendor_detail_enrich_max=vendor_detail_enrich_max,
-            dedupe_by_vendor_url=dedupe_by_vendor_url,
-            status_filter=status_filter,
-            just_landed_only=just_landed_only,
-            scrape_city=scrape_city,
-            scrape_target_label=scrape_target_label,
-            meta_out=meta_out,
-            google_places_enrich=google_places_enrich,
-        )
 
     if max_sample_points is not None:
         max_pts = max_sample_points
