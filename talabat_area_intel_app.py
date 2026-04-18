@@ -41,6 +41,13 @@ _DEFAULT_CONCURRENCY = 1
 
 _CITY_SLUGS = ["dubai", "sharjah", "abudhabi", "alain", "ajman"]
 
+# Product defaults (no client toggles): full grid + cuisine sweep, keep all listing rows, request Places enrichment.
+_SCRAPE_DEDUPE_BY_VENDOR_URL = False
+_SCRAPE_HIGH_VOLUME = True
+_SCRAPE_MAX_SAMPLE_POINTS = 140
+_SCRAPE_WALL_CLOCK_SEC = 1800
+_SCRAPE_CLIENT_TIMEOUT_SEC = 2100
+
 
 def init_state() -> None:
     ensure_scrape_location(
@@ -350,8 +357,8 @@ def _friendly_api_error(response: requests.Response) -> str:
     else:
         detail = "Upstream gateway returned a non-JSON error page before the API could send structured JSON."
     hint = {
-        502: "Try lower radius/sample points, keep high-volume off, and check API logs for this request id.",
-        504: "Scrape timed out. Reduce workload or raise server timeout limits.",
+        502: "Try a smaller radius or check API logs for this request id.",
+        504: "Scrape timed out. Raise server timeout limits or check API logs.",
         500: "Internal scrape failure. Check backend logs with request id.",
     }.get(code, "Check API logs with request id.")
     rid_txt = f" Request ID: {rid}." if rid else ""
@@ -365,15 +372,16 @@ def main() -> None:
     st.title("Talabat UAE Area Intel")
     st.caption(
         "**KitchenPark / expansion analytics:** compare cities for outbound acquisition using cuisine, ratings, "
-        "delivery signals, and coverage. **No Google Cloud required** for search or scraping. "
-        "Maps use Esri (English-friendly labels)."
+        "delivery signals, and coverage. Each scrape requests **Google Places** enrichment when the API has a Maps key; "
+        "geocode can still use OpenStreetMap. Maps use Esri (English-friendly labels)."
     )
 
     with st.sidebar:
         st.header("Scrape Controls")
         st.caption(
-            "**Geocode:** if `GOOGLE_MAPS_API_KEY` is set on the API and `GEOCODE_USE_GOOGLE=1`, Google is tried first; "
-            "otherwise OpenStreetMap Nominatim is used. Scraping does not require Google."
+            "**Geocode:** if `GOOGLE_MAPS_API_KEY` is set and `GEOCODE_USE_GOOGLE=1`, Google is tried first; "
+            "otherwise OpenStreetMap Nominatim. **Scrape:** high-volume listing + Google Places enrich is always requested "
+            "(Places runs only when the key and billing allow it)."
         )
         api_base_url = get_api_base_url()
         api_key = get_frontend_api_key()
@@ -407,24 +415,6 @@ def main() -> None:
             )
             sync_legacy_pin_mirror()
 
-        dedupe_by_url = st.checkbox(
-            "Dedupe: one row per vendor URL",
-            value=False,
-            help="Off (default): keep every listing row — same brand can appear for different branches / grid samples. "
-            "On: collapse to one row per restaurant link.",
-        )
-        high_volume = st.checkbox(
-            "High-volume scrape (client-scale lists)",
-            value=False,
-            help="API: denser geo grid + multiple Talabat listing hubs (restaurants + cuisines). Much slower; "
-            "set SCRAPER_WALL_CLOCK_SEC high on Render (e.g. 900+).",
-        )
-        google_places_this_run = st.checkbox(
-            "Google Places enrichment (this run)",
-            value=False,
-            help="Calls Google Places Text Search + Details for up to GOOGLE_PLACES_ENRICH_MAX rows (uses API quota). "
-            "Requires GOOGLE_MAPS_API_KEY on the API with Places API enabled.",
-        )
         target_area_label = st.text_input(
             "Target area label (optional)",
             value="",
@@ -608,7 +598,7 @@ def main() -> None:
     else:
         st.write(f"**Run pin:** `{float(loc_run['lat']):.6f}, {float(loc_run['lng']):.6f}`")
     st.write(
-        f"Radius: `{radius_km} km` · Dedupe: `{dedupe_by_url}` · High-volume: `{high_volume}` · "
+        f"Radius: `{radius_km} km` · High-volume listing + all rows · Google Places when API key is set · "
         f"Status: `{listing_status_mode}` · New-only: `{new_on_platform_only}` · "
         f"Target label: `{target_area_label.strip() or '—'}`"
     )
@@ -620,8 +610,6 @@ def main() -> None:
         [
             area_mode,
             city_key if is_city_mode else "custom",
-            str(dedupe_by_url),
-            str(high_volume),
             listing_status_mode,
             str(new_on_platform_only),
             target_area_label.strip(),
@@ -652,12 +640,12 @@ def main() -> None:
                     "scroll_wait_ms": _DEFAULT_SCROLL_WAIT_MS,
                     "status_filter": listing_status_mode,
                     "just_landed_only": bool(new_on_platform_only),
-                    "max_sample_points": 140 if high_volume else _DEFAULT_MAX_SAMPLE_POINTS,
-                    "dedupe_by_vendor_url": dedupe_by_url,
-                    "high_volume": bool(high_volume),
+                    "max_sample_points": _SCRAPE_MAX_SAMPLE_POINTS,
+                    "dedupe_by_vendor_url": _SCRAPE_DEDUPE_BY_VENDOR_URL,
+                    "high_volume": _SCRAPE_HIGH_VOLUME,
+                    "google_places_enrich": True,
                     "scrape_target_label": target_area_label.strip() or None,
-                    # Server may still run old code without this field; when deployed, avoids 120s cap without Render env.
-                    "scrape_wall_clock_sec": 1800 if high_volume else 900,
+                    "scrape_wall_clock_sec": _SCRAPE_WALL_CLOCK_SEC,
                     "pin_lat": float(loc_req["lat"]),
                     "pin_lng": float(loc_req["lng"]),
                     "client_asserted_pin_lat": float(loc_req["lat"]),
@@ -669,8 +657,6 @@ def main() -> None:
                     payload["city"] = None
                 if not target_area_label.strip() and is_city_mode:
                     payload["scrape_target_label"] = UAE_CITY_DISPLAY.get(city_key, city_key)
-                if google_places_this_run:
-                    payload["google_places_enrich"] = True
                 try:
                     request_id = uuid.uuid4().hex
                     req_headers = dict(headers)
@@ -679,14 +665,13 @@ def main() -> None:
                         f"{api_base_url.rstrip('/')}/scrape",
                         json=payload,
                         headers=req_headers,
-                        timeout=1200,
+                        timeout=_SCRAPE_CLIENT_TIMEOUT_SEC,
                     )
                     if response.status_code >= 400:
                         raise RuntimeError(_friendly_api_error(response))
                     api_data = response.json()
                     api_request_id = str(api_data.get("request_id") or response.headers.get("X-Request-ID") or request_id)
                     df = pd.DataFrame(api_data.get("records", []))
-                    st.session_state["last_dedupe_by_url"] = bool(api_data.get("dedupe_by_vendor_url", False))
                     st.session_state["last_scrape_city"] = api_data.get("city")
                     meta_run = api_data.get("scrape_run_meta") or {}
                     meta_run.setdefault("request_id", api_request_id)
@@ -739,22 +724,13 @@ def main() -> None:
                 "The API `scrape_run_meta.effective_scrape_pin_*` is for the displayed rows; re-run to align."
             )
 
-    dedupe_done = bool(st.session_state.get("last_dedupe_by_url", False))
-    if dedupe_done:
-        st.success(f"Collected **{len(df):,}** rows (one row per vendor URL).")
-    else:
-        st.success(
-            f"Collected **{len(df):,}** listing rows (dedupe **off** — same brand may appear for branches / samples). "
-            "Use `brand_id` for brand rollups, `branch_sku` for unique rows, `scrape_target_label` for micro-market, "
-            "`just_landed_date` for new-on-platform text when present."
-        )
+    st.success(
+        f"Collected **{len(df):,}** rows. Same brand may appear for different branches or grid samples; "
+        "use **brand_id** for rollups and **branch_sku** for unique rows."
+    )
     st.caption(
-        "More filled columns: API env `RESTAURANT_DETAIL_ENRICH_MAX` (Talabat vendor pages). "
-        "Optional Google-only enrichment: `GOOGLE_PLACES_ENRICH=1` + a Maps key with Places API (skip if you have no GCP). "
-        "`SCRAPER_AGGRESSIVE_LISTING=1` or `SCRAPER_LISTING_SCROLL_ROUNDS` for deeper listing scroll. "
-        "If runs time out, lower `max_sample_points` or raise `SCRAPER_WALL_CLOCK_SEC` on Render. "
-        "If row counts stay tiny (~40), ensure `SCRAPER_LISTING_FAST_PATH` is **not** set on the API (scroll must run). "
-        "If counts plateau ~100–150 per city, raise **max_sample_points** (grid geolocations) and radius; Talabat caps each listing view."
+        "Runs use high-volume listing coverage and request Google Places enrichment when the API has a Maps key. "
+        "For deeper listing scroll or vendor-page caps, operators tune env on the API host."
     )
     m1, m2 = st.columns(2)
     m1.metric("Rows in export", int(len(df)))
