@@ -623,7 +623,7 @@ def main() -> None:
         progress = st.progress(0.0)
         status_box = st.empty()
 
-        with st.spinner("Scraping..."):
+        with st.spinner("Cooking up some data magic... 🪄✨"):
             loc_req = get_scrape_location()
             try:
                 parse_scrape_pin_or_raise_value_error(loc_req["lat"], loc_req["lng"])
