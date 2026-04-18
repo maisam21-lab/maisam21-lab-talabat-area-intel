@@ -449,23 +449,6 @@ def main() -> None:
             "just_landed=yes or recently_added_90d=yes.",
         )
 
-        with st.expander("Client Q&A (delivery wording)", expanded=False):
-            st.markdown(
-                """
-- **New restaurants / date added:** use *New on platform only* for a new-listings slice. `just_landed_date`
-  is **text parsed from the listing card** (badge/snippet), not a guaranteed ISO onboarding timestamp from Talabat.
-- **Live vs all:** *Live + unknown* drops rows our parser classifies as **closed**; it is **not** the same as
-  “accepting orders right now” on Talabat. Use *All rows* for audits.
-- **Targeted areas (not whole city):** use **Custom pin**, set **Target area label**, geocode or drag the pin,
-  then tighten **Radius** to the micro-market.
-- **Heat map:** density is **this Talabat scrape only** (not other aggregators yet).
-- **Duplicates:** default keeps **one row per listing hit** (branches / grid samples). Turn on
-  *Dedupe: one row per vendor URL* to collapse to one row per storefront URL.
-- **Brand ID:** **`brand_id`** is a **stable hash of the display brand** (name before “ - branch”). Use
-  **`branch_sku`** for a unique row key; Talabat’s internal parent/franchise id is not exposed in this scrape.
-"""
-            )
-
         radius_km = st.number_input(
             "Radius (km)",
             min_value=1.0,
@@ -492,8 +475,8 @@ def main() -> None:
 
         with st.expander("Listing harvest (API — vendor URL discovery)", expanded=False):
             st.caption(
-                "Same flow as the Egypt notebook: country restaurants listing + **Next** pagination. "
-                "Returns vendor URLs you can paste into **Seed mode** above, or export as CSV."
+                "Country-wide restaurants listing with **Next** pagination. "
+                "Returns vendor URLs for your own tools or CSV export."
             )
             harvest_country = st.text_input("Country key", value="uae", key="listing_harvest_country")
             harvest_max_next = st.number_input("Max Next clicks", min_value=0, max_value=120, value=25, key="listing_harvest_max_next")
