@@ -540,30 +540,6 @@ def main() -> None:
                     preview = "\n".join(urls[:40])
                     st.text_area("Copy / preview (first 40)", value=preview, height=200, key="listing_harvest_preview")
 
-        with st.expander("API scrape settings (remote)", expanded=False):
-            if st.button("Fetch from API", key="fetch_scrape_config_btn", use_container_width=True):
-                try:
-                    r = requests.get(
-                        f"{api_base_url.rstrip('/')}/health/scrape-config",
-                        headers=headers,
-                        timeout=20,
-                    )
-                    if r.status_code >= 400:
-                        st.session_state["_remote_scrape_config_err"] = r.text[:400]
-                        st.session_state["_remote_scrape_config"] = None
-                    else:
-                        st.session_state["_remote_scrape_config"] = r.json()
-                        st.session_state["_remote_scrape_config_err"] = None
-                except Exception as exc:
-                    st.session_state["_remote_scrape_config_err"] = str(exc)
-                    st.session_state["_remote_scrape_config"] = None
-            err = st.session_state.get("_remote_scrape_config_err")
-            cfg = st.session_state.get("_remote_scrape_config")
-            if err:
-                st.warning(str(err))
-            if cfg:
-                st.json(cfg)
-
         if geocode_btn:
             try:
                 g_response = requests.post(
