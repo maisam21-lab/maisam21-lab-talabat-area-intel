@@ -729,8 +729,8 @@ def main() -> None:
         "use **brand_id** for rollups and **branch_sku** for unique rows."
     )
     st.caption(
-        "Runs use high-volume listing coverage and request Google Places enrichment when the API has a Maps key. "
-        "For deeper listing scroll or vendor-page caps, operators tune env on the API host."
+        "Runs use high-volume listing coverage, **vendor pages for many unique restaurants** (API caps), "
+        "and Google Places when the API has a Maps key. Tune `RESTAURANT_DETAIL_ENRICH_MAX` / wall clock on the host if runs time out."
     )
     m1, m2 = st.columns(2)
     m1.metric("Rows in export", int(len(df)))
