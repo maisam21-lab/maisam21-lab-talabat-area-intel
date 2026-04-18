@@ -59,6 +59,7 @@ Geocode endpoint:
 - Set `SCRAPER_API_KEY` on Render service env vars.
 - Optional tuning (Render stability):
   - `MAX_SCRAPE_SAMPLE_POINTS` (default `8`) caps how many pin samples one `/scrape` run will visit (raise carefully; long runs can hit HTTP timeouts).
+  - **Fuller rows:** high-volume runs enrich **one pass per unique vendor URL** (up to `RESTAURANT_DETAIL_ENRICH_MAX`, default **240** when `high_volume` is true unless you set the env). Set `SCRAPER_ENRICH_UNIQUE_VENDORS=1` for the same behavior on non-HV runs. Cap total URLs with `SCRAPER_VENDOR_ENRICH_HARD_CAP` (default 800). Tune `GOOGLE_PLACES_ENRICH_MAX` (default **48**) for more Places backfill.
 - Set same `SCRAPER_API_KEY` in Streamlit secrets:
 
 ```toml

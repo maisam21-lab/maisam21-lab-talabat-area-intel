@@ -1173,7 +1173,7 @@ async def enrich_vendor_detail_pages(
             continue
         by_url.setdefault(u, []).append(r)
     urls = list(by_url.keys())[:max_urls]
-    sem = asyncio.Semaphore(3)
+    sem = asyncio.Semaphore(max(1, int(os.getenv("SCRAPER_VENDOR_ENRICH_CONCURRENCY", "3"))))
     done = 0
     total = len(urls)
     logger.info("enrichment_start urls=%s rows=%s max_urls=%s", total, len(records), max_urls)
@@ -1823,14 +1823,29 @@ async def run_area_scrape(
                 tv = tgt[:240]
                 for r in records:
                     r.scrape_target_label = tv
-            # Scale down vendor-page enrichment when many grid points (each listing + N enrich URLs is costly on Render).
-            enrich_cap = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "12"))
+            # Vendor pages fill most non-listing columns (phone, legal name, cuisines, branch coords, …).
+            # Legacy budget ``22 // grid_pts`` capped high-volume runs to ~3 URLs when grid_pts≈90 → mostly empty fields.
+            enrich_cap = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "240" if hv else "12"))
             n_pts = max(1, len(points))
-            budget = max(3, 22 // n_pts)
-            if float(radius_km) >= float(os.getenv("SCRAPER_BIG_RADIUS_KM", "18")):
-                budget = min(budget, int(os.getenv("SCRAPER_BIG_RADIUS_ENRICH_BUDGET", "2")))
-            enrich_max = min(enrich_cap, budget)
+            force_unique = hv or _env_truthy(os.getenv("SCRAPER_ENRICH_UNIQUE_VENDORS"))
+            if force_unique:
+                seen_canon: set[str] = set()
+                n_unique = 0
+                for r in records:
+                    ck = _canonical_vendor_url(r.restaurant_url)
+                    if ck and ck not in seen_canon:
+                        seen_canon.add(ck)
+                        n_unique += 1
+                budget = max(1, n_unique)
+            else:
+                budget = max(3, 22 // n_pts)
+                if float(radius_km) >= float(os.getenv("SCRAPER_BIG_RADIUS_KM", "18")):
+                    budget = min(budget, int(os.getenv("SCRAPER_BIG_RADIUS_ENRICH_BUDGET", "2")))
+            hard_cap = int(os.getenv("SCRAPER_VENDOR_ENRICH_HARD_CAP", "800"))
+            enrich_max = min(enrich_cap, budget, hard_cap)
             if meta_out is not None:
+                if force_unique:
+                    meta_out["vendor_enrich_unique_urls"] = int(budget)
                 meta_out["enrich_max_urls"] = int(enrich_max)
                 meta_out["last_completed_step"] = "enrichment_start"
             await enrich_vendor_detail_pages(browser, records, max_urls=enrich_max)
