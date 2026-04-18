@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from pin_validation import assert_client_pin_matches_body, validate_scrape_pin
+from listing_harvest import country_path_slug, default_listing_url_for_slug, harvest_vendor_urls
 from scrape_engine import run_area_scrape
 from uae_cities import resolve_city
 
@@ -126,6 +127,17 @@ class ScrapeRequest(BaseModel):
         default=None,
         description="If true, run Google Places enrichment when GOOGLE_MAPS_API_KEY is set. If false, skip. If null, use env GOOGLE_PLACES_ENRICH.",
     )
+    seed_vendor_urls: list[str] | None = Field(
+        default=None,
+        description="If non-empty, skip geo-grid listing scrape; build rows from these Talabat vendor URLs and run "
+        "vendor-page + optional Google Places enrichment, then radius/status filters (same record shape as /scrape).",
+    )
+    vendor_detail_enrich_max: int | None = Field(
+        default=None,
+        ge=1,
+        le=120,
+        description="Max vendor pages to open when seed_vendor_urls is set (capped by SCRAPER_SEED_ENRICH_MAX_CAP_API).",
+    )
 
 
 def _effective_scrape_timeout_sec(payload: ScrapeRequest) -> float:
@@ -136,6 +148,18 @@ def _effective_scrape_timeout_sec(payload: ScrapeRequest) -> float:
     if payload.scrape_wall_clock_sec is not None:
         return max(60.0, min(float(payload.scrape_wall_clock_sec), cap))
     return env_v
+
+
+class ListingHarvestRequest(BaseModel):
+    country: str = Field(default="uae", description="uae, egypt, or Talabat country path slug")
+    listing_url: str | None = Field(default=None, description="Override restaurants listing URL")
+    max_next: int = Field(default=40, ge=0, le=120, description="Max pagination 'next' clicks")
+    harvest_wall_clock_sec: int | None = Field(
+        default=300,
+        ge=60,
+        le=1200,
+        description="Hard cap for the Playwright harvest (seconds)",
+    )
 
 
 class GeocodeRequest(BaseModel):
@@ -227,6 +251,9 @@ def scrape_config(x_api_key: str | None = Header(default=None)) -> dict:
         "google_places_enrich_env": os.getenv("GOOGLE_PLACES_ENRICH", "0").strip(),
         "scraper_listing_page_pagination": os.getenv("SCRAPER_LISTING_PAGE_PAGINATION", "0").strip(),
         "scraper_listing_max_pages": int(os.getenv("SCRAPER_LISTING_MAX_PAGES", "25")),
+        "scraper_seed_url_list_max": int(os.getenv("SCRAPER_SEED_URL_LIST_MAX", "180")),
+        "scraper_seed_enrich_max_cap_api": int(os.getenv("SCRAPER_SEED_ENRICH_MAX_CAP_API", "80")),
+        "listing_harvest_response_max_urls": int(os.getenv("LISTING_HARVEST_RESPONSE_MAX_URLS", "2500")),
     }
 
 
@@ -341,6 +368,56 @@ def geocode(payload: GeocodeRequest, x_api_key: str | None = Header(default=None
         raise HTTPException(status_code=500, detail=f"Geocode failed: {exc}") from exc
 
 
+@app.post("/listing-harvest")
+async def listing_harvest_endpoint(
+    payload: ListingHarvestRequest,
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+) -> dict:
+    """Discover vendor URLs from a country restaurants listing (Playwright; same idea as the Egypt notebook)."""
+    request_id = getattr(request.state, "request_id", "")
+    verify_api_key(x_api_key)
+    slug = country_path_slug(payload.country)
+    listing = (payload.listing_url or "").strip() or default_listing_url_for_slug(slug)
+    wall = float(payload.harvest_wall_clock_sec or 300)
+    wall = max(60.0, min(wall, 1200.0))
+    try:
+        urls = await asyncio.wait_for(
+            harvest_vendor_urls(
+                listing,
+                country_slug=slug,
+                max_next=int(payload.max_next),
+                headless=True,
+            ),
+            timeout=wall,
+        )
+    except TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"Listing harvest exceeded {wall:.0f}s — lower max_next or raise harvest_wall_clock_sec (max 1200). "
+                "Hosted proxies may still cut the connection earlier."
+            ),
+        ) from None
+    except Exception as exc:
+        logger.error("listing_harvest_failed request_id=%s error=%s\n%s", request_id, exc, traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Listing harvest failed: {exc}") from exc
+
+    max_return = int(os.getenv("LISTING_HARVEST_RESPONSE_MAX_URLS", "2500"))
+    truncated = len(urls) > max_return
+    out_urls = urls[:max_return] if truncated else urls
+    return {
+        "ok": True,
+        "request_id": request_id,
+        "country_slug": slug,
+        "listing_url": listing,
+        "count_total": len(urls),
+        "urls": out_urls,
+        "urls_returned": len(out_urls),
+        "truncated": truncated,
+    }
+
+
 @app.post("/scrape")
 async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None = Header(default=None)) -> dict:
     request_id = getattr(request.state, "request_id", "")
@@ -380,6 +457,14 @@ async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None
     if effective_max_samples is not None:
         effective_max_samples = min(int(effective_max_samples), max_sample_cap)
 
+    seed_max = int(os.getenv("SCRAPER_SEED_URL_LIST_MAX", "180"))
+    raw_seeds = [s for s in (payload.seed_vendor_urls or []) if isinstance(s, str) and s.strip()]
+    if len(raw_seeds) > seed_max:
+        raise HTTPException(
+            status_code=400,
+            detail=f"seed_vendor_urls has {len(raw_seeds)} entries; max is {seed_max} (SCRAPER_SEED_URL_LIST_MAX).",
+        )
+
     wall_sec = _effective_scrape_timeout_sec(payload)
     step = "init"
     try:
@@ -399,7 +484,8 @@ async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None
         }
         step = "run_area_scrape"
         logger.info(
-            "scrape_start request_id=%s pin=(%.5f,%.5f) radius=%.2f city=%r status=%s hv=%s sample_points=%s wall=%ss",
+            "scrape_start request_id=%s pin=(%.5f,%.5f) radius=%.2f city=%r status=%s hv=%s sample_points=%s "
+            "seeds=%s wall=%ss",
             request_id,
             pin_lat,
             pin_lng,
@@ -408,6 +494,7 @@ async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None
             payload.status_filter,
             bool(payload.high_volume),
             effective_max_samples,
+            len(raw_seeds),
             int(wall_sec),
         )
         df = await asyncio.wait_for(
@@ -429,6 +516,8 @@ async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None
                 scrape_target_label=(payload.scrape_target_label or "").strip(),
                 meta_out=meta,
                 google_places_enrich=payload.google_places_enrich,
+                seed_vendor_urls=raw_seeds or None,
+                vendor_detail_enrich_max=payload.vendor_detail_enrich_max,
             ),
             timeout=wall_sec,
         )
@@ -444,6 +533,7 @@ async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None
             "status_filter": payload.status_filter,
             "just_landed_only": payload.just_landed_only,
             "scrape_target_label": (payload.scrape_target_label or "").strip(),
+            "seed_vendor_url_count": len(raw_seeds),
             "scrape_wall_clock_sec_applied": int(wall_sec),
             "pin_lat": pin_lat,
             "pin_lng": pin_lng,

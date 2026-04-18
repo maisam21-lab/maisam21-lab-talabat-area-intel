@@ -419,6 +419,30 @@ def main() -> None:
             help="API: denser geo grid + multiple Talabat listing hubs (restaurants + cuisines). Much slower; "
             "set SCRAPER_WALL_CLOCK_SEC high on Render (e.g. 900+).",
         )
+        seed_url_mode = st.checkbox(
+            "Seed mode: pasted Talabat vendor URLs only",
+            value=False,
+            key="seed_url_mode",
+            help="Skips the geo-grid **listing** scrape. Sends ``seed_vendor_urls`` to the API — same **vendor-page** "
+            "HTML / ``__NEXT_DATA__`` mining plus optional **Google Places** as a normal run. "
+            "Use URLs from ``POST /listing-harvest`` or Talabat; rows are still **filtered by radius** from your pin.",
+        )
+        vendor_pages_seed = st.number_input(
+            "Vendor pages to open (seed mode)",
+            min_value=1,
+            max_value=80,
+            value=40,
+            key="vendor_pages_seed",
+            disabled=not seed_url_mode,
+            help="Maps to API ``vendor_detail_enrich_max`` (each URL = one Playwright vendor visit, capped server-side).",
+        )
+        seed_urls_text = st.text_area(
+            "Vendor URLs (one per line; CSV first column supported)",
+            height=120,
+            disabled=not seed_url_mode,
+            key="seed_urls_text",
+            placeholder="https://www.talabat.com/uae/your-vendor-slug",
+        )
         google_places_this_run = st.checkbox(
             "Google Places enrichment (this run)",
             value=False,
@@ -489,6 +513,56 @@ def main() -> None:
         else:
             geocode_query = ""
             geocode_btn = False
+
+        with st.expander("Listing harvest (API — vendor URL discovery)", expanded=False):
+            st.caption(
+                "Same flow as the Egypt notebook: country restaurants listing + **Next** pagination. "
+                "Returns vendor URLs you can paste into **Seed mode** above, or export as CSV."
+            )
+            harvest_country = st.text_input("Country key", value="uae", key="listing_harvest_country")
+            harvest_max_next = st.number_input("Max Next clicks", min_value=0, max_value=120, value=25, key="listing_harvest_max_next")
+            if st.button("Run listing harvest", use_container_width=True, key="listing_harvest_btn"):
+                try:
+                    hr = requests.post(
+                        f"{api_base_url.rstrip('/')}/listing-harvest",
+                        json={
+                            "country": harvest_country.strip() or "uae",
+                            "max_next": int(harvest_max_next),
+                            "harvest_wall_clock_sec": 480,
+                        },
+                        headers=headers,
+                        timeout=600,
+                    )
+                    if hr.status_code >= 400:
+                        st.session_state["_listing_harvest_err"] = hr.text[:800]
+                        st.session_state["_listing_harvest_data"] = None
+                    else:
+                        st.session_state["_listing_harvest_data"] = hr.json()
+                        st.session_state["_listing_harvest_err"] = None
+                except Exception as exc:
+                    st.session_state["_listing_harvest_err"] = str(exc)
+                    st.session_state["_listing_harvest_data"] = None
+            lh_err = st.session_state.get("_listing_harvest_err")
+            lh_data = st.session_state.get("_listing_harvest_data")
+            if lh_err:
+                st.warning(str(lh_err))
+            if lh_data and lh_data.get("ok"):
+                ntot = int(lh_data.get("count_total") or 0)
+                nret = int(lh_data.get("urls_returned") or 0)
+                st.success(f"Harvested **{ntot:,}** vendor URLs (returned **{nret:,}** in JSON).")
+                if lh_data.get("truncated"):
+                    st.info("Response truncated — raise ``LISTING_HARVEST_RESPONSE_MAX_URLS`` on the API or page locally.")
+                urls = lh_data.get("urls") or []
+                if urls:
+                    st.download_button(
+                        "Download harvest CSV",
+                        data=("url\n" + "\n".join(urls)).encode("utf-8"),
+                        file_name="talabat_listing_harvest_urls.csv",
+                        mime="text/csv",
+                        key="dl_listing_harvest",
+                    )
+                    preview = "\n".join(urls[:40])
+                    st.text_area("Copy / preview (first 40)", value=preview, height=200, key="listing_harvest_preview")
 
         with st.expander("API scrape settings (remote)", expanded=False):
             if st.button("Fetch from API", key="fetch_scrape_config_btn", use_container_width=True):
@@ -600,24 +674,29 @@ def main() -> None:
         st.write(f"**Run pin:** `{float(loc_run['lat']):.6f}, {float(loc_run['lng']):.6f}`")
     st.write(
         f"Radius: `{radius_km} km` · Dedupe: `{dedupe_by_url}` · High-volume: `{high_volume}` · "
+        f"Seed URLs: `{seed_url_mode}` · "
         f"Status: `{listing_status_mode}` · New-only: `{new_on_platform_only}` · "
         f"Target label: `{target_area_label.strip() or '—'}`"
     )
     run = st.button("Start Scraping", type="primary", use_container_width=True)
 
     loc_fp = get_scrape_location()
+    seed_fp = f"{st.session_state.get('seed_url_mode', False)!s}|{hash(st.session_state.get('seed_urls_text', ''))}"
+
     current_fingerprint = "|".join(
         [
             area_mode,
             city_key if is_city_mode else "custom",
             str(dedupe_by_url),
             str(high_volume),
+            str(seed_url_mode),
             listing_status_mode,
             str(new_on_platform_only),
             target_area_label.strip(),
             f"{float(loc_fp['lat']):.6f}",
             f"{float(loc_fp['lng']):.6f}",
             str(radius_km),
+            seed_fp,
         ]
     )
 
@@ -661,39 +740,57 @@ def main() -> None:
                     payload["scrape_target_label"] = UAE_CITY_DISPLAY.get(city_key, city_key)
                 if google_places_this_run:
                     payload["google_places_enrich"] = True
-                try:
-                    request_id = uuid.uuid4().hex
-                    req_headers = dict(headers)
-                    req_headers["X-Request-ID"] = request_id
-                    response = requests.post(
-                        f"{api_base_url.rstrip('/')}/scrape",
-                        json=payload,
-                        headers=req_headers,
-                        timeout=1200,
-                    )
-                    if response.status_code >= 400:
-                        raise RuntimeError(_friendly_api_error(response))
-                    api_data = response.json()
-                    api_request_id = str(api_data.get("request_id") or response.headers.get("X-Request-ID") or request_id)
-                    df = pd.DataFrame(api_data.get("records", []))
-                    st.session_state["last_dedupe_by_url"] = bool(api_data.get("dedupe_by_vendor_url", False))
-                    st.session_state["last_scrape_city"] = api_data.get("city")
-                    meta_run = api_data.get("scrape_run_meta") or {}
-                    meta_run.setdefault("request_id", api_request_id)
-                    st.session_state["last_scrape_run_meta"] = meta_run
-                    elat = meta_run.get("effective_scrape_pin_lat")
-                    elng = meta_run.get("effective_scrape_pin_lng")
-                    if elat is not None and elng is not None:
-                        st.session_state["_last_successful_run_effective_pin"] = (float(elat), float(elng))
-                    progress.progress(1.0)
-                    status_box.info(f"Remote scrape completed · request_id={api_request_id}")
-                except Exception as exc:
-                    st.error(f"Remote API scrape failed: {exc}")
-                    df = pd.DataFrame()
 
-                st.session_state["results_df"] = df
-                st.session_state["last_run_done"] = True
-                st.session_state["results_fingerprint"] = current_fingerprint
+                do_remote_scrape = True
+                if seed_url_mode:
+                    seed_lines = [ln.strip() for ln in (seed_urls_text or "").splitlines() if ln.strip()]
+                    if not seed_lines:
+                        st.error("Seed mode is on but no vendor URLs were pasted.")
+                        st.session_state["results_df"] = pd.DataFrame()
+                        st.session_state["last_run_done"] = False
+                        do_remote_scrape = False
+                    else:
+                        payload["seed_vendor_urls"] = seed_lines
+                        payload["vendor_detail_enrich_max"] = int(vendor_pages_seed)
+                        payload["high_volume"] = False
+                        payload["scrape_wall_clock_sec"] = 1800
+
+                if do_remote_scrape:
+                    try:
+                        request_id = uuid.uuid4().hex
+                        req_headers = dict(headers)
+                        req_headers["X-Request-ID"] = request_id
+                        response = requests.post(
+                            f"{api_base_url.rstrip('/')}/scrape",
+                            json=payload,
+                            headers=req_headers,
+                            timeout=2100,
+                        )
+                        if response.status_code >= 400:
+                            raise RuntimeError(_friendly_api_error(response))
+                        api_data = response.json()
+                        api_request_id = str(
+                            api_data.get("request_id") or response.headers.get("X-Request-ID") or request_id
+                        )
+                        df = pd.DataFrame(api_data.get("records", []))
+                        st.session_state["last_dedupe_by_url"] = bool(api_data.get("dedupe_by_vendor_url", False))
+                        st.session_state["last_scrape_city"] = api_data.get("city")
+                        meta_run = api_data.get("scrape_run_meta") or {}
+                        meta_run.setdefault("request_id", api_request_id)
+                        st.session_state["last_scrape_run_meta"] = meta_run
+                        elat = meta_run.get("effective_scrape_pin_lat")
+                        elng = meta_run.get("effective_scrape_pin_lng")
+                        if elat is not None and elng is not None:
+                            st.session_state["_last_successful_run_effective_pin"] = (float(elat), float(elng))
+                        progress.progress(1.0)
+                        status_box.info(f"Remote scrape completed · request_id={api_request_id}")
+                    except Exception as exc:
+                        st.error(f"Remote API scrape failed: {exc}")
+                        df = pd.DataFrame()
+
+                    st.session_state["results_df"] = df
+                    st.session_state["last_run_done"] = True
+                    st.session_state["results_fingerprint"] = current_fingerprint
 
     df = st.session_state.get("results_df", pd.DataFrame())
     if df is None or df.empty:
