@@ -28,6 +28,7 @@ from streamlit_location import (
     store_folium_payload,
     sync_legacy_pin_mirror,
 )
+from supply_overlay import normalize_supply_overlay_df
 from uae_cities import UAE_CITY_DISPLAY, UAE_CITY_PRESETS
 
 DEFAULT_PIN = (25.2048, 55.2708)
@@ -64,6 +65,7 @@ def init_state() -> None:
     st.session_state.setdefault("_last_successful_run_effective_pin", None)
     st.session_state.setdefault("last_geocode_provider", None)
     st.session_state.setdefault("last_geocode_label", None)
+    st.session_state.setdefault("supply_overlay_df", None)
 
 
 def _bounds_for_radius(lat: float, lng: float, radius_km: float, pad: float = 1.15) -> tuple[list[float], list[float]]:
@@ -73,6 +75,28 @@ def _bounds_for_radius(lat: float, lng: float, radius_km: float, pad: float = 1.
     cos_lat = max(0.25, math.cos(math.radians(lat)))
     d_lng = r / (111.32 * cos_lat)
     return [lat - d_lat, lng - d_lng], [lat + d_lat, lng + d_lng]
+
+
+def _add_supply_overlay_feature_group(fmap: folium.Map, supply_df: pd.DataFrame | None) -> None:
+    supply = normalize_supply_overlay_df(supply_df)
+    if supply is None or supply.empty:
+        return
+    supply_fg = folium.FeatureGroup(name="Supply / Kitchen Park")
+    for _, s in supply.iterrows():
+        la, ln = float(s["lat"]), float(s["lng"])
+        lab = str(s.get("label") or "")[:120]
+        folium.CircleMarker(
+            location=[la, ln],
+            radius=7,
+            color="#EA580C",
+            weight=2,
+            fill=True,
+            fill_color="#F97316",
+            fill_opacity=0.85,
+            tooltip=lab or "Supply",
+            popup=folium.Popup(html.escape(lab or f"{la:.5f},{ln:.5f}"), max_width=220),
+        ).add_to(supply_fg)
+    supply_fg.add_to(fmap)
 
 
 def _add_esri_basemaps(fmap: folium.Map) -> None:
@@ -105,7 +129,12 @@ def _add_esri_basemaps(fmap: folium.Map) -> None:
     ).add_to(fmap)
 
 
-def render_pin_map(radius_km: float, *, lock_pin: bool = False) -> dict:
+def render_pin_map(
+    radius_km: float,
+    *,
+    lock_pin: bool = False,
+    supply_df: pd.DataFrame | None = None,
+) -> dict:
     """Render Folium pin + radius; map clicks update ``scrape_location`` only (single source of truth)."""
     loc = get_scrape_location()
     lat = float(loc["lat"])
@@ -161,6 +190,8 @@ def render_pin_map(radius_km: float, *, lock_pin: bool = False) -> dict:
         icon=folium.Icon(color="blue"),
     ).add_to(area)
 
+    _add_supply_overlay_feature_group(fmap, supply_df)
+
     Fullscreen(position="topright", title="Fullscreen", title_cancel="Exit Full Screen").add_to(fmap)
     # num_digits only — lat_formatter/lng_formatter expect JS functions and can blank the map if misused.
     MousePosition(
@@ -195,7 +226,14 @@ def render_pin_map(radius_km: float, *, lock_pin: bool = False) -> dict:
     return out
 
 
-def render_heatmap(df: pd.DataFrame, pin_lat: float, pin_lng: float, radius_km: float) -> None:
+def render_heatmap(
+    df: pd.DataFrame,
+    pin_lat: float,
+    pin_lng: float,
+    radius_km: float,
+    *,
+    supply_df: pd.DataFrame | None = None,
+) -> None:
     st.subheader("Restaurant Density Heatmap")
     view_df = df.dropna(subset=["lat", "lng"]).copy()
     if view_df.empty:
@@ -245,11 +283,17 @@ def render_heatmap(df: pd.DataFrame, pin_lat: float, pin_lng: float, radius_km: 
         icon=folium.Icon(color="blue"),
     ).add_to(fmap)
 
+    _add_supply_overlay_feature_group(fmap, supply_df)
+
     Fullscreen(position="topright", title="Fullscreen", title_cancel="Exit Full Screen").add_to(fmap)
     folium.LayerControl(position="topright", collapsed=False).add_to(fmap)
 
     lats = [float(pin_lat)] + [r[0] for r in heat_rows]
     lngs = [float(pin_lng)] + [r[1] for r in heat_rows]
+    supply_bounds = normalize_supply_overlay_df(supply_df)
+    if supply_bounds is not None and not supply_bounds.empty:
+        lats.extend(supply_bounds["lat"].astype(float).tolist())
+        lngs.extend(supply_bounds["lng"].astype(float).tolist())
     pad_lat = max(0.002, (max(lats) - min(lats)) * 0.08 + 0.001)
     pad_lng = max(0.002, (max(lngs) - min(lngs)) * 0.08 + 0.001)
     sw = [min(lats) - pad_lat, min(lngs) - pad_lng]
@@ -463,6 +507,29 @@ def main() -> None:
             geocode_query = ""
             geocode_btn = False
 
+        with st.expander("Supply overlay (CSV)", expanded=False):
+            st.caption(
+                "Optional markers on the **pin map** and **heatmap** (e.g. Kitchen Park sites). "
+                "Columns: **lat** and **lng** (or latitude / longitude). Optional: **name**, label, site, id."
+            )
+            up = st.file_uploader("Upload supply CSV", type=["csv"], key="supply_overlay_upload")
+            if up is not None:
+                try:
+                    sdf = pd.read_csv(up)
+                    norm = normalize_supply_overlay_df(sdf)
+                    if norm is None:
+                        st.warning("Could not find lat/lng columns or no valid coordinate rows.")
+                    else:
+                        st.session_state["supply_overlay_df"] = norm
+                        st.success(f"Loaded **{len(norm)}** supply point(s).")
+                except Exception as exc:
+                    st.error(f"Failed to read CSV: {exc}")
+            overlay = st.session_state.get("supply_overlay_df")
+            if overlay is not None and isinstance(overlay, pd.DataFrame) and not overlay.empty:
+                if st.button("Clear supply overlay", key="clear_supply_overlay"):
+                    st.session_state["supply_overlay_df"] = None
+                    st.rerun()
+
         with st.expander("Listing harvest (API — vendor URL discovery)", expanded=False):
             st.caption(
                 "Country-wide restaurants listing with **Next** pagination. "
@@ -580,7 +647,11 @@ def main() -> None:
     sync_legacy_pin_mirror()
 
     st.subheader("Interactive search map")
-    folium_out = render_pin_map(radius_km, lock_pin=False)
+    folium_out = render_pin_map(
+        radius_km,
+        lock_pin=False,
+        supply_df=st.session_state.get("supply_overlay_df"),
+    )
     store_folium_payload(folium_out)
     loc_after_map = get_scrape_location()
     mismatch, mismatch_msg = folium_center_vs_location_mismatch(loc_after_map)
@@ -753,7 +824,13 @@ def main() -> None:
             loc_hm = get_scrape_location()
             hm_lat, hm_lng = float(loc_hm["lat"]), float(loc_hm["lng"])
     st.caption(f"Heatmap center uses the effective scrape pin: `{hm_lat:.6f}, {hm_lng:.6f}`")
-    render_heatmap(df, pin_lat=hm_lat, pin_lng=hm_lng, radius_km=float(radius_km))
+    render_heatmap(
+        df,
+        pin_lat=hm_lat,
+        pin_lng=hm_lng,
+        radius_km=float(radius_km),
+        supply_df=st.session_state.get("supply_overlay_df"),
+    )
 
     c1, c2 = st.columns(2)
     c1.download_button(
