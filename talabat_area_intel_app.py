@@ -28,6 +28,11 @@ from streamlit_location import (
     store_folium_payload,
     sync_legacy_pin_mirror,
 )
+from google_map_tiles import (
+    ensure_google_map_tile_sessions,
+    google_2d_tile_url_template,
+    google_maps_tile_attribution,
+)
 from supply_overlay import normalize_supply_overlay_df
 from uae_cities import UAE_CITY_DISPLAY, UAE_CITY_PRESETS
 
@@ -99,6 +104,49 @@ def _add_supply_overlay_feature_group(fmap: folium.Map, supply_df: pd.DataFrame 
     supply_fg.add_to(fmap)
 
 
+def _get_google_maps_api_key_for_basemap() -> str:
+    try:
+        secret = str(st.secrets.get("GOOGLE_MAPS_API_KEY", "")).strip()
+        if secret:
+            return secret
+    except Exception:
+        pass
+    return (os.getenv("GOOGLE_MAPS_API_KEY") or "").strip()
+
+
+def _configure_map_basemaps(fmap: folium.Map) -> str:
+    """
+    Add basemap tile layers: **Google** (Map Tiles API) when ``GOOGLE_MAPS_API_KEY`` is set
+    and ``STREAMLIT_MAP_BASEMAP`` is not ``esri``; otherwise **Esri** (no Google key required).
+
+    Returns ``\"google\"`` or ``\"esri\"`` for UI captions.
+    """
+    prefer = os.getenv("STREAMLIT_MAP_BASEMAP", "").strip().lower()
+    key = _get_google_maps_api_key_for_basemap()
+    if prefer != "esri" and key:
+        cache = st.session_state.setdefault("_google_map_tile_session_cache", {})
+        lang = os.getenv("STREAMLIT_GOOGLE_MAP_TILE_LANGUAGE", "en-US").strip() or "en-US"
+        reg = os.getenv("STREAMLIT_GOOGLE_MAP_TILE_REGION", "AE").strip() or "AE"
+        rm_sess, sh_sess = ensure_google_map_tile_sessions(key, cache, language=lang, region=reg)
+        if rm_sess and sh_sess:
+            g_attr = google_maps_tile_attribution()
+            folium.TileLayer(
+                tiles=google_2d_tile_url_template(key, rm_sess),
+                attr=g_attr,
+                name="Google roadmap",
+                max_zoom=22,
+            ).add_to(fmap)
+            folium.TileLayer(
+                tiles=google_2d_tile_url_template(key, sh_sess),
+                attr=g_attr,
+                name="Google satellite (labels)",
+                max_zoom=22,
+            ).add_to(fmap)
+            return "google"
+    _add_esri_basemaps(fmap)
+    return "esri"
+
+
 def _add_esri_basemaps(fmap: folium.Map) -> None:
     """Esri street + satellite; satellite is imagery-only until the reference overlay is on."""
     folium.TileLayer(
@@ -149,7 +197,7 @@ def render_pin_map(
         control_scale=True,
     )
 
-    _add_esri_basemaps(fmap)
+    basemap = _configure_map_basemaps(fmap)
 
     area = folium.FeatureGroup(name="Search area").add_to(fmap)
 
@@ -205,10 +253,16 @@ def render_pin_map(
     sw, ne = _bounds_for_radius(lat, lng, radius_km)
     fmap.fit_bounds([sw, ne], padding=(24, 24), max_zoom=16)
 
-    st.caption(
-        "**Satellite** is photos only (no street text). For English road names use **Street map**, "
-        "or keep **Place names overlay** on. Layer control: top-right. Click map to move pin."
-    )
+    if basemap == "google":
+        st.caption(
+            "**Google** basemaps (Map Tiles API). Use layer control (top-right) to switch roadmap / satellite. "
+            "Click map to move pin."
+        )
+    else:
+        st.caption(
+            "**Satellite** is photos only (no street text). For English road names use **Street map**, "
+            "or keep **Place names overlay** on. Layer control: top-right. Click map to move pin."
+        )
     out = st_folium(
         fmap,
         width=1400,
@@ -247,7 +301,7 @@ def render_heatmap(
         zoom_control=True,
         control_scale=True,
     )
-    _add_esri_basemaps(fmap)
+    basemap = _configure_map_basemaps(fmap)
 
     heat_rows: list[list[float]] = []
     for _, row in view_df.iterrows():
@@ -300,11 +354,17 @@ def render_heatmap(
     ne = [max(lats) + pad_lat, max(lngs) + pad_lng]
     fmap.fit_bounds([sw, ne], padding=(28, 28), max_zoom=16)
 
-    st.caption(
-        "Same English-first basemaps as the pin map. **Street** = full English-style road labels; "
-        "**Satellite** + **Place names overlay** for labels. Heat = **Talabat listing density** from this scrape "
-        "(single aggregator; multi-aggregator overlay is not wired yet)."
-    )
+    if basemap == "google":
+        st.caption(
+            "Same **Google** basemaps as the pin map. Heat = **Talabat listing density** from this scrape "
+            "(single aggregator; multi-aggregator overlay is not wired yet)."
+        )
+    else:
+        st.caption(
+            "Same English-first basemaps as the pin map. **Street** = full English-style road labels; "
+            "**Satellite** + **Place names overlay** for labels. Heat = **Talabat listing density** from this scrape "
+            "(single aggregator; multi-aggregator overlay is not wired yet)."
+        )
     st_folium(
         fmap,
         width=1400,
@@ -417,14 +477,16 @@ def main() -> None:
     st.caption(
         "**KitchenPark / expansion analytics:** compare cities for outbound acquisition using cuisine, ratings, "
         "delivery signals, and coverage. Each scrape requests **Google Places** enrichment when the API has a Maps key; "
-        "geocode can still use OpenStreetMap. Maps use Esri (English-friendly labels)."
+        "geocode can still use OpenStreetMap. **Maps:** Google roadmap/satellite when ``GOOGLE_MAPS_API_KEY`` is set "
+        "and **Map Tiles API** is enabled (otherwise Esri). Set ``STREAMLIT_MAP_BASEMAP=esri`` to force Esri."
     )
 
     with st.sidebar:
         st.header("Scrape Controls")
         st.caption(
             "**Geocode:** if `GOOGLE_MAPS_API_KEY` is set and `GEOCODE_USE_GOOGLE=1`, Google is tried first; "
-            "otherwise OpenStreetMap Nominatim. **Scrape:** high-volume listing + Google Places enrich is always requested "
+            "otherwise OpenStreetMap Nominatim. **Maps:** same key is reused for **Map Tiles** basemaps unless "
+            "`STREAMLIT_MAP_BASEMAP=esri`. **Scrape:** high-volume listing + Google Places enrich is always requested "
             "(Places runs only when the key and billing allow it)."
         )
         api_base_url = get_api_base_url()

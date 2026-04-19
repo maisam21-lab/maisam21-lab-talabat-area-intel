@@ -55,7 +55,7 @@ Geocode endpoint:
 - Deploy `talabat_area_intel_app.py`
 - In sidebar set `API base URL` to your Render URL (example: `https://your-service.onrender.com`)
 - Set `ARCGIS_API_KEY` on Render service env vars (preferred for backend `/geocode`).
-- Optional fallback: `GOOGLE_MAPS_API_KEY`.
+- Optional fallback: `GOOGLE_MAPS_API_KEY` (geocode, Places enrich, **and Streamlit basemaps** when Map Tiles API is enabled).
 - Set `SCRAPER_API_KEY` on Render service env vars.
 - Optional tuning (Render stability):
   - `MAX_SCRAPE_SAMPLE_POINTS` (default `8`) caps how many pin samples one `/scrape` run will visit (raise carefully; long runs can hit HTTP timeouts).
@@ -65,7 +65,17 @@ Geocode endpoint:
 ```toml
 SCRAPER_API_KEY = "your_strong_shared_secret"
 API_BASE_URL = "https://your-service.onrender.com"
+GOOGLE_MAPS_API_KEY = "your_google_maps_platform_key"
 ```
+
+### Streamlit maps (Google vs Esri)
+
+When `GOOGLE_MAPS_API_KEY` is present in **Streamlit** secrets (or the process environment), the pin map and heatmap use **Google Map Tiles API** basemaps (roadmap + satellite with labels), via official `createSession` + `2dtiles` URLs in Folium.
+
+- In Google Cloud, enable **Map Tiles API** for the same project as the key.
+- Restrict the key appropriately (tiles load in the browser; use **HTTP referrer** restrictions for your Streamlit app URL when possible).
+- Force legacy Esri layers only: set `STREAMLIT_MAP_BASEMAP=esri`.
+- Optional: `STREAMLIT_GOOGLE_MAP_TILE_LANGUAGE` (default `en-US`), `STREAMLIT_GOOGLE_MAP_TILE_REGION` (default `AE`).
 
 The frontend sends scrape and geocode requests to Render and then displays/downloads results.
 
