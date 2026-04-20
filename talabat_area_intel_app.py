@@ -49,10 +49,10 @@ _CITY_SLUGS = ["dubai", "sharjah", "abudhabi", "alain", "ajman"]
 
 # Product defaults (no client toggles): full grid + cuisine sweep, keep all listing rows, request Places enrichment.
 _SCRAPE_DEDUPE_BY_VENDOR_URL = False
-_SCRAPE_HIGH_VOLUME = True
-_SCRAPE_MAX_SAMPLE_POINTS = 90
-_SCRAPE_WALL_CLOCK_SEC = 900
-_SCRAPE_CLIENT_TIMEOUT_SEC = 1050
+_SCRAPE_HIGH_VOLUME = False
+_SCRAPE_MAX_SAMPLE_POINTS = 35
+_SCRAPE_WALL_CLOCK_SEC = 420
+_SCRAPE_CLIENT_TIMEOUT_SEC = 480
 
 
 def init_state() -> None:
@@ -706,13 +706,13 @@ def main() -> None:
     else:
         st.write(f"**Run pin:** `{float(loc_run['lat']):.6f}, {float(loc_run['lng']):.6f}`")
     st.write(
-        f"Radius: `{radius_km} km` · High-volume listing + all rows · Google Places when API key is set · "
+        f"Radius: `{radius_km} km` · Fast profile (high-volume off by default) · Google Places when API key is set · "
         f"Status: `{listing_status_mode}` · New-only: `{new_on_platform_only}` · "
         f"Target label: `{target_area_label.strip() or '—'}`"
     )
     st.caption(
-        "Expected runtime is usually a few minutes. The UI now caps one run at ~15 minutes "
-        "(API scrape wall clock 900s + client timeout buffer)."
+        "Expected runtime is usually a few minutes. The UI caps one run at ~8 minutes "
+        "(API scrape wall clock 420s + client timeout buffer)."
     )
     run = st.button("Start Scraping", type="primary", use_container_width=True)
 
@@ -788,9 +788,9 @@ def main() -> None:
                             status_box.warning("Primary scrape timed out upstream. Retrying once with lighter settings...")
                             fallback_payload = dict(payload)
                             fallback_payload["high_volume"] = False
-                            fallback_payload["max_sample_points"] = min(int(payload["max_sample_points"]), 45)
-                            fallback_payload["scroll_rounds"] = 12
-                            fallback_payload["scrape_wall_clock_sec"] = min(int(payload["scrape_wall_clock_sec"]), 480)
+                            fallback_payload["max_sample_points"] = min(int(payload["max_sample_points"]), 24)
+                            fallback_payload["scroll_rounds"] = 10
+                            fallback_payload["scrape_wall_clock_sec"] = min(int(payload["scrape_wall_clock_sec"]), 300)
                             fallback_payload["google_places_enrich"] = False
                             response = requests.post(
                                 f"{api_base_url.rstrip('/')}/scrape",
