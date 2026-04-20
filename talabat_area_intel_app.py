@@ -50,7 +50,7 @@ _CITY_SLUGS = ["dubai", "sharjah", "abudhabi", "alain", "ajman"]
 # Product defaults (no client toggles): full grid + cuisine sweep, keep all listing rows, request Places enrichment.
 _SCRAPE_DEDUPE_BY_VENDOR_URL = False
 _SCRAPE_HIGH_VOLUME = False
-_SCRAPE_MAX_SAMPLE_POINTS = 35
+_SCRAPE_MAX_SAMPLE_POINTS = 6
 _SCRAPE_CLIENT_TIMEOUT_SEC = 1300
 
 
@@ -786,7 +786,7 @@ def main() -> None:
                             status_box.warning("Primary scrape timed out upstream. Retrying once with lighter settings...")
                             fallback_payload = dict(payload)
                             fallback_payload["high_volume"] = False
-                            fallback_payload["max_sample_points"] = min(int(payload["max_sample_points"]), 24)
+                            fallback_payload["max_sample_points"] = min(int(payload["max_sample_points"]), 3)
                             fallback_payload["scroll_rounds"] = 10
                             fallback_payload["google_places_enrich"] = False
                             response = requests.post(
@@ -798,8 +798,8 @@ def main() -> None:
                             if response.status_code >= 400 and int(response.status_code) in (502, 504):
                                 status_box.warning("Still timing out. Retrying once with ultra-light settings...")
                                 ultra_payload = dict(fallback_payload)
-                                ultra_payload["max_sample_points"] = min(int(fallback_payload["max_sample_points"]), 12)
-                                ultra_payload["scroll_rounds"] = 6
+                                ultra_payload["max_sample_points"] = min(int(fallback_payload["max_sample_points"]), 1)
+                                ultra_payload["scroll_rounds"] = 4
                                 ultra_payload["spacing_km"] = 2.5
                                 ultra_payload["google_places_enrich"] = False
                                 response = requests.post(
@@ -813,6 +813,31 @@ def main() -> None:
                     api_data = response.json()
                     api_request_id = str(api_data.get("request_id") or response.headers.get("X-Request-ID") or request_id)
                     df = pd.DataFrame(api_data.get("records", []))
+                    if df.empty:
+                        status_box.warning("Scrape returned 0 rows. Trying emergency single-point fallback...")
+                        emergency_payload = dict(payload)
+                        emergency_payload["high_volume"] = False
+                        emergency_payload["dedupe_by_vendor_url"] = True
+                        emergency_payload["status_filter"] = "all"
+                        emergency_payload["max_sample_points"] = 1
+                        emergency_payload["scroll_rounds"] = 4
+                        emergency_payload["scroll_wait_ms"] = min(int(payload["scroll_wait_ms"]), 700)
+                        emergency_payload["google_places_enrich"] = False
+                        em_resp = requests.post(
+                            f"{api_base_url.rstrip('/')}/scrape",
+                            json=emergency_payload,
+                            headers=req_headers,
+                            timeout=_SCRAPE_CLIENT_TIMEOUT_SEC,
+                        )
+                        if em_resp.status_code < 400:
+                            em_data = em_resp.json()
+                            em_df = pd.DataFrame(em_data.get("records", []))
+                            if not em_df.empty:
+                                df = em_df
+                                api_request_id = str(
+                                    em_data.get("request_id") or em_resp.headers.get("X-Request-ID") or api_request_id
+                                )
+                                api_data = em_data
                     gdf = pd.DataFrame()
                     st.session_state["last_scrape_city"] = api_data.get("city")
                     meta_run = api_data.get("scrape_run_meta") or {}
