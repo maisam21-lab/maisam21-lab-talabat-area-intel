@@ -783,7 +783,23 @@ def main() -> None:
                         timeout=_SCRAPE_CLIENT_TIMEOUT_SEC,
                     )
                     if response.status_code >= 400:
-                        raise RuntimeError(_friendly_api_error(response))
+                        # Hosted gateway 502/504 is common on heavy runs; retry once with a lighter payload.
+                        if int(response.status_code) in (502, 504):
+                            status_box.warning("Primary scrape timed out upstream. Retrying once with lighter settings...")
+                            fallback_payload = dict(payload)
+                            fallback_payload["high_volume"] = False
+                            fallback_payload["max_sample_points"] = min(int(payload["max_sample_points"]), 45)
+                            fallback_payload["scroll_rounds"] = 12
+                            fallback_payload["scrape_wall_clock_sec"] = min(int(payload["scrape_wall_clock_sec"]), 480)
+                            fallback_payload["google_places_enrich"] = False
+                            response = requests.post(
+                                f"{api_base_url.rstrip('/')}/scrape",
+                                json=fallback_payload,
+                                headers=req_headers,
+                                timeout=min(_SCRAPE_CLIENT_TIMEOUT_SEC, 720),
+                            )
+                        if response.status_code >= 400:
+                            raise RuntimeError(_friendly_api_error(response))
                     api_data = response.json()
                     api_request_id = str(api_data.get("request_id") or response.headers.get("X-Request-ID") or request_id)
                     df = pd.DataFrame(api_data.get("records", []))
