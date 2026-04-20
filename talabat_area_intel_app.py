@@ -51,8 +51,7 @@ _CITY_SLUGS = ["dubai", "sharjah", "abudhabi", "alain", "ajman"]
 _SCRAPE_DEDUPE_BY_VENDOR_URL = False
 _SCRAPE_HIGH_VOLUME = False
 _SCRAPE_MAX_SAMPLE_POINTS = 35
-_SCRAPE_WALL_CLOCK_SEC = 420
-_SCRAPE_CLIENT_TIMEOUT_SEC = 480
+_SCRAPE_CLIENT_TIMEOUT_SEC = 1300
 
 
 def init_state() -> None:
@@ -711,8 +710,8 @@ def main() -> None:
         f"Target label: `{target_area_label.strip() or '—'}`"
     )
     st.caption(
-        "Expected runtime is usually a few minutes. The UI caps one run at ~8 minutes "
-        "(API scrape wall clock 420s + client timeout buffer)."
+        "Expected runtime is usually a few minutes, but can be longer on heavy areas. "
+        "Scrape wall-clock is controlled by the API service environment."
     )
     run = st.button("Start Scraping", type="primary", use_container_width=True)
 
@@ -760,7 +759,6 @@ def main() -> None:
                     "high_volume": _SCRAPE_HIGH_VOLUME,
                     "google_places_enrich": True,
                     "scrape_target_label": target_area_label.strip() or None,
-                    "scrape_wall_clock_sec": _SCRAPE_WALL_CLOCK_SEC,
                     "pin_lat": float(loc_req["lat"]),
                     "pin_lng": float(loc_req["lng"]),
                     "client_asserted_pin_lat": float(loc_req["lat"]),
@@ -790,13 +788,12 @@ def main() -> None:
                             fallback_payload["high_volume"] = False
                             fallback_payload["max_sample_points"] = min(int(payload["max_sample_points"]), 24)
                             fallback_payload["scroll_rounds"] = 10
-                            fallback_payload["scrape_wall_clock_sec"] = min(int(payload["scrape_wall_clock_sec"]), 300)
                             fallback_payload["google_places_enrich"] = False
                             response = requests.post(
                                 f"{api_base_url.rstrip('/')}/scrape",
                                 json=fallback_payload,
                                 headers=req_headers,
-                                timeout=min(_SCRAPE_CLIENT_TIMEOUT_SEC, 720),
+                                timeout=_SCRAPE_CLIENT_TIMEOUT_SEC,
                             )
                             if response.status_code >= 400 and int(response.status_code) in (502, 504):
                                 status_box.warning("Still timing out. Retrying once with ultra-light settings...")
@@ -804,13 +801,12 @@ def main() -> None:
                                 ultra_payload["max_sample_points"] = min(int(fallback_payload["max_sample_points"]), 12)
                                 ultra_payload["scroll_rounds"] = 6
                                 ultra_payload["spacing_km"] = 2.5
-                                ultra_payload["scrape_wall_clock_sec"] = min(int(fallback_payload["scrape_wall_clock_sec"]), 180)
                                 ultra_payload["google_places_enrich"] = False
                                 response = requests.post(
                                     f"{api_base_url.rstrip('/')}/scrape",
                                     json=ultra_payload,
                                     headers=req_headers,
-                                    timeout=min(_SCRAPE_CLIENT_TIMEOUT_SEC, 360),
+                                    timeout=_SCRAPE_CLIENT_TIMEOUT_SEC,
                                 )
                         if response.status_code >= 400:
                             raise RuntimeError(_friendly_api_error(response))
