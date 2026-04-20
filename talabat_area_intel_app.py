@@ -798,6 +798,20 @@ def main() -> None:
                                 headers=req_headers,
                                 timeout=min(_SCRAPE_CLIENT_TIMEOUT_SEC, 720),
                             )
+                            if response.status_code >= 400 and int(response.status_code) in (502, 504):
+                                status_box.warning("Still timing out. Retrying once with ultra-light settings...")
+                                ultra_payload = dict(fallback_payload)
+                                ultra_payload["max_sample_points"] = min(int(fallback_payload["max_sample_points"]), 12)
+                                ultra_payload["scroll_rounds"] = 6
+                                ultra_payload["spacing_km"] = 2.5
+                                ultra_payload["scrape_wall_clock_sec"] = min(int(fallback_payload["scrape_wall_clock_sec"]), 180)
+                                ultra_payload["google_places_enrich"] = False
+                                response = requests.post(
+                                    f"{api_base_url.rstrip('/')}/scrape",
+                                    json=ultra_payload,
+                                    headers=req_headers,
+                                    timeout=min(_SCRAPE_CLIENT_TIMEOUT_SEC, 360),
+                                )
                         if response.status_code >= 400:
                             raise RuntimeError(_friendly_api_error(response))
                     api_data = response.json()
