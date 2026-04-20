@@ -8,6 +8,7 @@ Area-first UAE restaurant intelligence with:
 - Just Landed toggle
 - branch-level unique SKU (`branch_sku`)
 - density heatmap
+- optional Google-only nearby coverage overlay (Places Nearby Search)
 
 Scraping collects vendor links in the form `https://www.talabat.com/uae/{slug}` (Talabat’s main listing pattern), with `/restaurant/...` as a secondary pattern.
 
@@ -98,6 +99,7 @@ The frontend sends scrape and geocode requests to Render and then displays/downl
 ## Notes and limits
 
 - This uses public website content and selectors that may change over time.
+- Scrape radius is constrained to **5–10 km** in frontend and API (`/scrape`, `/google-coverage`).
 - Streamlit Cloud alone is not reliable for Playwright subprocess scraping.
 - Keep scraping on backend infrastructure (Render Docker) for stability.
 - Streamlit Cloud frontend should always point to Render backend for scraping/geocoding.

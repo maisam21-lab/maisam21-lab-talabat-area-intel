@@ -11,6 +11,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from google_coverage import fetch_google_nearby_restaurants, google_coverage_enabled
 from pin_validation import assert_client_pin_matches_body, validate_scrape_pin
 from listing_harvest import country_path_slug, default_listing_url_for_slug, harvest_vendor_urls
 from scrape_engine import run_area_scrape
@@ -74,7 +75,7 @@ def verify_api_key(x_api_key: str | None) -> None:
 class ScrapeRequest(BaseModel):
     pin_lat: float = Field(default=25.2048, description="Search center latitude (geometry always follows this pin)")
     pin_lng: float = Field(default=55.2708, description="Search center longitude (geometry always follows this pin)")
-    radius_km: float = Field(default=12.0, ge=1.0, le=40.0)
+    radius_km: float = Field(default=10.0, ge=5.0, le=10.0)
     # Wider spacing + low concurrency defaults reduce Render 502/timeouts on long runs.
     spacing_km: float = Field(default=1.5, ge=0.35, le=3.0)
     concurrency: int = Field(default=1, ge=1, le=6)
@@ -155,6 +156,12 @@ class GeocodeRequest(BaseModel):
     query: str
 
 
+class GoogleCoverageRequest(BaseModel):
+    pin_lat: float = Field(default=25.2048)
+    pin_lng: float = Field(default=55.2708)
+    radius_km: float = Field(default=10.0, ge=5.0, le=10.0)
+
+
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 # Nominatim requires a valid User-Agent (https://operations.osmfoundation.org/policies/nominatim/).
 _DEFAULT_NOMINATIM_UA = "TalabatAreaIntel/1.0 (+https://github.com/maisam21-lab/maisam21-lab-talabat-area-intel)"
@@ -230,7 +237,8 @@ def scrape_config(x_api_key: str | None = Header(default=None)) -> dict:
         "geocode_use_google": _google_geocode_enabled(),
         "geocode_fallback_nominatim": _nominatim_enabled(),
         "scraper_wall_clock_sec_default": float(os.getenv("SCRAPER_WALL_CLOCK_SEC", "600")),
-        "scraper_max_radius_km": float(os.getenv("SCRAPER_MAX_RADIUS_KM", "25")),
+        "scraper_min_radius_km": float(os.getenv("SCRAPER_MIN_RADIUS_KM", "5")),
+        "scraper_max_radius_km": float(os.getenv("SCRAPER_MAX_RADIUS_KM", "10")),
         "scraper_max_sample_points_cap_api": int(os.getenv("SCRAPER_MAX_SAMPLE_POINTS_CAP_API", "180")),
         "max_scrape_sample_points_default": int(os.getenv("MAX_SCRAPE_SAMPLE_POINTS", "6")),
         "restaurant_detail_enrich_max_default": int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "12")),
@@ -405,6 +413,28 @@ async def listing_harvest_endpoint(
     }
 
 
+@app.post("/google-coverage")
+def google_coverage(payload: GoogleCoverageRequest, x_api_key: str | None = Header(default=None)) -> dict:
+    verify_api_key(x_api_key)
+    if not google_coverage_enabled():
+        return {
+            "ok": True,
+            "count": 0,
+            "records": [],
+            "note": "Google coverage disabled or GOOGLE_MAPS_API_KEY missing on API service.",
+        }
+    pin_lat, pin_lng = validate_scrape_pin(payload.pin_lat, payload.pin_lng)
+    rows = fetch_google_nearby_restaurants(pin_lat=pin_lat, pin_lng=pin_lng, radius_km=float(payload.radius_km))
+    return {
+        "ok": True,
+        "count": len(rows),
+        "records": rows,
+        "pin_lat": pin_lat,
+        "pin_lng": pin_lng,
+        "radius_km": float(payload.radius_km),
+    }
+
+
 @app.post("/scrape")
 async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None = Header(default=None)) -> dict:
     request_id = getattr(request.state, "request_id", "")
@@ -436,9 +466,10 @@ async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None
         _city_center_lat, _city_center_lng, _default_radius, scrape_city_label = resolved
 
     # Guardrails to reduce OOM/timeouts on hosted infra when users request very heavy runs.
-    max_r = float(os.getenv("SCRAPER_MAX_RADIUS_KM", "25"))
-    if float(payload.radius_km) > max_r:
-        raise HTTPException(status_code=400, detail=f"radius_km exceeds allowed max ({max_r:g})")
+    min_r = float(os.getenv("SCRAPER_MIN_RADIUS_KM", "5"))
+    max_r = float(os.getenv("SCRAPER_MAX_RADIUS_KM", "10"))
+    if float(payload.radius_km) < min_r or float(payload.radius_km) > max_r:
+        raise HTTPException(status_code=400, detail=f"radius_km must be between {min_r:g} and {max_r:g}")
     max_sample_cap = int(os.getenv("SCRAPER_MAX_SAMPLE_POINTS_CAP_API", "180"))
     effective_max_samples = payload.max_sample_points
     if effective_max_samples is not None:

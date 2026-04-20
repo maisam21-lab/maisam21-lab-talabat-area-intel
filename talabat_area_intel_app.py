@@ -50,9 +50,9 @@ _CITY_SLUGS = ["dubai", "sharjah", "abudhabi", "alain", "ajman"]
 # Product defaults (no client toggles): full grid + cuisine sweep, keep all listing rows, request Places enrichment.
 _SCRAPE_DEDUPE_BY_VENDOR_URL = False
 _SCRAPE_HIGH_VOLUME = True
-_SCRAPE_MAX_SAMPLE_POINTS = 140
-_SCRAPE_WALL_CLOCK_SEC = 1800
-_SCRAPE_CLIENT_TIMEOUT_SEC = 2100
+_SCRAPE_MAX_SAMPLE_POINTS = 90
+_SCRAPE_WALL_CLOCK_SEC = 900
+_SCRAPE_CLIENT_TIMEOUT_SEC = 1050
 
 
 def init_state() -> None:
@@ -71,6 +71,7 @@ def init_state() -> None:
     st.session_state.setdefault("last_geocode_provider", None)
     st.session_state.setdefault("last_geocode_label", None)
     st.session_state.setdefault("supply_overlay_df", None)
+    st.session_state.setdefault("google_coverage_df", pd.DataFrame())
 
 
 def _bounds_for_radius(lat: float, lng: float, radius_km: float, pad: float = 1.15) -> tuple[list[float], list[float]]:
@@ -102,6 +103,36 @@ def _add_supply_overlay_feature_group(fmap: folium.Map, supply_df: pd.DataFrame 
             popup=folium.Popup(html.escape(lab or f"{la:.5f},{ln:.5f}"), max_width=220),
         ).add_to(supply_fg)
     supply_fg.add_to(fmap)
+
+
+def _add_google_coverage_feature_group(fmap: folium.Map, coverage_df: pd.DataFrame | None) -> None:
+    if coverage_df is None or not isinstance(coverage_df, pd.DataFrame) or coverage_df.empty:
+        return
+    if "lat" not in coverage_df.columns or "lng" not in coverage_df.columns:
+        return
+    fg = folium.FeatureGroup(name="Google-only coverage")
+    for _, row in coverage_df.iterrows():
+        try:
+            la = float(row["lat"])
+            ln = float(row["lng"])
+        except (TypeError, ValueError):
+            continue
+        nm = html.escape(str(row.get("name") or "Google place")[:120])
+        rating = row.get("rating")
+        rt = f" · ⭐ {rating}" if rating not in (None, "") else ""
+        popup = folium.Popup(f"<b>{nm}</b>{rt}", max_width=240)
+        folium.CircleMarker(
+            location=[la, ln],
+            radius=6,
+            color="#15803D",
+            weight=2,
+            fill=True,
+            fill_color="#22C55E",
+            fill_opacity=0.85,
+            tooltip=f"{str(row.get('name') or 'Google place')[:80]}{rt}",
+            popup=popup,
+        ).add_to(fg)
+    fg.add_to(fmap)
 
 
 def _get_google_maps_api_key_for_basemap() -> str:
@@ -182,6 +213,7 @@ def render_pin_map(
     *,
     lock_pin: bool = False,
     supply_df: pd.DataFrame | None = None,
+    google_coverage_df: pd.DataFrame | None = None,
 ) -> dict:
     """Render Folium pin + radius; map clicks update ``scrape_location`` only (single source of truth)."""
     loc = get_scrape_location()
@@ -239,6 +271,7 @@ def render_pin_map(
     ).add_to(area)
 
     _add_supply_overlay_feature_group(fmap, supply_df)
+    _add_google_coverage_feature_group(fmap, google_coverage_df)
 
     Fullscreen(position="topright", title="Fullscreen", title_cancel="Exit Full Screen").add_to(fmap)
     # num_digits only — lat_formatter/lng_formatter expect JS functions and can blank the map if misused.
@@ -287,6 +320,7 @@ def render_heatmap(
     radius_km: float,
     *,
     supply_df: pd.DataFrame | None = None,
+    google_coverage_df: pd.DataFrame | None = None,
 ) -> None:
     st.subheader("Restaurant Density Heatmap")
     view_df = df.dropna(subset=["lat", "lng"]).copy()
@@ -338,6 +372,7 @@ def render_heatmap(
     ).add_to(fmap)
 
     _add_supply_overlay_feature_group(fmap, supply_df)
+    _add_google_coverage_feature_group(fmap, google_coverage_df)
 
     Fullscreen(position="topright", title="Fullscreen", title_cancel="Exit Full Screen").add_to(fmap)
     folium.LayerControl(position="topright", collapsed=False).add_to(fmap)
@@ -348,6 +383,10 @@ def render_heatmap(
     if supply_bounds is not None and not supply_bounds.empty:
         lats.extend(supply_bounds["lat"].astype(float).tolist())
         lngs.extend(supply_bounds["lng"].astype(float).tolist())
+    if google_coverage_df is not None and isinstance(google_coverage_df, pd.DataFrame) and not google_coverage_df.empty:
+        if "lat" in google_coverage_df.columns and "lng" in google_coverage_df.columns:
+            lats.extend(pd.to_numeric(google_coverage_df["lat"], errors="coerce").dropna().astype(float).tolist())
+            lngs.extend(pd.to_numeric(google_coverage_df["lng"], errors="coerce").dropna().astype(float).tolist())
     pad_lat = max(0.002, (max(lats) - min(lats)) * 0.08 + 0.001)
     pad_lng = max(0.002, (max(lngs) - min(lngs)) * 0.08 + 0.001)
     sw = [min(lats) - pad_lat, min(lngs) - pad_lng]
@@ -512,7 +551,10 @@ def main() -> None:
                 index=0,
             )
             city_lat, city_lng, city_suggested_r = UAE_CITY_PRESETS[city_key]
-            st.caption(f"Suggested radius for this emirate: **{city_suggested_r:g} km** (adjust below).")
+            st.caption(
+                f"Suggested radius for this emirate: **{city_suggested_r:g} km** "
+                "(input is constrained to **5–10 km**)."
+            )
             seed_city_preset_if_changed(
                 city_key,
                 float(city_lat),
@@ -544,12 +586,17 @@ def main() -> None:
             help="Turns on Talabat 'Just Landed' listing mode when the UI exposes it, then keeps rows with "
             "just_landed=yes or recently_added_90d=yes.",
         )
+        include_google_coverage = st.checkbox(
+            "Include Google-only coverage layer",
+            value=True,
+            help="Fetches nearby Google restaurants around the same pin/radius and overlays them on maps.",
+        )
 
         radius_km = st.number_input(
             "Radius (km)",
-            min_value=1.0,
-            max_value=40.0,
-            value=float(city_suggested_r if is_city_mode else 10.0),
+            min_value=5.0,
+            max_value=10.0,
+            value=float(min(10.0, max(5.0, city_suggested_r if is_city_mode else 10.0))),
             step=0.5,
             key="scrape_radius_km_widget",
         )
@@ -568,79 +615,6 @@ def main() -> None:
         else:
             geocode_query = ""
             geocode_btn = False
-
-        with st.expander("Supply overlay (CSV)", expanded=False):
-            st.caption(
-                "Optional markers on the **pin map** and **heatmap** (e.g. Kitchen Park sites). "
-                "Columns: **lat** and **lng** (or latitude / longitude). Optional: **name**, label, site, id."
-            )
-            up = st.file_uploader("Upload supply CSV", type=["csv"], key="supply_overlay_upload")
-            if up is not None:
-                try:
-                    sdf = pd.read_csv(up)
-                    norm = normalize_supply_overlay_df(sdf)
-                    if norm is None:
-                        st.warning("Could not find lat/lng columns or no valid coordinate rows.")
-                    else:
-                        st.session_state["supply_overlay_df"] = norm
-                        st.success(f"Loaded **{len(norm)}** supply point(s).")
-                except Exception as exc:
-                    st.error(f"Failed to read CSV: {exc}")
-            overlay = st.session_state.get("supply_overlay_df")
-            if overlay is not None and isinstance(overlay, pd.DataFrame) and not overlay.empty:
-                if st.button("Clear supply overlay", key="clear_supply_overlay"):
-                    st.session_state["supply_overlay_df"] = None
-                    st.rerun()
-
-        with st.expander("Listing harvest (API — vendor URL discovery)", expanded=False):
-            st.caption(
-                "Country-wide restaurants listing with **Next** pagination. "
-                "Returns vendor URLs for your own tools or CSV export."
-            )
-            harvest_country = st.text_input("Country key", value="uae", key="listing_harvest_country")
-            harvest_max_next = st.number_input("Max Next clicks", min_value=0, max_value=120, value=25, key="listing_harvest_max_next")
-            if st.button("Run listing harvest", use_container_width=True, key="listing_harvest_btn"):
-                try:
-                    hr = requests.post(
-                        f"{api_base_url.rstrip('/')}/listing-harvest",
-                        json={
-                            "country": harvest_country.strip() or "uae",
-                            "max_next": int(harvest_max_next),
-                            "harvest_wall_clock_sec": 480,
-                        },
-                        headers=headers,
-                        timeout=600,
-                    )
-                    if hr.status_code >= 400:
-                        st.session_state["_listing_harvest_err"] = hr.text[:800]
-                        st.session_state["_listing_harvest_data"] = None
-                    else:
-                        st.session_state["_listing_harvest_data"] = hr.json()
-                        st.session_state["_listing_harvest_err"] = None
-                except Exception as exc:
-                    st.session_state["_listing_harvest_err"] = str(exc)
-                    st.session_state["_listing_harvest_data"] = None
-            lh_err = st.session_state.get("_listing_harvest_err")
-            lh_data = st.session_state.get("_listing_harvest_data")
-            if lh_err:
-                st.warning(str(lh_err))
-            if lh_data and lh_data.get("ok"):
-                ntot = int(lh_data.get("count_total") or 0)
-                nret = int(lh_data.get("urls_returned") or 0)
-                st.success(f"Harvested **{ntot:,}** vendor URLs (returned **{nret:,}** in JSON).")
-                if lh_data.get("truncated"):
-                    st.info("Response truncated — raise ``LISTING_HARVEST_RESPONSE_MAX_URLS`` on the API or page locally.")
-                urls = lh_data.get("urls") or []
-                if urls:
-                    st.download_button(
-                        "Download harvest CSV",
-                        data=("url\n" + "\n".join(urls)).encode("utf-8"),
-                        file_name="talabat_listing_harvest_urls.csv",
-                        mime="text/csv",
-                        key="dl_listing_harvest",
-                    )
-                    preview = "\n".join(urls[:40])
-                    st.text_area("Copy / preview (first 40)", value=preview, height=200, key="listing_harvest_preview")
 
         if geocode_btn:
             try:
@@ -713,6 +687,7 @@ def main() -> None:
         radius_km,
         lock_pin=False,
         supply_df=st.session_state.get("supply_overlay_df"),
+        google_coverage_df=st.session_state.get("google_coverage_df"),
     )
     store_folium_payload(folium_out)
     loc_after_map = get_scrape_location()
@@ -735,6 +710,10 @@ def main() -> None:
         f"Status: `{listing_status_mode}` · New-only: `{new_on_platform_only}` · "
         f"Target label: `{target_area_label.strip() or '—'}`"
     )
+    st.caption(
+        "Expected runtime is usually a few minutes. The UI now caps one run at ~15 minutes "
+        "(API scrape wall clock 900s + client timeout buffer)."
+    )
     run = st.button("Start Scraping", type="primary", use_container_width=True)
 
     loc_fp = get_scrape_location()
@@ -745,6 +724,7 @@ def main() -> None:
             city_key if is_city_mode else "custom",
             listing_status_mode,
             str(new_on_platform_only),
+            str(include_google_coverage),
             target_area_label.strip(),
             f"{float(loc_fp['lat']):.6f}",
             f"{float(loc_fp['lng']):.6f}",
@@ -755,6 +735,8 @@ def main() -> None:
     if run:
         progress = st.progress(0.0)
         status_box = st.empty()
+        if not include_google_coverage:
+            st.session_state["google_coverage_df"] = pd.DataFrame()
 
         with st.spinner("Cooking up some data magic... 🪄✨"):
             loc_req = get_scrape_location()
@@ -805,6 +787,7 @@ def main() -> None:
                     api_data = response.json()
                     api_request_id = str(api_data.get("request_id") or response.headers.get("X-Request-ID") or request_id)
                     df = pd.DataFrame(api_data.get("records", []))
+                    gdf = pd.DataFrame()
                     st.session_state["last_scrape_city"] = api_data.get("city")
                     meta_run = api_data.get("scrape_run_meta") or {}
                     meta_run.setdefault("request_id", api_request_id)
@@ -813,11 +796,32 @@ def main() -> None:
                     elng = meta_run.get("effective_scrape_pin_lng")
                     if elat is not None and elng is not None:
                         st.session_state["_last_successful_run_effective_pin"] = (float(elat), float(elng))
+                    if include_google_coverage:
+                        try:
+                            gc_resp = requests.post(
+                                f"{api_base_url.rstrip('/')}/google-coverage",
+                                json={
+                                    "pin_lat": float(loc_req["lat"]),
+                                    "pin_lng": float(loc_req["lng"]),
+                                    "radius_km": float(radius_km),
+                                },
+                                headers=req_headers,
+                                timeout=80,
+                            )
+                            if gc_resp.status_code < 400:
+                                gc_data = gc_resp.json()
+                                gdf = pd.DataFrame(gc_data.get("records", []))
+                            else:
+                                st.warning(f"Google coverage fetch skipped: {_friendly_api_error(gc_resp)}")
+                        except Exception as exc:
+                            st.warning(f"Google coverage fetch failed: {exc}")
+                    st.session_state["google_coverage_df"] = gdf
                     progress.progress(1.0)
                     status_box.info(f"Remote scrape completed · request_id={api_request_id}")
                 except Exception as exc:
                     st.error(f"Remote API scrape failed: {exc}")
                     df = pd.DataFrame()
+                    st.session_state["google_coverage_df"] = pd.DataFrame()
 
                 st.session_state["results_df"] = df
                 st.session_state["last_run_done"] = True
@@ -869,6 +873,30 @@ def main() -> None:
     m1.metric("Rows in export", int(len(df)))
     m2.metric("Not closed", int((df["status"] != "closed").sum()))
 
+    gdf = st.session_state.get("google_coverage_df", pd.DataFrame())
+    if isinstance(gdf, pd.DataFrame) and not gdf.empty:
+        talabat_place_ids = set(df.get("google_place_id", pd.Series(dtype=str)).astype(str).str.strip().str.lower().tolist())
+        talabat_place_ids.discard("")
+        if "google_place_id" in gdf.columns:
+            google_place_ids = gdf["google_place_id"].astype(str).str.strip().str.lower()
+            google_only = gdf.loc[~google_place_ids.isin(talabat_place_ids)].copy()
+        else:
+            google_only = gdf.copy()
+        cgo1, cgo2 = st.columns(2)
+        cgo1.metric("Google nearby candidates", int(len(gdf)))
+        cgo2.metric("Google-only (not in Talabat rows)", int(len(google_only)))
+        with st.expander("Google-only coverage candidates", expanded=False):
+            st.caption(
+                "Nearby Google restaurants in the same pin/radius that are not matched to current Talabat rows by place_id."
+            )
+            st.dataframe(google_only, use_container_width=True, height=280)
+            st.download_button(
+                "Download Google-only CSV",
+                data=google_only.to_csv(index=False).encode("utf-8"),
+                file_name="google_only_coverage_candidates.csv",
+                mime="text/csv",
+            )
+
     st.dataframe(df, use_container_width=True, height=420)
 
     render_outbound_prioritization_dashboard(df)
@@ -892,6 +920,7 @@ def main() -> None:
         pin_lng=hm_lng,
         radius_km=float(radius_km),
         supply_df=st.session_state.get("supply_overlay_df"),
+        google_coverage_df=st.session_state.get("google_coverage_df"),
     )
 
     c1, c2 = st.columns(2)
