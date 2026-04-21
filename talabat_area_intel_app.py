@@ -825,7 +825,6 @@ def main() -> None:
                             fallback_payload["high_volume"] = False
                             fallback_payload["max_sample_points"] = min(int(payload["max_sample_points"]), 3)
                             fallback_payload["scroll_rounds"] = 10
-                            fallback_payload["google_places_enrich"] = False
                             response = _post_scrape(
                                 fallback_payload,
                                 "Lighter retry also hit read-timeout. Retrying once with ultra-light settings...",

@@ -1825,9 +1825,9 @@ async def run_area_scrape(
                     r.scrape_target_label = tv
             # Vendor pages fill most non-listing columns (phone, legal name, cuisines, branch coords, …).
             # Legacy budget ``22 // grid_pts`` capped high-volume runs to ~3 URLs when grid_pts≈90 → mostly empty fields.
-            enrich_cap = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "240" if hv else "12"))
+            enrich_cap = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "240" if hv else "60"))
             n_pts = max(1, len(points))
-            force_unique = hv or _env_truthy(os.getenv("SCRAPER_ENRICH_UNIQUE_VENDORS"))
+            force_unique = hv or _env_truthy(os.getenv("SCRAPER_ENRICH_UNIQUE_VENDORS", "1"))
             if force_unique:
                 seen_canon: set[str] = set()
                 n_unique = 0
