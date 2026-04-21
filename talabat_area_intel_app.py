@@ -535,6 +535,40 @@ def _friendly_api_error(response: requests.Response) -> str:
     return f"{code} {response.reason}: {detail}. {hint}{rid_txt}"
 
 
+def compact_output_df(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """
+    Remove all-empty columns from user-facing outputs.
+
+    Keeps only core geometry/identity columns by default, then appends any
+    additional columns that have at least one non-empty value.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(), []
+    core = [
+        "restaurant_name",
+        "brand_display_name",
+        "restaurant_url",
+        "status",
+        "area_label",
+        "lat",
+        "lng",
+        "distance_km_from_pin",
+    ]
+    keep: list[str] = [c for c in core if c in df.columns]
+    removed: list[str] = []
+
+    for c in df.columns:
+        if c in keep:
+            continue
+        s = df[c]
+        non_empty = (s.notna()) & (s.astype(str).str.strip() != "")
+        if bool(non_empty.any()):
+            keep.append(c)
+        else:
+            removed.append(c)
+    return df.loc[:, keep].copy(), removed
+
+
 def main() -> None:
     st.set_page_config(page_title="Talabat Area Intel (English)", layout="wide")
     init_state()
@@ -925,6 +959,10 @@ def main() -> None:
             st.info("No results yet. Set pin and click Start Scraping.")
         return
 
+    view_df, dropped_cols = compact_output_df(df)
+    if dropped_cols:
+        st.caption(f"Hiding **{len(dropped_cols)}** all-empty columns from table/export (noise reduction).")
+
     if (
         st.session_state.get("results_fingerprint")
         and st.session_state.get("results_fingerprint") != current_fingerprint
@@ -984,7 +1022,7 @@ def main() -> None:
                 mime="text/csv",
             )
 
-    st.dataframe(df, use_container_width=True, height=420)
+    st.dataframe(view_df, use_container_width=True, height=420)
 
     render_outbound_prioritization_dashboard(df)
 
@@ -1013,13 +1051,13 @@ def main() -> None:
     c1, c2 = st.columns(2)
     c1.download_button(
         "Download CSV",
-        data=df.to_csv(index=False).encode("utf-8"),
+        data=view_df.to_csv(index=False).encode("utf-8"),
         file_name="talabat_area_intel_results.csv",
         mime="text/csv",
     )
     c2.download_button(
         "Download JSON",
-        data=df.to_json(orient="records", force_ascii=False).encode("utf-8"),
+        data=view_df.to_json(orient="records", force_ascii=False).encode("utf-8"),
         file_name="talabat_area_intel_results.json",
         mime="application/json",
     )
