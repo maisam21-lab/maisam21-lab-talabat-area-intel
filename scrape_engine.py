@@ -102,6 +102,62 @@ def parse_lat_lng(text: str) -> tuple[float | None, float | None]:
     return None, None
 
 
+def parse_listing_snippet_fields(snippet: str) -> dict[str, str]:
+    """Best-effort extraction of card-visible metadata from listing snippets."""
+    raw = " ".join((snippet or "").split())
+    low = raw.lower()
+    out = {
+        "cuisines": "",
+        "rating": "",
+        "reviews_count": "",
+        "eta": "",
+        "delivery_fee": "",
+        "min_order": "",
+    }
+    if not raw:
+        return out
+
+    # Rating number (Talabat cards commonly show 3.5-5.0).
+    for m in re.finditer(r"\b([3-5](?:\.\d)?)\b", raw):
+        val = m.group(1)
+        try:
+            rv = float(val)
+        except ValueError:
+            continue
+        if 0.0 <= rv <= 5.0:
+            out["rating"] = val
+            break
+
+    # Review/rating count near "ratings/reviews".
+    m_rev = re.search(r"([\d,]{1,9})\+?\s*(?:ratings?|reviews?)", low, re.I)
+    if m_rev:
+        out["reviews_count"] = m_rev.group(1).replace(",", "")
+
+    # ETA / fee / min-order style fragments.
+    m_eta = re.search(r"\b(\d{1,3}\s*(?:-|to)?\s*\d{0,3}\s*min)\b", low, re.I)
+    if m_eta:
+        out["eta"] = m_eta.group(1).strip()
+    m_fee = re.search(r"\b(?:delivery[^A-Za-z0-9]{0,8})?(aed\s*\d+(?:\.\d{1,2})?)\b", low, re.I)
+    if m_fee:
+        out["delivery_fee"] = m_fee.group(1).upper().strip()
+    m_min = re.search(r"\b(?:min(?:imum)?\s*order[^A-Za-z0-9]{0,8})(aed\s*\d+(?:\.\d{1,2})?)\b", low, re.I)
+    if m_min:
+        out["min_order"] = m_min.group(1).upper().strip()
+
+    # Cuisine-ish token from bullet-separated snippet.
+    for tok in re.split(r"[•|·]", raw):
+        t = tok.strip()
+        tl = t.lower()
+        if not t:
+            continue
+        if any(x in tl for x in ("min", "aed", "delivery", "rating", "review", "closed", "open now")):
+            continue
+        if re.search(r"[A-Za-z]", t) and len(t) >= 4:
+            out["cuisines"] = t[:220]
+            break
+    return out
+
+
 async def auto_scroll(page, rounds: int = 22, wait_ms: int = 1300) -> None:
     """Scroll until listing links stop growing (Talabat uses infinite scroll; body height can plateau early)."""
     prev_height = 0
@@ -253,6 +309,7 @@ async def extract_restaurants_from_anchor_links(
         snippet = str(item.get("snippet") or "")
         if not url:
             continue
+        parsed = parse_listing_snippet_fields(snippet)
         slug_name = url.rstrip("/").split("/")[-1].replace("-", " ").title() if url else ""
         if not name:
             name = slug_name
@@ -287,19 +344,19 @@ async def extract_restaurants_from_anchor_links(
                 talabat_restaurant_id="",
                 talabat_branch_id="",
                 contact_phone="",
-                cuisines="",
-                rating="",
-                reviews_count="",
-                eta="",
-                delivery_fee="",
-                min_order="",
+                cuisines=str(parsed.get("cuisines") or ""),
+                rating=str(parsed.get("rating") or ""),
+                reviews_count=str(parsed.get("reviews_count") or ""),
+                eta=str(parsed.get("eta") or ""),
+                delivery_fee=str(parsed.get("delivery_fee") or ""),
+                min_order=str(parsed.get("min_order") or ""),
                 area_label="",
                 status=classify_status(blob),
                 just_landed=jl,
                 just_landed_date=jld,
                 google_rating="",
                 google_reviews_count="",
-                rating_source="",
+                rating_source=("talabat" if parsed.get("rating") else ""),
                 highly_rated_google="",
                 is_pro_vendor="",
                 free_delivery="",
@@ -1502,8 +1559,8 @@ async def scrape_one_point(
 ) -> list[RestaurantRecord]:
     # Optional ``?page=`` pagination for hub listing URLs (similar idea to community listing scrapers that
     # walk ``ul[data-test='pagination']`` — e.g. github.com/Dataloops-code/Talabat-Restaurants1-Scraper-python).
-    paginate_listings = _env_truthy(os.getenv("SCRAPER_LISTING_PAGE_PAGINATION"))
-    max_listing_pages = max(1, int(os.getenv("SCRAPER_LISTING_MAX_PAGES", "25")))
+    paginate_listings = _env_truthy(os.getenv("SCRAPER_LISTING_PAGE_PAGINATION", "1"))
+    max_listing_pages = max(1, int(os.getenv("SCRAPER_LISTING_MAX_PAGES", "35")))
     page_gap_sec = max(0.0, float(os.getenv("SCRAPER_LISTING_PAGE_GAP_SEC", "1.5")))
     context = await browser.new_context(**_listing_browser_context_kwargs(sample_lat, sample_lng))
     page = await context.new_page()
@@ -1854,7 +1911,7 @@ async def run_area_scrape(
             # Legacy budget ``22 // grid_pts`` capped high-volume runs to ~3 URLs when grid_pts≈90 → mostly empty fields.
             enrich_cap = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "240" if hv else "60"))
             n_pts = max(1, len(points))
-            force_unique = hv or _env_truthy(os.getenv("SCRAPER_ENRICH_UNIQUE_VENDORS", "1"))
+            force_unique = True
             if force_unique:
                 seen_canon: set[str] = set()
                 n_unique = 0

@@ -73,7 +73,7 @@ _SCRAPE_PROFILES: dict[str, dict] = {
     # Highest completeness; slower and more timeout-prone.
     "Complete": {
         "high_volume": True,
-        "max_sample_points": 36,
+        "max_sample_points": 60,
         "scroll_rounds": 18,
         "scroll_wait_ms": _DEFAULT_SCROLL_WAIT_MS,
         "google_places_enrich": True,

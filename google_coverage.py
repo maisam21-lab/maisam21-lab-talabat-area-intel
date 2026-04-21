@@ -28,7 +28,7 @@ def fetch_google_nearby_restaurants(pin_lat: float, pin_lng: float, radius_km: f
 
     radius_m = int(max(300, min(50_000, float(radius_km) * 1000.0)))
     max_pages = int(os.getenv("GOOGLE_COVERAGE_MAX_PAGES", "3"))
-    max_rows = int(os.getenv("GOOGLE_COVERAGE_MAX_ROWS", "180"))
+    max_rows = int(os.getenv("GOOGLE_COVERAGE_MAX_ROWS", "300"))
     max_pages = max(1, min(3, max_pages))
     max_rows = max(10, min(300, max_rows))
 
