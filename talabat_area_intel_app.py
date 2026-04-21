@@ -53,6 +53,34 @@ _SCRAPE_HIGH_VOLUME = False
 _SCRAPE_MAX_SAMPLE_POINTS = 6
 _SCRAPE_CLIENT_TIMEOUT_SEC = 1300
 
+_SCRAPE_PROFILES: dict[str, dict] = {
+    # Quick baseline in constrained hosting.
+    "Fast": {
+        "high_volume": False,
+        "max_sample_points": 6,
+        "scroll_rounds": 10,
+        "scroll_wait_ms": _DEFAULT_SCROLL_WAIT_MS,
+        "google_places_enrich": True,
+    },
+    # Better coverage with moderate runtime.
+    "Balanced": {
+        "high_volume": False,
+        "max_sample_points": 14,
+        "scroll_rounds": 14,
+        "scroll_wait_ms": _DEFAULT_SCROLL_WAIT_MS,
+        "google_places_enrich": True,
+    },
+    # Highest completeness; slower and more timeout-prone.
+    "Complete": {
+        "high_volume": True,
+        "max_sample_points": 36,
+        "scroll_rounds": 18,
+        "scroll_wait_ms": _DEFAULT_SCROLL_WAIT_MS,
+        "google_places_enrich": True,
+    },
+}
+_DEFAULT_SCRAPE_PROFILE = "Complete"
+
 
 def init_state() -> None:
     ensure_scrape_location(
@@ -705,7 +733,7 @@ def main() -> None:
     else:
         st.write(f"**Run pin:** `{float(loc_run['lat']):.6f}, {float(loc_run['lng']):.6f}`")
     st.write(
-        f"Radius: `{radius_km} km` · Fast profile (high-volume off by default) · Google Places when API key is set · "
+        f"Radius: `{radius_km} km` · Profile: `{_DEFAULT_SCRAPE_PROFILE}` (default) · Google Places when API key is set · "
         f"Status: `{listing_status_mode}` · New-only: `{new_on_platform_only}` · "
         f"Target label: `{target_area_label.strip() or '—'}`"
     )
@@ -723,6 +751,7 @@ def main() -> None:
             city_key if is_city_mode else "custom",
             listing_status_mode,
             str(new_on_platform_only),
+            _DEFAULT_SCRAPE_PROFILE,
             str(include_google_coverage),
             target_area_label.strip(),
             f"{float(loc_fp['lat']):.6f}",
@@ -746,18 +775,19 @@ def main() -> None:
                 st.session_state["results_df"] = pd.DataFrame()
                 st.session_state["last_run_done"] = False
             else:
+                profile_cfg = _SCRAPE_PROFILES.get(_DEFAULT_SCRAPE_PROFILE, _SCRAPE_PROFILES["Complete"])
                 payload = {
                     "radius_km": float(radius_km),
                     "spacing_km": _DEFAULT_SPACING_KM,
                     "concurrency": _DEFAULT_CONCURRENCY,
-                    "scroll_rounds": _DEFAULT_SCROLL_ROUNDS,
-                    "scroll_wait_ms": _DEFAULT_SCROLL_WAIT_MS,
+                    "scroll_rounds": int(profile_cfg["scroll_rounds"]),
+                    "scroll_wait_ms": int(profile_cfg["scroll_wait_ms"]),
                     "status_filter": listing_status_mode,
                     "just_landed_only": bool(new_on_platform_only),
-                    "max_sample_points": _SCRAPE_MAX_SAMPLE_POINTS,
+                    "max_sample_points": int(profile_cfg["max_sample_points"]),
                     "dedupe_by_vendor_url": _SCRAPE_DEDUPE_BY_VENDOR_URL,
-                    "high_volume": _SCRAPE_HIGH_VOLUME,
-                    "google_places_enrich": True,
+                    "high_volume": bool(profile_cfg["high_volume"]),
+                    "google_places_enrich": bool(profile_cfg["google_places_enrich"]),
                     "scrape_target_label": target_area_label.strip() or None,
                     "pin_lat": float(loc_req["lat"]),
                     "pin_lng": float(loc_req["lng"]),
