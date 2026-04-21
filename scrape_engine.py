@@ -1460,6 +1460,33 @@ def compute_radius_stats(
     return d, stats
 
 
+def add_rating_and_order_rate_proxies(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add explicit analytics columns for dashboard/export use.
+
+    - ``rating_effective``: Talabat rating when available, else Google rating.
+    - ``estimated_orders_per_day`` / ``estimated_orders_per_week``: proxy from ``estimated_orders``.
+      For recently-added rows we use 90 days; otherwise 365 days.
+    """
+    if df.empty:
+        return df
+
+    out = df.copy()
+    talabat_rating = pd.to_numeric(out.get("rating"), errors="coerce")
+    google_rating = pd.to_numeric(out.get("google_rating"), errors="coerce")
+    out["rating_effective"] = talabat_rating.fillna(google_rating).round(2)
+
+    total_orders = pd.to_numeric(out.get("estimated_orders"), errors="coerce")
+    recently_added = out.get("recently_added_90d", pd.Series([""] * len(out))).astype(str).str.lower().eq("yes")
+    active_days = pd.Series(365.0, index=out.index)
+    active_days.loc[recently_added] = 90.0
+
+    per_day = (total_orders / active_days).where(total_orders.notna())
+    out["estimated_orders_per_day"] = per_day.round(2)
+    out["estimated_orders_per_week"] = (per_day * 7.0).round(1)
+    return out
+
+
 async def scrape_one_point(
     browser,
     pin_lat: float,
@@ -1963,4 +1990,5 @@ async def run_area_scrape(
     elif status_filter == "live":
         # Listing scrape rarely yields status=="live"; treat "live" as "not closed".
         df = df[df["status"] != "closed"].copy()
+    df = add_rating_and_order_rate_proxies(df)
     return df.reset_index(drop=True)
