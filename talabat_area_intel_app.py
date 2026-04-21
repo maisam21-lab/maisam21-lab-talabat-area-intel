@@ -804,40 +804,47 @@ def main() -> None:
                     request_id = uuid.uuid4().hex
                     req_headers = dict(headers)
                     req_headers["X-Request-ID"] = request_id
-                    response = requests.post(
-                        f"{api_base_url.rstrip('/')}/scrape",
-                        json=payload,
-                        headers=req_headers,
-                        timeout=_SCRAPE_CLIENT_TIMEOUT_SEC,
-                    )
-                    if response.status_code >= 400:
-                        # Hosted gateway 502/504 is common on heavy runs; retry once with a lighter payload.
-                        if int(response.status_code) in (502, 504):
-                            status_box.warning("Primary scrape timed out upstream. Retrying once with lighter settings...")
+                    def _post_scrape(req_payload: dict, timeout_msg: str) -> requests.Response | None:
+                        try:
+                            return requests.post(
+                                f"{api_base_url.rstrip('/')}/scrape",
+                                json=req_payload,
+                                headers=req_headers,
+                                timeout=_SCRAPE_CLIENT_TIMEOUT_SEC,
+                            )
+                        except requests.exceptions.ReadTimeout:
+                            status_box.warning(timeout_msg)
+                            return None
+
+                    response = _post_scrape(payload, "Primary scrape hit client read-timeout. Retrying with lighter settings...")
+                    if response is None or response.status_code >= 400:
+                        code = int(response.status_code) if response is not None else 504
+                        # Hosted gateway timeouts are common; retry with progressively lighter payloads.
+                        if code in (502, 504):
                             fallback_payload = dict(payload)
                             fallback_payload["high_volume"] = False
                             fallback_payload["max_sample_points"] = min(int(payload["max_sample_points"]), 3)
                             fallback_payload["scroll_rounds"] = 10
                             fallback_payload["google_places_enrich"] = False
-                            response = requests.post(
-                                f"{api_base_url.rstrip('/')}/scrape",
-                                json=fallback_payload,
-                                headers=req_headers,
-                                timeout=_SCRAPE_CLIENT_TIMEOUT_SEC,
+                            response = _post_scrape(
+                                fallback_payload,
+                                "Lighter retry also hit read-timeout. Retrying once with ultra-light settings...",
                             )
-                            if response.status_code >= 400 and int(response.status_code) in (502, 504):
-                                status_box.warning("Still timing out. Retrying once with ultra-light settings...")
+                            code = int(response.status_code) if response is not None else 504
+                            if code in (502, 504):
                                 ultra_payload = dict(fallback_payload)
                                 ultra_payload["max_sample_points"] = min(int(fallback_payload["max_sample_points"]), 1)
                                 ultra_payload["scroll_rounds"] = 4
                                 ultra_payload["spacing_km"] = 2.5
                                 ultra_payload["google_places_enrich"] = False
-                                response = requests.post(
-                                    f"{api_base_url.rstrip('/')}/scrape",
-                                    json=ultra_payload,
-                                    headers=req_headers,
-                                    timeout=_SCRAPE_CLIENT_TIMEOUT_SEC,
+                                response = _post_scrape(
+                                    ultra_payload,
+                                    "Ultra-light retry also hit read-timeout.",
                                 )
+                        if response is None:
+                            raise RuntimeError(
+                                "Client read-timeout after all retries. Backend is overloaded or blocked by host limits."
+                            )
                         if response.status_code >= 400:
                             raise RuntimeError(_friendly_api_error(response))
                     api_data = response.json()
