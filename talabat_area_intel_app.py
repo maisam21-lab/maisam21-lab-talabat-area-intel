@@ -723,6 +723,7 @@ def main() -> None:
 
         with st.expander("Batch locations (CSV)", expanded=False):
             st.caption("Optional multi-location run. CSV columns: lat/lng (or latitude/longitude) and optional label/name.")
+            st.download_button("Download batch CSV template", data=b"lat,lng,label\n25.2048,55.2708,Dubai Center\n25.0886,55.1484,Dubai Marina\n", file_name="batch_locations_template.csv", mime="text/csv", key="dl_batch_template")
             batch_up = st.file_uploader("Upload locations CSV", type=["csv"], key="batch_locations_upload")
             if batch_up is not None:
                 try:
@@ -810,6 +811,8 @@ def main() -> None:
     batch_df = st.session_state.get("batch_locations_df", pd.DataFrame())
     has_batch = isinstance(batch_df, pd.DataFrame) and not batch_df.empty
     run_batch = st.button("Start Batch Scraping", use_container_width=True, disabled=not has_batch)
+    if not has_batch:
+        st.caption("Batch disabled: upload a CSV with lat/lng in **Batch locations (CSV)**.")
 
     loc_fp = get_scrape_location()
     batch_sig = "none"
@@ -952,7 +955,6 @@ def main() -> None:
                                 ultra_payload["max_sample_points"] = min(int(fallback_payload["max_sample_points"]), 1)
                                 ultra_payload["scroll_rounds"] = 4
                                 ultra_payload["spacing_km"] = 2.5
-                                ultra_payload["google_places_enrich"] = False
                                 response = _post_scrape(
                                     ultra_payload,
                                     "Ultra-light retry also hit read-timeout.",
@@ -975,7 +977,6 @@ def main() -> None:
                         emergency_payload["max_sample_points"] = 1
                         emergency_payload["scroll_rounds"] = 4
                         emergency_payload["scroll_wait_ms"] = min(int(payload["scroll_wait_ms"]), 700)
-                        emergency_payload["google_places_enrich"] = False
                         em_resp = requests.post(
                             f"{api_base_url.rstrip('/')}/scrape",
                             json=emergency_payload,

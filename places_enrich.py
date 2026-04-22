@@ -64,7 +64,7 @@ def enrich_records_with_google_places(records: list[RestaurantRecord], *, force:
     if not key:
         return
 
-    max_rows = int(os.getenv("GOOGLE_PLACES_ENRICH_MAX", "48"))
+    max_rows = int(os.getenv("GOOGLE_PLACES_ENRICH_MAX", "180"))
     radius_m = int(os.getenv("GOOGLE_PLACES_SEARCH_RADIUS_M", "5000"))
     max_km = float(os.getenv("GOOGLE_PLACES_MAX_DISTANCE_KM", "3.0"))
     include_ids = _truthy(os.getenv("GOOGLE_PLACES_ENRICH_INCLUDE_IDS"))
