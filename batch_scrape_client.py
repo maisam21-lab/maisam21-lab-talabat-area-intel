@@ -52,6 +52,4 @@ def run_batch_scrape_via_api(
         return pd.DataFrame(), errors
 
     out = pd.concat(frames, ignore_index=True)
-    if "restaurant_url" in out.columns:
-        out = out.drop_duplicates(subset=["restaurant_url"], keep="first")
     return out.reset_index(drop=True), errors

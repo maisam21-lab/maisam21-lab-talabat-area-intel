@@ -556,6 +556,14 @@ def compact_output_df(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         "restaurant_name",
         "brand_display_name",
         "restaurant_url",
+        "legal_name",
+        "contact_phone",
+        "rating",
+        "google_rating",
+        "rating_effective",
+        "estimated_orders",
+        "estimated_orders_per_day",
+        "estimated_orders_per_week",
         "lat",
         "lng",
         "distance_km_from_pin",
@@ -606,7 +614,7 @@ def main() -> None:
         area_mode = st.radio(
             "Area mode",
             ["UAE city (KitchenPark)", "Custom pin"],
-            index=0,
+            index=1,
             help=            "City mode sets a default centre per emirate; **click the map** to move the search pin — "
             "the API uses that pin, not a hidden fixed city centre. Custom pin uses lat/lng fields only.",
         )
@@ -661,6 +669,18 @@ def main() -> None:
             "Include Google-only coverage layer",
             value=True,
             help="Fetches nearby Google restaurants around the same pin/radius and overlays them on maps.",
+        )
+        batch_city_keys = st.multiselect(
+            "Batch cities (no CSV)",
+            options=_CITY_SLUGS,
+            default=_CITY_SLUGS,
+            format_func=lambda k: UAE_CITY_DISPLAY[k],
+            help="Run one scrape per selected city center and merge results.",
+        )
+        batch_include_current_pin = st.checkbox(
+            "Include current pin in batch",
+            value=False,
+            help="Adds your current run pin as an extra location in batch mode.",
         )
 
         radius_km = st.number_input(
@@ -808,11 +828,17 @@ def main() -> None:
         "Scrape wall-clock is controlled by the API service environment."
     )
     run = st.button("Start Scraping", type="primary", use_container_width=True)
-    batch_df = st.session_state.get("batch_locations_df", pd.DataFrame())
-    has_batch = isinstance(batch_df, pd.DataFrame) and not batch_df.empty
+    batch_rows = []
+    for bkey in batch_city_keys:
+        blat, blng, _ = UAE_CITY_PRESETS[bkey]
+        batch_rows.append({"lat": float(blat), "lng": float(blng), "label": UAE_CITY_DISPLAY[bkey]})
+    if batch_include_current_pin:
+        batch_rows.append({"lat": float(loc_run["lat"]), "lng": float(loc_run["lng"]), "label": "Current pin"})
+    batch_df = pd.DataFrame(batch_rows)
+    has_batch = not batch_df.empty
     run_batch = st.button("Start Batch Scraping", use_container_width=True, disabled=not has_batch)
     if not has_batch:
-        st.caption("Batch disabled: upload a CSV with lat/lng in **Batch locations (CSV)**.")
+        st.caption("Batch disabled: select at least one city above.")
 
     loc_fp = get_scrape_location()
     batch_sig = "none"
@@ -846,8 +872,8 @@ def main() -> None:
             "concurrency": _DEFAULT_CONCURRENCY,
             "scroll_rounds": int(profile_cfg["scroll_rounds"]),
             "scroll_wait_ms": int(profile_cfg["scroll_wait_ms"]),
-            "status_filter": listing_status_mode,
-            "just_landed_only": bool(new_on_platform_only),
+            "status_filter": "all",
+            "just_landed_only": False,
             "max_sample_points": int(profile_cfg["max_sample_points"]),
             "dedupe_by_vendor_url": _SCRAPE_DEDUPE_BY_VENDOR_URL,
             "high_volume": bool(profile_cfg["high_volume"]),
@@ -943,7 +969,7 @@ def main() -> None:
                         if code in (502, 504):
                             fallback_payload = dict(payload)
                             fallback_payload["high_volume"] = False
-                            fallback_payload["max_sample_points"] = min(int(payload["max_sample_points"]), 3)
+                            fallback_payload["max_sample_points"] = min(int(payload["max_sample_points"]), 12)
                             fallback_payload["scroll_rounds"] = 10
                             response = _post_scrape(
                                 fallback_payload,
@@ -952,8 +978,8 @@ def main() -> None:
                             code = int(response.status_code) if response is not None else 504
                             if code in (502, 504):
                                 ultra_payload = dict(fallback_payload)
-                                ultra_payload["max_sample_points"] = min(int(fallback_payload["max_sample_points"]), 1)
-                                ultra_payload["scroll_rounds"] = 4
+                                ultra_payload["max_sample_points"] = min(int(fallback_payload["max_sample_points"]), 4)
+                                ultra_payload["scroll_rounds"] = 8
                                 ultra_payload["spacing_km"] = 2.5
                                 response = _post_scrape(
                                     ultra_payload,
