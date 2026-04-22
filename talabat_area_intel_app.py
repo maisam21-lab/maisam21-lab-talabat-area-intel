@@ -28,6 +28,7 @@ from streamlit_location import (
     store_folium_payload,
     sync_legacy_pin_mirror,
 )
+from batch_scrape_client import run_batch_scrape_via_api
 from google_map_tiles import (
     ensure_google_map_tile_sessions,
     google_2d_tile_url_template,
@@ -99,6 +100,7 @@ def init_state() -> None:
     st.session_state.setdefault("last_geocode_label", None)
     st.session_state.setdefault("supply_overlay_df", None)
     st.session_state.setdefault("google_coverage_df", pd.DataFrame())
+    st.session_state.setdefault("batch_locations_df", pd.DataFrame())
 
 
 def _bounds_for_radius(lat: float, lng: float, radius_km: float, pad: float = 1.15) -> tuple[list[float], list[float]]:
@@ -364,6 +366,10 @@ def render_heatmap(
     )
     basemap = _configure_map_basemaps(fmap)
 
+    if "distance_km_from_pin" in view_df.columns:
+        dist = pd.to_numeric(view_df["distance_km_from_pin"], errors="coerce")
+        view_df = view_df.loc[dist.notna() & (dist <= float(radius_km) + 0.4)].copy()
+
     heat_rows: list[list[float]] = []
     for _, row in view_df.iterrows():
         try:
@@ -373,14 +379,16 @@ def render_heatmap(
             continue
         heat_rows.append([la, ln])
     if heat_rows:
+        heat_fg = folium.FeatureGroup(name="Talabat density heat", overlay=True, control=True)
         HeatMap(
             heat_rows,
-            min_opacity=0.28,
+            min_opacity=0.33,
             max_zoom=17,
-            radius=28,
-            blur=19,
-            gradient={0.35: "#2563EB", 0.55: "#7C3AED", 0.75: "#F59E0B", 0.95: "#EF4444"},
-        ).add_to(fmap)
+            radius=18,
+            blur=12,
+            gradient={0.4: "#2563EB", 0.6: "#7C3AED", 0.8: "#F59E0B", 0.96: "#EF4444"},
+        ).add_to(heat_fg)
+        heat_fg.add_to(fmap)
 
     folium.Circle(
         location=[float(pin_lat), float(pin_lng)],
@@ -548,17 +556,19 @@ def compact_output_df(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         "restaurant_name",
         "brand_display_name",
         "restaurant_url",
-        "status",
-        "area_label",
         "lat",
         "lng",
         "distance_km_from_pin",
     ]
+    exclude_always = {"status", "area_label"}
     keep: list[str] = [c for c in core if c in df.columns]
     removed: list[str] = []
 
     for c in df.columns:
         if c in keep:
+            continue
+        if c in exclude_always:
+            removed.append(c)
             continue
         s = df[c]
         non_empty = (s.notna()) & (s.astype(str).str.strip() != "")
@@ -711,6 +721,27 @@ def main() -> None:
             except Exception as exc:
                 st.error(f"Geocode failed via backend: {exc}")
 
+        with st.expander("Batch locations (CSV)", expanded=False):
+            st.caption("Optional multi-location run. CSV columns: lat/lng (or latitude/longitude) and optional label/name.")
+            batch_up = st.file_uploader("Upload locations CSV", type=["csv"], key="batch_locations_upload")
+            if batch_up is not None:
+                try:
+                    raw_batch = pd.read_csv(batch_up)
+                    norm_batch = normalize_supply_overlay_df(raw_batch)
+                    if norm_batch is None or norm_batch.empty:
+                        st.warning("Could not parse valid location rows from CSV.")
+                    else:
+                        st.session_state["batch_locations_df"] = norm_batch
+                        st.success(f"Loaded **{len(norm_batch)}** batch location(s).")
+                except Exception as exc:
+                    st.error(f"Failed to read batch CSV: {exc}")
+            cur_batch = st.session_state.get("batch_locations_df", pd.DataFrame())
+            if isinstance(cur_batch, pd.DataFrame) and not cur_batch.empty:
+                st.caption(f"Current batch: **{len(cur_batch)}** location(s).")
+                if st.button("Clear batch locations", key="clear_batch_locations"):
+                    st.session_state["batch_locations_df"] = pd.DataFrame()
+                    st.rerun()
+
     _pin_widget_scope = str(city_key) if is_city_mode else "custom_pin_mode"
     st.subheader("Run pin (single source for scraping)")
     st.caption(
@@ -776,8 +807,14 @@ def main() -> None:
         "Scrape wall-clock is controlled by the API service environment."
     )
     run = st.button("Start Scraping", type="primary", use_container_width=True)
+    batch_df = st.session_state.get("batch_locations_df", pd.DataFrame())
+    has_batch = isinstance(batch_df, pd.DataFrame) and not batch_df.empty
+    run_batch = st.button("Start Batch Scraping", use_container_width=True, disabled=not has_batch)
 
     loc_fp = get_scrape_location()
+    batch_sig = "none"
+    if has_batch:
+        batch_sig = f"{len(batch_df)}|{float(batch_df['lat'].astype(float).sum()):.5f}|{float(batch_df['lng'].astype(float).sum()):.5f}"
 
     current_fingerprint = "|".join(
         [
@@ -787,12 +824,58 @@ def main() -> None:
             str(new_on_platform_only),
             _DEFAULT_SCRAPE_PROFILE,
             str(include_google_coverage),
+            batch_sig,
             target_area_label.strip(),
             f"{float(loc_fp['lat']):.6f}",
             f"{float(loc_fp['lng']):.6f}",
             str(radius_km),
         ]
     )
+
+
+    if run_batch:
+        progress = st.progress(0.0)
+        status_box = st.empty()
+        profile_cfg = _SCRAPE_PROFILES.get(_DEFAULT_SCRAPE_PROFILE, _SCRAPE_PROFILES["Complete"])
+        base_payload = {
+            "radius_km": float(radius_km),
+            "spacing_km": _DEFAULT_SPACING_KM,
+            "concurrency": _DEFAULT_CONCURRENCY,
+            "scroll_rounds": int(profile_cfg["scroll_rounds"]),
+            "scroll_wait_ms": int(profile_cfg["scroll_wait_ms"]),
+            "status_filter": listing_status_mode,
+            "just_landed_only": bool(new_on_platform_only),
+            "max_sample_points": int(profile_cfg["max_sample_points"]),
+            "dedupe_by_vendor_url": _SCRAPE_DEDUPE_BY_VENDOR_URL,
+            "high_volume": bool(profile_cfg["high_volume"]),
+            "google_places_enrich": bool(profile_cfg["google_places_enrich"]),
+            "scrape_target_label": target_area_label.strip() or None,
+            "city": None,
+        }
+        with st.spinner("Batch scraping multiple locations..."):
+            df_batch, batch_errors = run_batch_scrape_via_api(
+                api_base_url=api_base_url,
+                headers=headers,
+                locations_df=batch_df,
+                base_payload=base_payload,
+                timeout_sec=_SCRAPE_CLIENT_TIMEOUT_SEC,
+            )
+        progress.progress(1.0)
+        st.session_state["results_df"] = df_batch
+        st.session_state["google_coverage_df"] = pd.DataFrame()
+        st.session_state["last_run_done"] = True
+        st.session_state["results_fingerprint"] = current_fingerprint
+        st.session_state["last_scrape_run_meta"] = {
+            "batch_mode": True,
+            "batch_locations": int(len(batch_df)),
+            "batch_errors": int(len(batch_errors)),
+        }
+        if batch_errors:
+            st.warning("Batch completed with some errors: " + "; ".join(batch_errors[:5]))
+        if df_batch.empty:
+            st.warning("Batch completed but returned no rows.")
+        else:
+            status_box.info(f"Batch scrape completed · rows={len(df_batch):,} · locations={len(batch_df)}")
 
     if run:
         progress = st.progress(0.0)
