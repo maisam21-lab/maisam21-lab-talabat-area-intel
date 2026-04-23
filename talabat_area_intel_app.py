@@ -28,7 +28,7 @@ from streamlit_location import (
     store_folium_payload,
     sync_legacy_pin_mirror,
 )
-from batch_scrape_client import run_batch_scrape_via_api
+from batch_scrape_client import run_dual_area_scrape_via_api
 from google_map_tiles import (
     ensure_google_map_tile_sessions,
     google_2d_tile_url_template,
@@ -110,6 +110,8 @@ def init_state() -> None:
     st.session_state.setdefault("dual_area_b_lng", lng0)
     st.session_state.setdefault("dual_area_a_label", "")
     st.session_state.setdefault("dual_area_b_label", "")
+    st.session_state.setdefault("dual_map_next_slot", "A")
+    st.session_state.setdefault("dual_last_click_sig", "")
 
 
 def _bounds_for_radius(lat: float, lng: float, radius_km: float, pad: float = 1.15) -> tuple[list[float], list[float]]:
@@ -252,6 +254,7 @@ def render_pin_map(
     lock_pin: bool = False,
     supply_df: pd.DataFrame | None = None,
     google_coverage_df: pd.DataFrame | None = None,
+    dual_points: list[dict[str, float | str]] | None = None,
 ) -> dict:
     """Render Folium pin + radius; map clicks update ``scrape_location`` only (single source of truth)."""
     loc = get_scrape_location()
@@ -307,6 +310,31 @@ def render_pin_map(
         popup=folium.Popup(popup_html, max_width=280),
         icon=folium.Icon(color="blue"),
     ).add_to(area)
+
+    if dual_points:
+        dual_fg = folium.FeatureGroup(name="Dual-area pins")
+        color_map = {"A": "#DC2626", "B": "#7C3AED"}
+        for p in dual_points:
+            try:
+                dla = float(p["lat"])
+                dln = float(p["lng"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            slot = str(p.get("slot") or "").upper().strip()[:1] or "?"
+            fill = color_map.get(slot, "#334155")
+            label_txt = html.escape(str(p.get("label") or f"Area {slot}")[:120])
+            folium.CircleMarker(
+                location=[dla, dln],
+                radius=7,
+                color=fill,
+                weight=2,
+                fill=True,
+                fill_color=fill,
+                fill_opacity=0.9,
+                tooltip=f"Area {slot}: {dla:.5f}, {dln:.5f}",
+                popup=folium.Popup(f"<b>Area {slot}</b><br>{label_txt}<br>{dla:.6f}, {dln:.6f}", max_width=260),
+            ).add_to(dual_fg)
+        dual_fg.add_to(fmap)
 
     _add_supply_overlay_feature_group(fmap, supply_df)
     _add_google_coverage_feature_group(fmap, google_coverage_df)
@@ -769,14 +797,53 @@ def main() -> None:
     )
     sync_legacy_pin_mirror()
 
+    preview_two_pinned = (not is_city_mode) and str(st.session_state.get("pinned_scrape_count", "one")) == "two"
+    dual_points_for_map: list[dict[str, float | str]] | None = None
+    if preview_two_pinned:
+        dual_points_for_map = [
+            {
+                "slot": "A",
+                "lat": float(st.session_state["dual_area_a_lat"]),
+                "lng": float(st.session_state["dual_area_a_lng"]),
+                "label": str(st.session_state.get("dual_area_a_label") or "Area A"),
+            },
+            {
+                "slot": "B",
+                "lat": float(st.session_state["dual_area_b_lat"]),
+                "lng": float(st.session_state["dual_area_b_lng"]),
+                "label": str(st.session_state.get("dual_area_b_label") or "Area B"),
+            },
+        ]
+
     st.subheader("Interactive search map")
     folium_out = render_pin_map(
         radius_km,
         lock_pin=False,
         supply_df=st.session_state.get("supply_overlay_df"),
         google_coverage_df=st.session_state.get("google_coverage_df"),
+        dual_points=dual_points_for_map,
     )
     store_folium_payload(folium_out)
+    if preview_two_pinned and folium_out.get("last_clicked"):
+        lc = folium_out["last_clicked"]
+        click_lat = float(lc["lat"])
+        click_lng = float(lc["lng"])
+        click_sig = f"{click_lat:.6f},{click_lng:.6f}"
+        if click_sig != str(st.session_state.get("dual_last_click_sig") or ""):
+            slot = str(st.session_state.get("dual_map_next_slot") or "A").upper()
+            if slot not in ("A", "B"):
+                slot = "A"
+            if slot == "A":
+                st.session_state["dual_area_a_lat"] = click_lat
+                st.session_state["dual_area_a_lng"] = click_lng
+                st.session_state["dual_map_next_slot"] = "B"
+            else:
+                st.session_state["dual_area_b_lat"] = click_lat
+                st.session_state["dual_area_b_lng"] = click_lng
+                st.session_state["dual_map_next_slot"] = "A"
+            st.session_state["dual_last_click_sig"] = click_sig
+            st.toast(f"Area {slot} pin → {click_lat:.5f}, {click_lng:.5f}", icon="📌")
+            st.rerun()
     loc_after_map = get_scrape_location()
     mismatch, mismatch_msg = folium_center_vs_location_mismatch(loc_after_map)
     if mismatch and mismatch_msg:
@@ -818,7 +885,8 @@ def main() -> None:
         st.caption(
             "Runs two `/scrape` calls (A then B) with the same radius and profile. "
             "Rows include **`dual_area`** (`A` / `B`) and **`batch_location_label`** (your optional labels). "
-            "Sidebar *Target area label* is not applied — use A/B labels below."
+            "Sidebar *Target area label* is not applied — use A/B labels below. "
+            "Map clicks assign pins in sequence: **A**, then **B**, then **A**..."
         )
         ca, cb = st.columns(2)
         with ca:
@@ -915,7 +983,7 @@ def main() -> None:
         status_box = st.empty()
         a_lab = str(st.session_state.get("dual_area_a_label") or "").strip() or "Area A"
         b_lab = str(st.session_state.get("dual_area_b_label") or "").strip() or "Area B"
-        batch_df = pd.DataFrame(
+        dual_area_df = pd.DataFrame(
             [
                 {
                     "lat": float(st.session_state["dual_area_a_lat"]),
@@ -948,30 +1016,29 @@ def main() -> None:
             "city": None,
         }
         with st.spinner("Dual-area scrape: running pin A, then pin B..."):
-            df_batch, batch_errors = run_batch_scrape_via_api(
+            dual_df, dual_errors = run_dual_area_scrape_via_api(
                 api_base_url=api_base_url,
                 headers=headers,
-                locations_df=batch_df,
+                locations_df=dual_area_df,
                 base_payload=base_payload,
                 timeout_sec=_SCRAPE_CLIENT_TIMEOUT_SEC,
             )
         progress.progress(1.0)
-        st.session_state["results_df"] = df_batch
+        st.session_state["results_df"] = dual_df
         st.session_state["google_coverage_df"] = pd.DataFrame()
         st.session_state["last_run_done"] = True
         st.session_state["results_fingerprint"] = current_fingerprint
         st.session_state["last_scrape_run_meta"] = {
-            "batch_mode": True,
             "dual_area_mode": True,
-            "batch_locations": int(len(batch_df)),
-            "batch_errors": int(len(batch_errors)),
+            "dual_area_locations": int(len(dual_area_df)),
+            "dual_area_errors": int(len(dual_errors)),
         }
-        if batch_errors:
-            st.warning("Dual-area run finished with some errors: " + "; ".join(batch_errors[:5]))
-        if df_batch.empty:
+        if dual_errors:
+            st.warning("Dual-area run finished with some errors: " + "; ".join(dual_errors[:5]))
+        if dual_df.empty:
             st.warning("Dual-area run returned no rows.")
         else:
-            status_box.info(f"Dual-area scrape completed · rows={len(df_batch):,} · pins={len(batch_df)}")
+            status_box.info(f"Dual-area scrape completed · rows={len(dual_df):,} · pins={len(dual_area_df)}")
 
     if run_single:
         progress = st.progress(0.0)
