@@ -552,6 +552,149 @@ def render_outbound_prioritization_dashboard(df: pd.DataFrame) -> None:
     )
 
 
+def _pick_numeric_series(df: pd.DataFrame, candidates: list[str]) -> pd.Series:
+    for col in candidates:
+        if col in df.columns:
+            return pd.to_numeric(df[col], errors="coerce")
+    return pd.Series(dtype=float)
+
+
+def _pick_rating_series(df: pd.DataFrame) -> pd.Series:
+    return _pick_numeric_series(df, ["rating_effective", "rating", "google_rating"])
+
+
+def _pick_area_group_series(df: pd.DataFrame) -> pd.Series:
+    for col in ("batch_location_label", "scrape_target_label", "dual_area"):
+        if col in df.columns:
+            s = df[col].astype(str).str.strip()
+            s = s.mask(s == "", "Unlabeled area")
+            return s
+    return pd.Series(["Current run"] * len(df), index=df.index)
+
+
+def render_executive_mode(df: pd.DataFrame, meta: dict) -> None:
+    """Leadership-ready summary: KPI strip, run confidence, A/B delta, and area opportunity ranking."""
+    st.subheader("Executive Mode")
+    st.caption("GM view: headline KPIs, run confidence, dual-area delta, and top opportunity areas.")
+
+    rating_s = _pick_rating_series(df)
+    orders_day_s = _pick_numeric_series(df, ["estimated_orders_per_day", "estimated_orders"])
+    orders_week_s = _pick_numeric_series(df, ["estimated_orders_per_week"])
+    brand_key_s = (
+        df["brand_id"].astype(str).str.strip()
+        if "brand_id" in df.columns
+        else df.get("restaurant_name", pd.Series([""] * len(df))).astype(str).str.strip().str.lower()
+    )
+    unique_brands = int((brand_key_s.replace("", pd.NA).dropna()).nunique()) if len(brand_key_s) else 0
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Rows", f"{len(df):,}")
+    k2.metric("Unique brands", f"{unique_brands:,}")
+    avg_rating = float(rating_s.dropna().mean()) if not rating_s.dropna().empty else 0.0
+    k3.metric("Avg rating", f"{avg_rating:.2f}" if avg_rating > 0 else "—")
+    weekly_proxy = float(orders_week_s.dropna().sum()) if not orders_week_s.dropna().empty else 0.0
+    if weekly_proxy <= 0:
+        weekly_proxy = float(orders_day_s.dropna().sum() * 7.0) if not orders_day_s.dropna().empty else 0.0
+    k4.metric("Weekly orders proxy", f"{int(round(weekly_proxy)):,}" if weekly_proxy > 0 else "—")
+
+    legal_cov = 0.0
+    if "legal_name" in df.columns and len(df):
+        legal_cov = float((df["legal_name"].astype(str).str.strip() != "").mean())
+    phone_cov = 0.0
+    if "contact_phone" in df.columns and len(df):
+        phone_cov = float((df["contact_phone"].astype(str).str.strip() != "").mean())
+    elif "phone" in df.columns and len(df):
+        phone_cov = float((df["phone"].astype(str).str.strip() != "").mean())
+    rating_cov = float(rating_s.notna().mean()) if len(df) else 0.0
+    geo_cov = 0.0
+    if {"lat", "lng"}.issubset(df.columns) and len(df):
+        lat_ok = pd.to_numeric(df["lat"], errors="coerce").notna()
+        lng_ok = pd.to_numeric(df["lng"], errors="coerce").notna()
+        geo_cov = float((lat_ok & lng_ok).mean())
+    scale_score = min(float(len(df)) / 250.0, 1.0)
+    meta_score = 1.0 if meta.get("request_id") else 0.0
+    confidence = int(round(100.0 * (0.20 * legal_cov + 0.15 * phone_cov + 0.15 * rating_cov + 0.15 * geo_cov + 0.25 * scale_score + 0.10 * meta_score)))
+    conf_txt = "High" if confidence >= 75 else ("Medium" if confidence >= 50 else "Low")
+    st.info(
+        f"Run confidence: **{confidence}/100 ({conf_txt})** · "
+        f"legal `{legal_cov*100:.0f}%` · phone `{phone_cov*100:.0f}%` · rating `{rating_cov*100:.0f}%` · geo `{geo_cov*100:.0f}%`."
+    )
+
+    if "dual_area" in df.columns and {"A", "B"}.issubset(set(df["dual_area"].astype(str).str.upper().str.strip())):
+        comp = df.copy()
+        comp["dual_area"] = comp["dual_area"].astype(str).str.upper().str.strip()
+        ab = comp[comp["dual_area"].isin(["A", "B"])].copy()
+        ab["__rating"] = _pick_rating_series(ab)
+        ab["__orders_day"] = _pick_numeric_series(ab, ["estimated_orders_per_day", "estimated_orders"])
+        agg_dict = {
+            "rows": ("dual_area", "size"),
+            "avg_rating": ("__rating", "mean"),
+            "orders_day": ("__orders_day", "sum"),
+        }
+        if "brand_id" in ab.columns:
+            agg_dict["brands"] = ("brand_id", lambda s: s.astype(str).str.strip().replace("", pd.NA).dropna().nunique())
+        else:
+            agg_dict["brands"] = ("restaurant_name", "nunique")
+        agg = ab.groupby("dual_area", dropna=False).agg(**agg_dict)
+        if {"A", "B"}.issubset(set(agg.index)):
+            a = agg.loc["A"]
+            b = agg.loc["B"]
+            st.markdown("**Area A vs B (executive delta)**")
+            d1, d2, d3, d4 = st.columns(4)
+            d1.metric("Rows (A)", f"{int(a['rows']):,}", delta=f"{int(a['rows'] - b['rows']):+d} vs B")
+            d2.metric("Brands (A)", f"{int(a['brands']):,}", delta=f"{int(a['brands'] - b['brands']):+d} vs B")
+            if pd.notna(a["avg_rating"]) and pd.notna(b["avg_rating"]):
+                d3.metric("Avg rating (A)", f"{float(a['avg_rating']):.2f}", delta=f"{float(a['avg_rating'] - b['avg_rating']):+.2f} vs B")
+            else:
+                d3.metric("Avg rating (A)", "—")
+            if pd.notna(a["orders_day"]) and pd.notna(b["orders_day"]):
+                d4.metric("Orders/day proxy (A)", f"{int(round(float(a['orders_day']))):,}", delta=f"{int(round(float(a['orders_day'] - b['orders_day']))):+d} vs B")
+            else:
+                d4.metric("Orders/day proxy (A)", "—")
+
+    area_s = _pick_area_group_series(df)
+    work = df.copy()
+    work["__area"] = area_s
+    work["__rating"] = _pick_rating_series(work).fillna(0.0)
+    work["__orders"] = _pick_numeric_series(work, ["estimated_orders_per_day", "estimated_orders"]).fillna(0.0)
+    if "restaurant_name" not in work.columns:
+        work["restaurant_name"] = ""
+    grp = work.groupby("__area", dropna=False).agg(
+        rows=("__area", "size"),
+        avg_rating=("__rating", "mean"),
+        orders_proxy=("__orders", "sum"),
+        restaurants=("restaurant_name", "nunique"),
+    ).reset_index()
+    if len(grp) > 0:
+        def _norm(s: pd.Series) -> pd.Series:
+            s = pd.to_numeric(s, errors="coerce").fillna(0.0)
+            lo, hi = float(s.min()), float(s.max())
+            if hi <= lo:
+                return pd.Series([0.5] * len(s), index=s.index)
+            return (s - lo) / (hi - lo)
+
+        grp["score_orders"] = _norm(grp["orders_proxy"])
+        grp["score_scale"] = _norm(grp["restaurants"])
+        grp["score_rating_gap"] = _norm(4.3 - grp["avg_rating"])
+        grp["opportunity_score"] = (0.45 * grp["score_orders"] + 0.30 * grp["score_scale"] + 0.25 * grp["score_rating_gap"]) * 100.0
+        grp = grp.sort_values(["opportunity_score", "orders_proxy"], ascending=[False, False]).reset_index(drop=True)
+        top = grp.head(10).copy()
+        top["opportunity_score"] = top["opportunity_score"].round(1)
+        top["avg_rating"] = top["avg_rating"].round(2)
+        st.markdown("**Top opportunity areas**")
+        st.dataframe(
+            top.rename(columns={"__area": "Area"})[["Area", "opportunity_score", "orders_proxy", "restaurants", "avg_rating", "rows"]],
+            use_container_width=True,
+            height=260,
+        )
+        if not top.empty:
+            lead = top.iloc[0]
+            st.success(
+                f"Primary recommendation: prioritize **{lead['__area']}** first "
+                f"(score {float(lead['opportunity_score']):.1f}, orders proxy {int(round(float(lead['orders_proxy']))):,})."
+            )
+
+
 def get_api_base_url() -> str:
     try:
         secret_url = str(st.secrets.get("API_BASE_URL", "")).strip()
@@ -1242,6 +1385,7 @@ def main() -> None:
         "Runs use high-volume listing coverage, **vendor pages for many unique restaurants** (API caps), "
         "and Google Places when the API has a Maps key. Tune `RESTAURANT_DETAIL_ENRICH_MAX` / wall clock on the host if runs time out."
     )
+    render_executive_mode(df, meta)
     m1, m2 = st.columns(2)
     m1.metric("Rows in export", int(len(df)))
     m2.metric("Not closed", int((df["status"] != "closed").sum()))
