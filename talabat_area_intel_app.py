@@ -28,7 +28,11 @@ from streamlit_location import (
     store_folium_payload,
     sync_legacy_pin_mirror,
 )
-from batch_scrape_client import run_dual_area_scrape_via_api
+try:
+    from batch_scrape_client import run_dual_area_scrape_via_api
+except ImportError:
+    # Deployment-safe fallback when an older module version is present.
+    from batch_scrape_client import run_batch_scrape_via_api as run_dual_area_scrape_via_api
 from google_map_tiles import (
     ensure_google_map_tile_sessions,
     google_2d_tile_url_template,
