@@ -44,6 +44,9 @@ def run_batch_scrape_via_api(
             if dfi.empty:
                 continue
             dfi["batch_location_label"] = str(row.get("label") or f"loc_{i+1}")
+            slot = row.get("area_slot")
+            if slot is not None and not (isinstance(slot, float) and pd.isna(slot)):
+                dfi["dual_area"] = str(slot).strip().upper()[:8] or str(slot)
             frames.append(dfi)
         except Exception as exc:
             errors.append(f"Location {i+1}: {exc}")

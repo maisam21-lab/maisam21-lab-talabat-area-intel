@@ -100,7 +100,16 @@ def init_state() -> None:
     st.session_state.setdefault("last_geocode_label", None)
     st.session_state.setdefault("supply_overlay_df", None)
     st.session_state.setdefault("google_coverage_df", pd.DataFrame())
-    st.session_state.setdefault("batch_locations_df", pd.DataFrame())
+    loc0 = get_scrape_location()
+    lat0 = float(loc0["lat"])
+    lng0 = float(loc0["lng"])
+    # Second pin defaults a few km away so A/B are not identical on first open.
+    st.session_state.setdefault("dual_area_a_lat", lat0)
+    st.session_state.setdefault("dual_area_a_lng", lng0)
+    st.session_state.setdefault("dual_area_b_lat", lat0 + 0.018)
+    st.session_state.setdefault("dual_area_b_lng", lng0)
+    st.session_state.setdefault("dual_area_a_label", "")
+    st.session_state.setdefault("dual_area_b_label", "")
 
 
 def _bounds_for_radius(lat: float, lng: float, radius_km: float, pad: float = 1.15) -> tuple[list[float], list[float]]:
@@ -670,19 +679,6 @@ def main() -> None:
             value=True,
             help="Fetches nearby Google restaurants around the same pin/radius and overlays them on maps.",
         )
-        batch_city_keys = st.multiselect(
-            "Batch cities (no CSV)",
-            options=_CITY_SLUGS,
-            default=_CITY_SLUGS,
-            format_func=lambda k: UAE_CITY_DISPLAY[k],
-            help="Run one scrape per selected city center and merge results.",
-        )
-        batch_include_current_pin = st.checkbox(
-            "Include current pin in batch",
-            value=False,
-            help="Adds your current run pin as an extra location in batch mode.",
-        )
-
         radius_km = st.number_input(
             "Radius (km)",
             min_value=5.0,
@@ -740,28 +736,6 @@ def main() -> None:
                         st.warning(f"No geocoding result. {payload.get('error', 'no details')}")
             except Exception as exc:
                 st.error(f"Geocode failed via backend: {exc}")
-
-        with st.expander("Batch locations (CSV)", expanded=False):
-            st.caption("Optional multi-location run. CSV columns: lat/lng (or latitude/longitude) and optional label/name.")
-            st.download_button("Download batch CSV template", data=b"lat,lng,label\n25.2048,55.2708,Dubai Center\n25.0886,55.1484,Dubai Marina\n", file_name="batch_locations_template.csv", mime="text/csv", key="dl_batch_template")
-            batch_up = st.file_uploader("Upload locations CSV", type=["csv"], key="batch_locations_upload")
-            if batch_up is not None:
-                try:
-                    raw_batch = pd.read_csv(batch_up)
-                    norm_batch = normalize_supply_overlay_df(raw_batch)
-                    if norm_batch is None or norm_batch.empty:
-                        st.warning("Could not parse valid location rows from CSV.")
-                    else:
-                        st.session_state["batch_locations_df"] = norm_batch
-                        st.success(f"Loaded **{len(norm_batch)}** batch location(s).")
-                except Exception as exc:
-                    st.error(f"Failed to read batch CSV: {exc}")
-            cur_batch = st.session_state.get("batch_locations_df", pd.DataFrame())
-            if isinstance(cur_batch, pd.DataFrame) and not cur_batch.empty:
-                st.caption(f"Current batch: **{len(cur_batch)}** location(s).")
-                if st.button("Clear batch locations", key="clear_batch_locations"):
-                    st.session_state["batch_locations_df"] = pd.DataFrame()
-                    st.rerun()
 
     _pin_widget_scope = str(city_key) if is_city_mode else "custom_pin_mode"
     st.subheader("Run pin (single source for scraping)")
@@ -827,33 +801,108 @@ def main() -> None:
         "Expected runtime is usually a few minutes, but can be longer on heavy areas. "
         "Scrape wall-clock is controlled by the API service environment."
     )
-    run = st.button("Start Scraping", type="primary", use_container_width=True)
-    batch_rows = []
-    for bkey in batch_city_keys:
-        blat, blng, _ = UAE_CITY_PRESETS[bkey]
-        batch_rows.append({"lat": float(blat), "lng": float(blng), "label": UAE_CITY_DISPLAY[bkey]})
-    if batch_include_current_pin:
-        batch_rows.append({"lat": float(loc_run["lat"]), "lng": float(loc_run["lng"]), "label": "Current pin"})
-    batch_df = pd.DataFrame(batch_rows)
-    has_batch = not batch_df.empty
-    run_batch = st.button("Start Batch Scraping", use_container_width=True, disabled=not has_batch)
-    if not has_batch:
-        st.caption("Batch disabled: select at least one city above.")
+    if is_city_mode:
+        pinned_count = "one"
+        st.caption("**Two pinned areas** is only available in **Custom pin** mode (city mode always uses one run pin).")
+    else:
+        pinned_count = st.radio(
+            "Pinned areas to scrape",
+            options=["one", "two"],
+            format_func=lambda v: "One (run pin above + map)" if v == "one" else "Two (pins A + B below)",
+            horizontal=True,
+            key="pinned_scrape_count",
+        )
+    use_two_pinned = (not is_city_mode) and pinned_count == "two"
+
+    if use_two_pinned:
+        st.caption(
+            "Runs two `/scrape` calls (A then B) with the same radius and profile. "
+            "Rows include **`dual_area`** (`A` / `B`) and **`batch_location_label`** (your optional labels). "
+            "Sidebar *Target area label* is not applied — use A/B labels below."
+        )
+        ca, cb = st.columns(2)
+        with ca:
+            st.markdown("**Area A**")
+            st.number_input("Latitude", key="dual_area_a_lat", format="%.6f", step=0.0001)
+            st.number_input("Longitude", key="dual_area_a_lng", format="%.6f", step=0.0001)
+            st.text_input("Label (optional)", key="dual_area_a_label")
+            if st.button("Copy current run pin → A", key="dual_copy_run_to_a"):
+                st.session_state["dual_area_a_lat"] = float(loc_run["lat"])
+                st.session_state["dual_area_a_lng"] = float(loc_run["lng"])
+                st.rerun()
+        with cb:
+            st.markdown("**Area B**")
+            st.number_input("Latitude", key="dual_area_b_lat", format="%.6f", step=0.0001)
+            st.number_input("Longitude", key="dual_area_b_lng", format="%.6f", step=0.0001)
+            st.text_input("Label (optional)", key="dual_area_b_label")
+            if st.button("Copy current run pin → B", key="dual_copy_run_to_b"):
+                st.session_state["dual_area_b_lat"] = float(loc_run["lat"])
+                st.session_state["dual_area_b_lng"] = float(loc_run["lng"])
+                st.rerun()
+
+    dual_a_ok, dual_b_ok = False, False
+    dual_pin_err = ""
+    if not is_city_mode:
+        try:
+            parse_scrape_pin_or_raise_value_error(
+                st.session_state["dual_area_a_lat"], st.session_state["dual_area_a_lng"]
+            )
+            dual_a_ok = True
+        except ValueError as exc:
+            dual_pin_err = f"Area A pin invalid: {exc}"
+        try:
+            parse_scrape_pin_or_raise_value_error(
+                st.session_state["dual_area_b_lat"], st.session_state["dual_area_b_lng"]
+            )
+            dual_b_ok = True
+        except ValueError as exc:
+            dual_pin_err = dual_pin_err or f"Area B pin invalid: {exc}"
+    pins_identical = False
+    if not is_city_mode and dual_a_ok and dual_b_ok:
+        pins_identical = abs(float(st.session_state["dual_area_a_lat"]) - float(st.session_state["dual_area_b_lat"])) < 1e-6 and abs(
+            float(st.session_state["dual_area_a_lng"]) - float(st.session_state["dual_area_b_lng"])
+        ) < 1e-6
+    dual_ready = (not is_city_mode) and dual_a_ok and dual_b_ok and not pins_identical
+    if use_two_pinned and dual_pin_err:
+        st.warning(dual_pin_err)
+    if use_two_pinned and pins_identical:
+        st.warning("Area A and Area B pins are identical — move B or use *Copy current run pin* after moving the map.")
+
+    run_single = st.button(
+        "Start scraping",
+        type="primary",
+        use_container_width=True,
+        disabled=use_two_pinned,
+    )
+    run_two_pins = False
+    if use_two_pinned:
+        run_two_pins = st.button(
+            "Scrape two areas (A + B)",
+            type="primary",
+            use_container_width=True,
+            disabled=not dual_ready,
+        )
 
     loc_fp = get_scrape_location()
-    batch_sig = "none"
-    if has_batch:
-        batch_sig = f"{len(batch_df)}|{float(batch_df['lat'].astype(float).sum()):.5f}|{float(batch_df['lng'].astype(float).sum()):.5f}"
+    dual_sig = "none"
+    if use_two_pinned:
+        dual_sig = (
+            f"A:{float(st.session_state['dual_area_a_lat']):.5f},{float(st.session_state['dual_area_a_lng']):.5f}|"
+            f"B:{float(st.session_state['dual_area_b_lat']):.5f},{float(st.session_state['dual_area_b_lng']):.5f}"
+        )
+    elif not is_city_mode:
+        dual_sig = "one_pin"
 
     current_fingerprint = "|".join(
         [
             area_mode,
             city_key if is_city_mode else "custom",
+            pinned_count,
             listing_status_mode,
             str(new_on_platform_only),
             _DEFAULT_SCRAPE_PROFILE,
             str(include_google_coverage),
-            batch_sig,
+            dual_sig,
             target_area_label.strip(),
             f"{float(loc_fp['lat']):.6f}",
             f"{float(loc_fp['lng']):.6f}",
@@ -861,10 +910,27 @@ def main() -> None:
         ]
     )
 
-
-    if run_batch:
+    if run_two_pins:
         progress = st.progress(0.0)
         status_box = st.empty()
+        a_lab = str(st.session_state.get("dual_area_a_label") or "").strip() or "Area A"
+        b_lab = str(st.session_state.get("dual_area_b_label") or "").strip() or "Area B"
+        batch_df = pd.DataFrame(
+            [
+                {
+                    "lat": float(st.session_state["dual_area_a_lat"]),
+                    "lng": float(st.session_state["dual_area_a_lng"]),
+                    "label": a_lab,
+                    "area_slot": "A",
+                },
+                {
+                    "lat": float(st.session_state["dual_area_b_lat"]),
+                    "lng": float(st.session_state["dual_area_b_lng"]),
+                    "label": b_lab,
+                    "area_slot": "B",
+                },
+            ]
+        )
         profile_cfg = _SCRAPE_PROFILES.get(_DEFAULT_SCRAPE_PROFILE, _SCRAPE_PROFILES["Complete"])
         base_payload = {
             "radius_km": float(radius_km),
@@ -878,10 +944,10 @@ def main() -> None:
             "dedupe_by_vendor_url": _SCRAPE_DEDUPE_BY_VENDOR_URL,
             "high_volume": bool(profile_cfg["high_volume"]),
             "google_places_enrich": bool(profile_cfg["google_places_enrich"]),
-            "scrape_target_label": target_area_label.strip() or None,
+            "scrape_target_label": None,
             "city": None,
         }
-        with st.spinner("Batch scraping multiple locations..."):
+        with st.spinner("Dual-area scrape: running pin A, then pin B..."):
             df_batch, batch_errors = run_batch_scrape_via_api(
                 api_base_url=api_base_url,
                 headers=headers,
@@ -896,17 +962,18 @@ def main() -> None:
         st.session_state["results_fingerprint"] = current_fingerprint
         st.session_state["last_scrape_run_meta"] = {
             "batch_mode": True,
+            "dual_area_mode": True,
             "batch_locations": int(len(batch_df)),
             "batch_errors": int(len(batch_errors)),
         }
         if batch_errors:
-            st.warning("Batch completed with some errors: " + "; ".join(batch_errors[:5]))
+            st.warning("Dual-area run finished with some errors: " + "; ".join(batch_errors[:5]))
         if df_batch.empty:
-            st.warning("Batch completed but returned no rows.")
+            st.warning("Dual-area run returned no rows.")
         else:
-            status_box.info(f"Batch scrape completed · rows={len(df_batch):,} · locations={len(batch_df)}")
+            status_box.info(f"Dual-area scrape completed · rows={len(df_batch):,} · pins={len(batch_df)}")
 
-    if run:
+    if run_single:
         progress = st.progress(0.0)
         status_box = st.empty()
         if not include_google_coverage:
