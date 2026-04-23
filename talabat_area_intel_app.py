@@ -85,6 +85,7 @@ _SCRAPE_PROFILES: dict[str, dict] = {
     },
 }
 _DEFAULT_SCRAPE_PROFILE = "Complete"
+_BUILD_STAMP = os.getenv("APP_BUILD_STAMP", "2026-04-23-executive-mode-80dbf21")
 
 
 def init_state() -> None:
@@ -776,6 +777,7 @@ def main() -> None:
     init_state()
 
     st.title("Talabat UAE Area Intel")
+    st.warning(f"Build: `{_BUILD_STAMP}`")
     st.caption(
         "**KitchenPark / expansion analytics:** compare cities for outbound acquisition using cuisine, ratings, "
         "delivery signals, and coverage. Each scrape requests **Google Places** enrichment when the API has a Maps key; "
