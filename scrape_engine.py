@@ -1277,7 +1277,7 @@ async def _fetch_vendor_page_enrichment(browser, url: str) -> dict[str, str | fl
         ctx = await browser.new_context(**_vendor_browser_context_kwargs())
     except TargetClosedError:
         logger.warning("vendor_enrich_target_closed new_context failed url=%s", url)
-        return {}
+        raise
     except Exception as exc:
         logger.warning("vendor_enrich_new_context_failed url=%s err=%s", url, exc)
         return {}
@@ -1289,7 +1289,7 @@ async def _fetch_vendor_page_enrichment(browser, url: str) -> dict[str, str | fl
             await ctx.close()
         except Exception:
             pass
-        return {}
+        raise
     except Exception as exc:
         logger.warning("vendor_enrich_new_page_failed url=%s err=%s", url, exc)
         try:
@@ -1303,6 +1303,9 @@ async def _fetch_vendor_page_enrichment(browser, url: str) -> dict[str, str | fl
         await page.wait_for_timeout(600 if not _env_truthy(os.getenv("SCRAPER_HUMANIZE")) else 1100)
         html = await page.content()
         _merge_vendor_html_into_accumulator(html, acc)
+    except TargetClosedError:
+        logger.warning("vendor_enrich_target_closed goto/content failed url=%s", url)
+        raise
     except Exception:
         pass
     finally:
@@ -1326,6 +1329,7 @@ async def enrich_vendor_detail_pages(
     records: list[RestaurantRecord],
     *,
     max_urls: int,
+    restart_browser_cb=None,
 ) -> None:
     """Visit vendor URLs and fill phone, legal name, IDs, ratings, fees, area, etc."""
     flag = os.getenv("SCRAPER_ENRICH_DETAILS", "1").strip().lower()
@@ -1432,7 +1436,21 @@ async def enrich_vendor_detail_pages(
 
     async def one(u: str) -> None:
         nonlocal done
-        d = await _fetch_vendor_page_enrichment(browser, u)
+        nonlocal browser
+        d: dict[str, str | float | None] = {}
+        for attempt in range(2):
+            try:
+                if hasattr(browser, "is_connected") and not browser.is_connected():
+                    if restart_browser_cb is not None:
+                        browser = await restart_browser_cb(browser)
+                d = await _fetch_vendor_page_enrichment(browser, u)
+                break
+            except TargetClosedError:
+                logger.warning("vendor_enrich_target_closed url=%s attempt=%s/2", u, attempt + 1)
+                if restart_browser_cb is not None:
+                    browser = await restart_browser_cb(browser)
+                if attempt == 1:
+                    d = {}
         for row in by_url[u]:
             _apply(row, d)
         done += 1
@@ -2121,7 +2139,7 @@ async def run_area_scrape(
     scroll_rounds, scroll_wait_ms = _listing_scroll_params(scroll_rounds, scroll_wait_ms)
     if _env_truthy(os.getenv("SCRAPER_HUMANIZE")):
         scroll_wait_ms = int(scroll_wait_ms * float(os.getenv("SCRAPER_HUMANIZE_SCROLL_WAIT_MULT", "1.12")))
-    sem = asyncio.Semaphore(min(2, max(1, int(os.getenv("SCRAPER_PLAYWRIGHT_CONCURRENCY", "1")))))
+    sem = asyncio.Semaphore(min(5, max(1, int(os.getenv("SCRAPER_PLAYWRIGHT_CONCURRENCY", "5")))))
     checkpoint_lock = asyncio.Lock()
     records: list[RestaurantRecord] = []
     raw_listing_count = 0
@@ -2155,6 +2173,17 @@ async def run_area_scrape(
                     args=CHROMIUM_LAUNCH_ARGS,
                 )
 
+            async def get_or_restart_browser(current_browser=None):
+                try:
+                    if current_browser is not None and hasattr(current_browser, "is_connected") and current_browser.is_connected():
+                        return current_browser
+                except Exception:
+                    pass
+                if current_browser is not None:
+                    with suppress(Exception):
+                        await current_browser.close()
+                return await launch_browser_instance()
+
             async def worker(idx: int, pt: tuple[float, float]) -> list[RestaurantRecord]:
                 nonlocal done
                 lat, lng = pt
@@ -2165,7 +2194,7 @@ async def run_area_scrape(
                     max_retries = max(0, int(os.getenv("SCRAPER_POINT_TARGET_CLOSED_RETRIES", "2")))
                     for attempt in range(max_retries + 1):
                         try:
-                            local_browser = await launch_browser_instance()
+                            local_browser = await get_or_restart_browser(local_browser)
                             task = asyncio.create_task(
                                 scrape_one_point(
                                     browser=local_browser,
@@ -2306,8 +2335,13 @@ async def run_area_scrape(
             last_step = "launch_browser_enrichment"
             if meta_out is not None:
                 meta_out["last_completed_step"] = last_step
-            browser = await launch_browser_instance()
-            await enrich_vendor_detail_pages(browser, records, max_urls=enrich_max)
+            browser = await get_or_restart_browser(browser)
+            await enrich_vendor_detail_pages(
+                browser,
+                records,
+                max_urls=enrich_max,
+                restart_browser_cb=get_or_restart_browser,
+            )
             if meta_out is not None:
                 meta_out["last_completed_step"] = "enrichment_done"
             await browser.close()
