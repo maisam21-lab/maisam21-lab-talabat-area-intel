@@ -49,9 +49,9 @@ DEFAULT_PIN = (25.2048, 55.2708)
 
 # More grid points + deeper scroll = more listing URLs merged (slower; watch SCRAPER_WALL_CLOCK_SEC on Render).
 _DEFAULT_MAX_SAMPLE_POINTS = 6
-_DEFAULT_SPACING_KM = 0.8
-_DEFAULT_SCROLL_ROUNDS = 18
-_DEFAULT_SCROLL_WAIT_MS = 900
+_DEFAULT_SPACING_KM = 1.8
+_DEFAULT_SCROLL_ROUNDS = 6
+_DEFAULT_SCROLL_WAIT_MS = 500
 _DEFAULT_CONCURRENCY = 3
 
 _CITY_SLUGS = ["dubai", "sharjah", "abudhabi", "alain", "ajman"]
@@ -66,25 +66,25 @@ _SCRAPE_PROFILES: dict[str, dict] = {
     # Quick baseline in constrained hosting.
     "Fast": {
         "high_volume": False,
-        "max_sample_points": 30,
-        "scroll_rounds": 12,
-        "scroll_wait_ms": _DEFAULT_SCROLL_WAIT_MS,
+        "max_sample_points": 20,
+        "scroll_rounds": 6,
+        "scroll_wait_ms": 500,
         "google_places_enrich": True,
     },
     # Better coverage with moderate runtime.
     "Balanced": {
         "high_volume": False,
-        "max_sample_points": 80,
-        "scroll_rounds": 16,
-        "scroll_wait_ms": _DEFAULT_SCROLL_WAIT_MS,
+        "max_sample_points": 20,
+        "scroll_rounds": 6,
+        "scroll_wait_ms": 500,
         "google_places_enrich": True,
     },
     # Highest completeness; slower and more timeout-prone.
     "Complete": {
         "high_volume": True,
-        "max_sample_points": 200,
-        "scroll_rounds": 22,
-        "scroll_wait_ms": 700,
+        "max_sample_points": 20,
+        "scroll_rounds": 6,
+        "scroll_wait_ms": 500,
         "google_places_enrich": True,
     },
 }

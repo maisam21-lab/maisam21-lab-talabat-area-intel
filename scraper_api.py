@@ -77,7 +77,7 @@ class ScrapeRequest(BaseModel):
     pin_lng: float = Field(default=55.2708, description="Search center longitude (geometry always follows this pin)")
     radius_km: float = Field(default=10.0, ge=5.0, le=10.0)
     # Hex grid spacing; lower values increase coverage and runtime.
-    spacing_km: float = Field(default=0.8, ge=0.35, le=3.0)
+    spacing_km: float = Field(default=1.8, ge=0.35, le=3.0)
     concurrency: int = Field(default=3, ge=1, le=6)
     # "live" = drop rows classified as closed (keeps unknown + open); "all" = no status filter; "closed" = closed only.
     status_filter: str = Field(
@@ -88,10 +88,10 @@ class ScrapeRequest(BaseModel):
         default=False,
         description="Attempts Talabat 'Just Landed' listing filter; result rows also restricted to new signals when True.",
     )
-    scroll_rounds: int = Field(default=18, ge=2, le=60)
-    scroll_wait_ms: int = Field(default=900, ge=400, le=3000)
+    scroll_rounds: int = Field(default=6, ge=2, le=60)
+    scroll_wait_ms: int = Field(default=500, ge=200, le=3000)
     # More points = longer runs; omit to use MAX_SCRAPE_SAMPLE_POINTS env (default 6).
-    max_sample_points: int | None = Field(default=None, ge=1, le=400)
+    max_sample_points: int | None = Field(default=20, ge=1, le=400)
     high_volume: bool = Field(
         default=False,
         description="Dense geo grid + cuisine listing pages for large unique-vendor counts; slow — raise SCRAPER_WALL_CLOCK_SEC.",
@@ -563,6 +563,9 @@ async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None
             "pin_lat": pin_lat,
             "pin_lng": pin_lng,
             "scrape_run_meta": meta,
+            "total_points": int(meta.get("grid_size") or 0),
+            "completed_points": int(meta.get("grid_points_completed") or 0),
+            "partial": bool(int(meta.get("grid_points_completed") or 0) < int(meta.get("grid_size") or 0)),
         }
         if scrape_city_label:
             out["city"] = scrape_city_label

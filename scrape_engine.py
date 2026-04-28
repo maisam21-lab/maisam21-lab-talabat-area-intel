@@ -12,7 +12,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
+import requests
 from playwright.async_api import async_playwright
+from playwright._impl._errors import TargetClosedError
 
 from geo_utils import generate_points_in_radius, haversine_km, haversine_series_km_from_pin, refine_grid_spacing
 from listing_urls import capped_listing_urls
@@ -38,8 +40,23 @@ CHROMIUM_LAUNCH_ARGS = [
     "--disable-setuid-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",
-    "--disable-software-rasterizer",
+    "--no-zygote",
+    "--single-process",
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--disable-default-apps",
+    "--disable-sync",
+    "--disable-translate",
+    "--hide-scrollbars",
+    "--metrics-recording-only",
+    "--mute-audio",
+    "--no-first-run",
+    "--safebrowsing-disable-auto-update",
+    "--ignore-certificate-errors",
+    "--disable-web-security",
 ]
+BROWSER_RESTART_EVERY = 10
+TALABAT_LISTING_API = "https://www.talabat.com/api/v2/restaurants"
 CARD_SELECTORS = [
     '[data-testid*="restaurant"]',
     'a[href*="/restaurant/"]',
@@ -1418,18 +1435,18 @@ def _post_navigation_wait_ms() -> int:
 
 def _listing_browser_context_kwargs(sample_lat: float, sample_lng: float) -> dict[str, Any]:
     tz = (os.getenv("SCRAPER_TIMEZONE_ID") or "Asia/Dubai").strip()
-    w = int(os.getenv("SCRAPER_VIEWPORT_W", "1440"))
-    h = int(os.getenv("SCRAPER_VIEWPORT_H", "900"))
     return {
         "geolocation": {"latitude": float(sample_lat), "longitude": float(sample_lng)},
         "permissions": ["geolocation"],
         "locale": "en-US",
         "timezone_id": tz,
-        "user_agent": _scraper_user_agent(),
-        "viewport": {"width": w, "height": h},
-        "device_scale_factor": float(os.getenv("SCRAPER_DEVICE_SCALE", "1") or "1"),
+        "user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+        "viewport": {"width": 390, "height": 844},
+        "device_scale_factor": 1.0,
         "color_scheme": "light",
-        "has_touch": False,
+        "has_touch": True,
+        "java_script_enabled": True,
+        "bypass_csp": True,
         "extra_http_headers": _extra_http_headers_merge(),
     }
 
@@ -1562,6 +1579,12 @@ async def scrape_one_point(
     paginate_listings = _env_truthy(os.getenv("SCRAPER_LISTING_PAGE_PAGINATION", "1"))
     max_listing_pages = max(1, int(os.getenv("SCRAPER_LISTING_MAX_PAGES", "35")))
     page_gap_sec = max(0.0, float(os.getenv("SCRAPER_LISTING_PAGE_GAP_SEC", "1.5")))
+    api_rows = await _fetch_restaurants_from_internal_api(pin_lat, pin_lng, sample_lat, sample_lng)
+    if api_rows:
+        return api_rows
+
+    context = None
+    page = None
     context = await browser.new_context(**_listing_browser_context_kwargs(sample_lat, sample_lng))
     page = await context.new_page()
     listing_urls = capped_listing_urls(listing_cuisine_sweep)
@@ -1610,11 +1633,21 @@ async def scrape_one_point(
                         merged_all = _union_listing_batches(merged_all, block2)
                         if page_gap_sec > 0:
                             await asyncio.sleep(page_gap_sec)
+            except TargetClosedError:
+                logger.warning("Browser/page closed mid-point listing_url=%s sample=(%.5f,%.5f), skipping", listing_url, sample_lat, sample_lng)
+                if strict:
+                    raise
+                continue
             except Exception as exc:
                 logger.warning("listing scrape failed url=%s sample=(%.5f,%.5f): %s", listing_url, sample_lat, sample_lng, exc)
                 if strict:
                     raise
                 continue
+        return merged_all
+    except TargetClosedError:
+        logger.warning("TargetClosedError sample=(%.5f,%.5f), skipping point", sample_lat, sample_lng)
+        if strict:
+            raise
         return merged_all
     except Exception as exc:
         logger.error("scrape_one_point aborted sample=(%.5f,%.5f): %s", sample_lat, sample_lng, exc)
@@ -1622,7 +1655,148 @@ async def scrape_one_point(
             raise
         return merged_all
     finally:
-        await context.close()
+        try:
+            if page is not None:
+                await page.close()
+        except Exception:
+            pass
+        try:
+            if context is not None:
+                await context.close()
+        except Exception:
+            pass
+
+
+def _extract_restaurant_items(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [x for x in payload if isinstance(x, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("restaurants", "items", "results", "data"):
+        block = payload.get(key)
+        if isinstance(block, list):
+            return [x for x in block if isinstance(x, dict)]
+        if isinstance(block, dict):
+            for key2 in ("restaurants", "items", "results"):
+                arr = block.get(key2)
+                if isinstance(arr, list):
+                    return [x for x in arr if isinstance(x, dict)]
+    return []
+
+
+def _map_api_item_to_record(
+    item: dict[str, Any],
+    pin_lat: float,
+    pin_lng: float,
+    sample_lat: float,
+    sample_lng: float,
+) -> RestaurantRecord | None:
+    rid = str(item.get("id") or item.get("restaurantId") or item.get("uuid") or "").strip()
+    name = str(item.get("name") or item.get("title") or "").strip()
+    if not name and not rid:
+        return None
+
+    lat = item.get("lat") if item.get("lat") is not None else item.get("latitude")
+    lng = item.get("lng") if item.get("lng") is not None else item.get("longitude")
+    lat_s = str(lat).strip() if lat is not None else ""
+    lng_s = str(lng).strip() if lng is not None else ""
+    is_closed = bool(item.get("isClosed") or item.get("closed"))
+    status = "closed" if is_closed else "live"
+
+    cuisines = ""
+    cv = item.get("cuisines")
+    if isinstance(cv, list):
+        names: list[str] = []
+        for c in cv:
+            if isinstance(c, dict):
+                n = str(c.get("name") or "").strip()
+            else:
+                n = str(c).strip()
+            if n:
+                names.append(n)
+        cuisines = ", ".join(names[:5])
+
+    rating = str(item.get("rating") or item.get("avgRating") or "").strip()
+    reviews = str(item.get("reviewsCount") or item.get("ratingsCount") or "").strip()
+    url = str(item.get("url") or "").strip()
+    if not url and rid:
+        url = f"https://www.talabat.com/restaurant/{rid}"
+    elif url.startswith("/"):
+        url = "https://www.talabat.com" + url
+    if not url:
+        slugish = (name or rid or "listing").strip().lower().replace(" ", "-")
+        url = f"https://www.talabat.com/restaurant/{slugish}"
+
+    rec = RestaurantRecord(
+        branch_sku=make_branch_sku(url),
+        restaurant_name=name or f"Restaurant {rid}",
+        restaurant_url=url,
+        source_sample_lat=float(sample_lat),
+        source_sample_lng=float(sample_lng),
+        pin_lat=float(pin_lat),
+        pin_lng=float(pin_lng),
+    )
+    rec.talabat_restaurant_id = rid
+    rec.brand_display_name = brand_display_name_from_listing(rec.restaurant_name)
+    rec.brand_id = make_brand_id(rec.brand_display_name)
+    rec.lat = lat_s
+    rec.lng = lng_s
+    rec.rating = rating
+    rec.reviews_count = reviews
+    rec.cuisines = cuisines
+    rec.status = status
+    return rec
+
+
+async def _fetch_restaurants_from_internal_api(
+    pin_lat: float,
+    pin_lng: float,
+    sample_lat: float,
+    sample_lng: float,
+) -> list[RestaurantRecord]:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)",
+        "Accept": "application/json",
+        "Referer": "https://www.talabat.com/uae/restaurants",
+        "X-App-Type": "WEB",
+    }
+    limit = 100
+
+    def _run() -> list[RestaurantRecord]:
+        out: list[RestaurantRecord] = []
+        offset = 0
+        sess = requests.Session()
+        while True:
+            r = sess.get(
+                TALABAT_LISTING_API,
+                params={
+                    "lat": float(sample_lat),
+                    "lng": float(sample_lng),
+                    "limit": limit,
+                    "offset": offset,
+                },
+                headers=headers,
+                timeout=20,
+            )
+            if r.status_code >= 400:
+                break
+            data = r.json() if r.content else {}
+            items = _extract_restaurant_items(data)
+            if not items:
+                break
+            for it in items:
+                rec = _map_api_item_to_record(it, pin_lat, pin_lng, sample_lat, sample_lng)
+                if rec is not None:
+                    out.append(rec)
+            if len(items) < limit:
+                break
+            offset += limit
+        return out
+
+    try:
+        return await asyncio.to_thread(_run)
+    except Exception:
+        return []
 
 
 def _canonical_vendor_url(url: str) -> str:
@@ -1768,7 +1942,7 @@ async def run_area_scrape(
     if max_sample_points is not None:
         max_pts = max_sample_points
     else:
-        max_pts = int(os.getenv("MAX_SCRAPE_SAMPLE_POINTS", "6"))
+        max_pts = int(os.getenv("MAX_SCRAPE_SAMPLE_POINTS", "20"))
     if hv:
         last_step = "build_dense_grid"
         if meta_out is not None:
@@ -1800,7 +1974,7 @@ async def run_area_scrape(
     scroll_rounds, scroll_wait_ms = _listing_scroll_params(scroll_rounds, scroll_wait_ms)
     if _env_truthy(os.getenv("SCRAPER_HUMANIZE")):
         scroll_wait_ms = int(scroll_wait_ms * float(os.getenv("SCRAPER_HUMANIZE_SCROLL_WAIT_MULT", "1.12")))
-    sem = asyncio.Semaphore(concurrency)
+    sem = asyncio.Semaphore(min(4, max(1, int(os.getenv("SCRAPER_PLAYWRIGHT_CONCURRENCY", "4")))))
     records: list[RestaurantRecord] = []
     raw_listing_count = 0
 
@@ -1820,28 +1994,29 @@ async def run_area_scrape(
         if meta_out is not None:
             meta_out["last_completed_step"] = last_step
         async with async_playwright() as p:
-            last_step = "launch_browser"
-            if meta_out is not None:
-                meta_out["last_completed_step"] = last_step
-            browser = await p.chromium.launch(
-                headless=True,
-                args=CHROMIUM_LAUNCH_ARGS,
-            )
             done = 0
             total = len(points)
             per_point_timeout = max(
-                30.0,
-                float(os.getenv("SCRAPER_PER_POINT_TIMEOUT_SEC", "90")),
+                45.0,
+                float(os.getenv("SCRAPER_PER_POINT_TIMEOUT_SEC", "45")),
             )
+
+            async def launch_browser_instance():
+                return await p.chromium.launch(
+                    headless=True,
+                    args=CHROMIUM_LAUNCH_ARGS,
+                )
 
             async def worker(pt: tuple[float, float]) -> list[RestaurantRecord]:
                 nonlocal done
                 lat, lng = pt
                 async with sem:
+                    local_browser = None
                     try:
+                        local_browser = await launch_browser_instance()
                         rows = await asyncio.wait_for(
                             scrape_one_point(
-                                browser=browser,
+                                browser=local_browser,
                                 pin_lat=pin_lat,
                                 pin_lng=pin_lng,
                                 radius_km=radius_km,
@@ -1854,14 +2029,26 @@ async def run_area_scrape(
                             ),
                             timeout=per_point_timeout,
                         )
+                    except TargetClosedError:
+                        logger.warning("sample_target_closed sample=(%.5f,%.5f) skipping", lat, lng)
+                        rows = []
                     except TimeoutError:
                         logger.warning(
-                            "sample_timeout sample=(%.5f,%.5f) timeout=%ss",
+                            "Point (%.5f,%.5f) timed out after %ss, skipping",
                             lat,
                             lng,
                             per_point_timeout,
                         )
                         rows = []
+                    except Exception as exc:
+                        logger.warning("sample_error sample=(%.5f,%.5f) err=%s", lat, lng, exc)
+                        rows = []
+                    finally:
+                        if local_browser is not None:
+                            try:
+                                await local_browser.close()
+                            except Exception:
+                                pass
                 done += 1
                 if progress_cb:
                     progress_cb(done, total, lat, lng, len(rows))
@@ -1870,7 +2057,7 @@ async def run_area_scrape(
             last_step = "scrape_grid_points"
             if meta_out is not None:
                 meta_out["last_completed_step"] = last_step
-            batches = await asyncio.gather(*[worker(pt) for pt in points])
+            batches = await asyncio.gather(*[worker(pt) for pt in points], return_exceptions=False)
 
             last_step = "merge_batches"
             if meta_out is not None:
@@ -1909,7 +2096,7 @@ async def run_area_scrape(
                     r.scrape_target_label = tv
             # Vendor pages fill most non-listing columns (phone, legal name, cuisines, branch coords, …).
             # Legacy budget ``22 // grid_pts`` capped high-volume runs to ~3 URLs when grid_pts≈90 → mostly empty fields.
-            enrich_cap = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "240" if hv else "60"))
+            enrich_cap = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "50"))
             n_pts = max(1, len(points))
             force_unique = True
             if force_unique:
@@ -1926,12 +2113,16 @@ async def run_area_scrape(
                 if float(radius_km) >= float(os.getenv("SCRAPER_BIG_RADIUS_KM", "18")):
                     budget = min(budget, int(os.getenv("SCRAPER_BIG_RADIUS_ENRICH_BUDGET", "2")))
             hard_cap = int(os.getenv("SCRAPER_VENDOR_ENRICH_HARD_CAP", "800"))
-            enrich_max = min(enrich_cap, budget, hard_cap)
+            enrich_max = min(enrich_cap, budget, hard_cap, int(os.getenv("SCRAPER_ENRICH_TOP_N", "50")))
             if meta_out is not None:
                 if force_unique:
                     meta_out["vendor_enrich_unique_urls"] = int(budget)
                 meta_out["enrich_max_urls"] = int(enrich_max)
                 meta_out["last_completed_step"] = "enrichment_start"
+            last_step = "launch_browser_enrichment"
+            if meta_out is not None:
+                meta_out["last_completed_step"] = last_step
+            browser = await launch_browser_instance()
             await enrich_vendor_detail_pages(browser, records, max_urls=enrich_max)
             if meta_out is not None:
                 meta_out["last_completed_step"] = "enrichment_done"
@@ -1961,6 +2152,8 @@ async def run_area_scrape(
 
     if meta_out is not None:
         meta_out["last_completed_step"] = "post_enrichment"
+        meta_out["grid_points_completed"] = int(done if "done" in locals() else 0)
+        meta_out["partial_results"] = bool(int(done if "done" in locals() else 0) < int(len(points)))
     enrich_records_with_google_places(records, force=google_places_enrich)
     if meta_out is not None:
         meta_out["last_completed_step"] = "google_places_done"
