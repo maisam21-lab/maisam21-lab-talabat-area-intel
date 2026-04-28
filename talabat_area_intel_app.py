@@ -186,6 +186,7 @@ def init_state() -> None:
     st.session_state.setdefault("dual_area_b_label", "")
     st.session_state.setdefault("dual_map_next_slot", "A")
     st.session_state.setdefault("dual_last_click_sig", "")
+    st.session_state.setdefault("runpin_last_click_sig", "")
 
 
 def _bounds_for_radius(lat: float, lng: float, radius_km: float, pad: float = 1.15) -> tuple[list[float], list[float]]:
@@ -445,11 +446,6 @@ def render_pin_map(
         key="talabat_pin_map",
     )
     out = dict(out or {})
-    if out.get("last_clicked") and not lock_pin:
-        lc = out["last_clicked"]
-        set_scrape_location(float(lc["lat"]), float(lc["lng"]), "Custom pin (map)", "folium_click")
-        sync_legacy_pin_mirror()
-        st.toast(f"Pin → {float(lc['lat']):.5f}, {float(lc['lng']):.5f}", icon="📍")
     return out
 
 
@@ -1044,26 +1040,41 @@ def main() -> None:
         dual_points=dual_points_for_map,
     )
     store_folium_payload(folium_out)
-    if preview_two_pinned and folium_out.get("last_clicked"):
+    if folium_out.get("last_clicked"):
         lc = folium_out["last_clicked"]
         click_lat = float(lc["lat"])
         click_lng = float(lc["lng"])
         click_sig = f"{click_lat:.6f},{click_lng:.6f}"
-        if click_sig != str(st.session_state.get("dual_last_click_sig") or ""):
-            slot = str(st.session_state.get("dual_map_next_slot") or "A").upper()
-            if slot not in ("A", "B"):
-                slot = "A"
-            if slot == "A":
-                st.session_state["dual_area_a_lat"] = click_lat
-                st.session_state["dual_area_a_lng"] = click_lng
-                st.session_state["dual_map_next_slot"] = "B"
-            else:
-                st.session_state["dual_area_b_lat"] = click_lat
-                st.session_state["dual_area_b_lng"] = click_lng
-                st.session_state["dual_map_next_slot"] = "A"
-            st.session_state["dual_last_click_sig"] = click_sig
-            st.toast(f"Area {slot} pin → {click_lat:.5f}, {click_lng:.5f}", icon="📌")
-            st.rerun()
+        if preview_two_pinned:
+            if click_sig != str(st.session_state.get("dual_last_click_sig") or ""):
+                slot = str(st.session_state.get("dual_map_next_slot") or "A").upper()
+                if slot not in ("A", "B"):
+                    slot = "A"
+                if slot == "A":
+                    st.session_state["dual_area_a_lat"] = click_lat
+                    st.session_state["dual_area_a_lng"] = click_lng
+                    st.session_state["dual_map_next_slot"] = "B"
+                else:
+                    st.session_state["dual_area_b_lat"] = click_lat
+                    st.session_state["dual_area_b_lng"] = click_lng
+                    st.session_state["dual_map_next_slot"] = "A"
+                st.session_state["dual_last_click_sig"] = click_sig
+                # Keep the main run pin synced with the latest map click.
+                st.session_state[f"run_pin_lat__{_pin_widget_scope}"] = click_lat
+                st.session_state[f"run_pin_lng__{_pin_widget_scope}"] = click_lng
+                set_scrape_location(click_lat, click_lng, "Custom pin (map)", "folium_click")
+                sync_legacy_pin_mirror()
+                st.toast(f"Area {slot} pin → {click_lat:.5f}, {click_lng:.5f}", icon="📌")
+                st.rerun()
+        else:
+            if click_sig != str(st.session_state.get("runpin_last_click_sig") or ""):
+                st.session_state["runpin_last_click_sig"] = click_sig
+                st.session_state[f"run_pin_lat__{_pin_widget_scope}"] = click_lat
+                st.session_state[f"run_pin_lng__{_pin_widget_scope}"] = click_lng
+                set_scrape_location(click_lat, click_lng, "Custom pin (map)", "folium_click")
+                sync_legacy_pin_mirror()
+                st.toast(f"Pin → {click_lat:.5f}, {click_lng:.5f}", icon="📍")
+                st.rerun()
     loc_after_map = get_scrape_location()
     mismatch, mismatch_msg = folium_center_vs_location_mismatch(loc_after_map)
     if mismatch and mismatch_msg:
