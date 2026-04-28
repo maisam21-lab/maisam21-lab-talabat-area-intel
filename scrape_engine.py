@@ -1207,7 +1207,20 @@ def _finalize_vendor_enrichment(acc: dict[str, list]) -> dict[str, str | float |
 
 async def _fetch_vendor_page_enrichment(browser, url: str) -> dict[str, str | float | None]:
     """Open vendor page (English) and mine __NEXT_DATA__, tel: links, and vendor metadata."""
-    ctx = await browser.new_context(**_vendor_browser_context_kwargs())
+    try:
+        if hasattr(browser, "is_connected") and not browser.is_connected():
+            logger.warning("vendor_enrich_browser_not_connected url=%s", url)
+            return {}
+    except Exception:
+        return {}
+    try:
+        ctx = await browser.new_context(**_vendor_browser_context_kwargs())
+    except TargetClosedError:
+        logger.warning("vendor_enrich_target_closed new_context failed url=%s", url)
+        return {}
+    except Exception as exc:
+        logger.warning("vendor_enrich_new_context_failed url=%s err=%s", url, exc)
+        return {}
     try:
         page = await ctx.new_page()
     except TargetClosedError:
@@ -1262,7 +1275,7 @@ async def enrich_vendor_detail_pages(
             continue
         by_url.setdefault(u, []).append(r)
     urls = list(by_url.keys())[:max_urls]
-    sem = asyncio.Semaphore(3)
+    semaphore = asyncio.Semaphore(3)
     done = 0
     total = len(urls)
     logger.info("enrichment_start urls=%s rows=%s max_urls=%s", total, len(records), max_urls)
@@ -1356,18 +1369,17 @@ async def enrich_vendor_detail_pages(
 
     async def one(u: str) -> None:
         nonlocal done
-        async with sem:
-            d = await _fetch_vendor_page_enrichment(browser, u)
-            for row in by_url[u]:
-                _apply(row, d)
-            done += 1
-            logger.info("enrichment_progress %s/%s url=%s", done, total, u)
+        d = await _fetch_vendor_page_enrichment(browser, u)
+        for row in by_url[u]:
+            _apply(row, d)
+        done += 1
+        logger.info("enrichment_progress %s/%s url=%s", done, total, u)
 
-    # Keep only a small number of enrichment tasks in-flight to avoid context/page pressure.
-    batch_size = 3
-    for i in range(0, len(urls), batch_size):
-        chunk = urls[i : i + batch_size]
-        await asyncio.gather(*[one(u) for u in chunk], return_exceptions=False)
+    async def limited(u: str) -> None:
+        async with semaphore:
+            await one(u)
+
+    await asyncio.gather(*[limited(u) for u in urls], return_exceptions=False)
     logger.info("enrichment_done urls=%s rows=%s", total, len(records))
 
 
@@ -1604,8 +1616,36 @@ async def scrape_one_point(
 
     context = None
     page = None
-    context = await browser.new_context(**_listing_browser_context_kwargs(sample_lat, sample_lng))
-    page = await context.new_page()
+    try:
+        if hasattr(browser, "is_connected") and not browser.is_connected():
+            logger.warning("listing_browser_not_connected sample=(%.5f,%.5f), skipping", sample_lat, sample_lng)
+            return []
+    except Exception:
+        return []
+    try:
+        context = await browser.new_context(**_listing_browser_context_kwargs(sample_lat, sample_lng))
+    except TargetClosedError:
+        logger.warning("listing_target_closed new_context sample=(%.5f,%.5f), skipping", sample_lat, sample_lng)
+        return []
+    except Exception as exc:
+        logger.warning("listing_new_context_failed sample=(%.5f,%.5f) err=%s", sample_lat, sample_lng, exc)
+        return []
+    try:
+        page = await context.new_page()
+    except TargetClosedError:
+        logger.warning("listing_target_closed new_page sample=(%.5f,%.5f), skipping", sample_lat, sample_lng)
+        try:
+            await context.close()
+        except Exception:
+            pass
+        return []
+    except Exception as exc:
+        logger.warning("listing_new_page_failed sample=(%.5f,%.5f) err=%s", sample_lat, sample_lng, exc)
+        try:
+            await context.close()
+        except Exception:
+            pass
+        return []
     listing_urls = capped_listing_urls(listing_cuisine_sweep)
     allow_fast = _listing_fast_path_enabled() and not listing_cuisine_sweep and not paginate_listings
     merged_all: list[RestaurantRecord] = []
