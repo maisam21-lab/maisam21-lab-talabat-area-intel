@@ -43,21 +43,38 @@ def km_to_lng_deg(km: float, lat: float) -> float:
 
 
 def generate_points_in_radius(center_lat: float, center_lng: float, radius_km: float, spacing_km: float) -> list[tuple[float, float]]:
-    min_lat = center_lat - km_to_lat_deg(radius_km)
-    max_lat = center_lat + km_to_lat_deg(radius_km)
+    """
+    Hexagonal sampling grid over the full circle.
+
+    Horizontal spacing = spacing_km, vertical row step = sqrt(3)/2 * spacing_km,
+    with alternating half-column offsets for better coverage efficiency.
+    """
+    r = float(radius_km)
+    sp = max(0.2, float(spacing_km))
+    min_lat = center_lat - km_to_lat_deg(r)
+    max_lat = center_lat + km_to_lat_deg(r)
     points: list[tuple[float, float]] = []
 
+    row_step_km = sp * math.sqrt(3.0) / 2.0
+    row_step_lat = km_to_lat_deg(row_step_km)
+    row_idx = 0
     lat = min_lat
-    while lat <= max_lat:
-        min_lng = center_lng - km_to_lng_deg(radius_km, lat)
-        max_lng = center_lng + km_to_lng_deg(radius_km, lat)
-        lng_step = km_to_lng_deg(spacing_km, lat)
-        lng = min_lng
-        while lng <= max_lng:
-            if haversine_km(center_lat, center_lng, lat, lng) <= radius_km:
+    while lat <= max_lat + 1e-9:
+        lng_step = km_to_lng_deg(sp, lat)
+        if lng_step <= 0:
+            row_idx += 1
+            lat += row_step_lat
+            continue
+        row_offset = 0.5 * lng_step if (row_idx % 2 == 1) else 0.0
+        min_lng = center_lng - km_to_lng_deg(r, lat) - lng_step
+        max_lng = center_lng + km_to_lng_deg(r, lat) + lng_step
+        lng = min_lng + row_offset
+        while lng <= max_lng + 1e-12:
+            if haversine_km(center_lat, center_lng, lat, lng) <= r:
                 points.append((round(lat, 6), round(lng, 6)))
             lng += lng_step
-        lat += km_to_lat_deg(spacing_km)
+        row_idx += 1
+        lat += row_step_lat
 
     # Pin must be first: single-sample runs must use the user's location, not an arbitrary grid corner.
     center_pt = (round(center_lat, 6), round(center_lng, 6))

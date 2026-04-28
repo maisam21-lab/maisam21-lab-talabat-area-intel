@@ -45,10 +45,10 @@ DEFAULT_PIN = (25.2048, 55.2708)
 
 # More grid points + deeper scroll = more listing URLs merged (slower; watch SCRAPER_WALL_CLOCK_SEC on Render).
 _DEFAULT_MAX_SAMPLE_POINTS = 6
-_DEFAULT_SPACING_KM = 1.5
+_DEFAULT_SPACING_KM = 0.8
 _DEFAULT_SCROLL_ROUNDS = 18
 _DEFAULT_SCROLL_WAIT_MS = 900
-_DEFAULT_CONCURRENCY = 1
+_DEFAULT_CONCURRENCY = 3
 
 _CITY_SLUGS = ["dubai", "sharjah", "abudhabi", "alain", "ajman"]
 
@@ -62,25 +62,25 @@ _SCRAPE_PROFILES: dict[str, dict] = {
     # Quick baseline in constrained hosting.
     "Fast": {
         "high_volume": False,
-        "max_sample_points": 6,
-        "scroll_rounds": 10,
+        "max_sample_points": 30,
+        "scroll_rounds": 12,
         "scroll_wait_ms": _DEFAULT_SCROLL_WAIT_MS,
         "google_places_enrich": True,
     },
     # Better coverage with moderate runtime.
     "Balanced": {
         "high_volume": False,
-        "max_sample_points": 14,
-        "scroll_rounds": 14,
+        "max_sample_points": 80,
+        "scroll_rounds": 16,
         "scroll_wait_ms": _DEFAULT_SCROLL_WAIT_MS,
         "google_places_enrich": True,
     },
     # Highest completeness; slower and more timeout-prone.
     "Complete": {
         "high_volume": True,
-        "max_sample_points": 60,
-        "scroll_rounds": 18,
-        "scroll_wait_ms": _DEFAULT_SCROLL_WAIT_MS,
+        "max_sample_points": 200,
+        "scroll_rounds": 22,
+        "scroll_wait_ms": 700,
         "google_places_enrich": True,
     },
 }
@@ -923,6 +923,12 @@ def main() -> None:
             value=True,
             help="Fetches nearby Google restaurants around the same pin/radius and overlays them on maps.",
         )
+        selected_profile_name = st.selectbox(
+            "Scrape profile",
+            options=list(_SCRAPE_PROFILES.keys()),
+            index=list(_SCRAPE_PROFILES.keys()).index(_DEFAULT_SCRAPE_PROFILE),
+            help="Fast = quickest but shallower coverage; Balanced = good default; Complete = deepest and slowest.",
+        )
         radius_km = st.number_input(
             "Radius (km)",
             min_value=5.0,
@@ -1091,7 +1097,7 @@ def main() -> None:
     else:
         st.write(f"**Run pin:** `{float(loc_run['lat']):.6f}, {float(loc_run['lng']):.6f}`")
     st.write(
-        f"Radius: `{radius_km} km` · Profile: `{_DEFAULT_SCRAPE_PROFILE}` (default) · Google Places when API key is set · "
+        f"Radius: `{radius_km} km` · Profile: `{selected_profile_name}` · Google Places when API key is set · "
         f"Status: `{listing_status_mode}` · New-only: `{new_on_platform_only}` · "
         f"Target label: `{target_area_label.strip() or '—'}`"
     )
@@ -1199,7 +1205,7 @@ def main() -> None:
             pinned_count,
             listing_status_mode,
             str(new_on_platform_only),
-            _DEFAULT_SCRAPE_PROFILE,
+            selected_profile_name,
             str(include_google_coverage),
             dual_sig,
             target_area_label.strip(),
@@ -1230,7 +1236,7 @@ def main() -> None:
                 },
             ]
         )
-        profile_cfg = _SCRAPE_PROFILES.get(_DEFAULT_SCRAPE_PROFILE, _SCRAPE_PROFILES["Complete"])
+        profile_cfg = _SCRAPE_PROFILES.get(selected_profile_name, _SCRAPE_PROFILES["Complete"])
         base_payload = {
             "radius_km": float(radius_km),
             "spacing_km": _DEFAULT_SPACING_KM,
@@ -1286,7 +1292,7 @@ def main() -> None:
                 st.session_state["results_df"] = pd.DataFrame()
                 st.session_state["last_run_done"] = False
             else:
-                profile_cfg = _SCRAPE_PROFILES.get(_DEFAULT_SCRAPE_PROFILE, _SCRAPE_PROFILES["Complete"])
+                profile_cfg = _SCRAPE_PROFILES.get(selected_profile_name, _SCRAPE_PROFILES["Complete"])
                 payload = {
                     "radius_km": float(radius_km),
                     "spacing_km": _DEFAULT_SPACING_KM,
@@ -1312,6 +1318,7 @@ def main() -> None:
                 if not target_area_label.strip() and is_city_mode:
                     payload["scrape_target_label"] = UAE_CITY_DISPLAY.get(city_key, city_key)
                 try:
+                    fallback_notes: list[str] = []
                     request_id = uuid.uuid4().hex
                     req_headers = dict(headers)
                     req_headers["X-Request-ID"] = request_id
@@ -1336,6 +1343,7 @@ def main() -> None:
                             fallback_payload["high_volume"] = False
                             fallback_payload["max_sample_points"] = min(int(payload["max_sample_points"]), 12)
                             fallback_payload["scroll_rounds"] = 10
+                            fallback_notes.append("Fallback 1 used: disabled high-volume, reduced grid sample cap and scroll rounds.")
                             response = _post_scrape(
                                 fallback_payload,
                                 "Lighter retry also hit read-timeout. Retrying once with ultra-light settings...",
@@ -1346,6 +1354,7 @@ def main() -> None:
                                 ultra_payload["max_sample_points"] = min(int(fallback_payload["max_sample_points"]), 4)
                                 ultra_payload["scroll_rounds"] = 8
                                 ultra_payload["spacing_km"] = 2.5
+                                fallback_notes.append("Fallback 2 used: ultra-light profile with very low sample cap and wider spacing.")
                                 response = _post_scrape(
                                     ultra_payload,
                                     "Ultra-light retry also hit read-timeout.",
@@ -1414,6 +1423,8 @@ def main() -> None:
                     st.session_state["google_coverage_df"] = gdf
                     progress.progress(1.0)
                     status_box.info(f"Remote scrape completed · request_id={api_request_id}")
+                    if fallback_notes:
+                        st.warning("Primary scrape degraded due to timeouts: " + " ".join(fallback_notes))
                 except Exception as exc:
                     st.error(f"Remote API scrape failed: {exc}")
                     df = pd.DataFrame()

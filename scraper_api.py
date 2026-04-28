@@ -76,9 +76,9 @@ class ScrapeRequest(BaseModel):
     pin_lat: float = Field(default=25.2048, description="Search center latitude (geometry always follows this pin)")
     pin_lng: float = Field(default=55.2708, description="Search center longitude (geometry always follows this pin)")
     radius_km: float = Field(default=10.0, ge=5.0, le=10.0)
-    # Wider spacing + low concurrency defaults reduce Render 502/timeouts on long runs.
-    spacing_km: float = Field(default=1.5, ge=0.35, le=3.0)
-    concurrency: int = Field(default=1, ge=1, le=6)
+    # Hex grid spacing; lower values increase coverage and runtime.
+    spacing_km: float = Field(default=0.8, ge=0.35, le=3.0)
+    concurrency: int = Field(default=3, ge=1, le=6)
     # "live" = drop rows classified as closed (keeps unknown + open); "all" = no status filter; "closed" = closed only.
     status_filter: str = Field(
         default="live",
@@ -239,7 +239,7 @@ def scrape_config(x_api_key: str | None = Header(default=None)) -> dict:
         "scraper_wall_clock_sec_default": float(os.getenv("SCRAPER_WALL_CLOCK_SEC", "600")),
         "scraper_min_radius_km": float(os.getenv("SCRAPER_MIN_RADIUS_KM", "5")),
         "scraper_max_radius_km": float(os.getenv("SCRAPER_MAX_RADIUS_KM", "10")),
-        "scraper_max_sample_points_cap_api": int(os.getenv("SCRAPER_MAX_SAMPLE_POINTS_CAP_API", "180")),
+        "scraper_max_sample_points_cap_api": int(os.getenv("SCRAPER_MAX_SAMPLE_POINTS_CAP_API", "400")),
         "max_scrape_sample_points_default": int(os.getenv("MAX_SCRAPE_SAMPLE_POINTS", "6")),
         "restaurant_detail_enrich_max_default": int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "12")),
         "scraper_per_point_timeout_sec": float(os.getenv("SCRAPER_PER_POINT_TIMEOUT_SEC", "90")),
@@ -470,7 +470,7 @@ async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None
     max_r = float(os.getenv("SCRAPER_MAX_RADIUS_KM", "10"))
     if float(payload.radius_km) < min_r or float(payload.radius_km) > max_r:
         raise HTTPException(status_code=400, detail=f"radius_km must be between {min_r:g} and {max_r:g}")
-    max_sample_cap = int(os.getenv("SCRAPER_MAX_SAMPLE_POINTS_CAP_API", "180"))
+    max_sample_cap = int(os.getenv("SCRAPER_MAX_SAMPLE_POINTS_CAP_API", "400"))
     effective_max_samples = payload.max_sample_points
     if effective_max_samples is not None:
         effective_max_samples = min(int(effective_max_samples), max_sample_cap)
@@ -505,6 +505,23 @@ async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None
             effective_max_samples,
             int(wall_sec),
         )
+        progress_state = {"done": 0, "total": 0, "rows_last_point": 0}
+
+        def _progress_cb(done: int, total: int, lat: float, lng: float, rows_from_point: int) -> None:
+            progress_state["done"] = int(done)
+            progress_state["total"] = int(total)
+            progress_state["rows_last_point"] = int(rows_from_point)
+            if done == 1 or done == total or done % max(1, total // 8) == 0:
+                logger.info(
+                    "scrape_progress request_id=%s done=%s/%s sample=(%.5f,%.5f) rows_from_point=%s",
+                    request_id,
+                    done,
+                    total,
+                    lat,
+                    lng,
+                    rows_from_point,
+                )
+
         df = await asyncio.wait_for(
             run_area_scrape(
                 pin_lat=pin_lat,
@@ -516,7 +533,7 @@ async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None
                 just_landed_only=payload.just_landed_only,
                 scroll_rounds=payload.scroll_rounds,
                 scroll_wait_ms=payload.scroll_wait_ms,
-                progress_cb=None,
+                progress_cb=_progress_cb,
                 max_sample_points=effective_max_samples,
                 dedupe_by_vendor_url=payload.dedupe_by_vendor_url,
                 scrape_city=scrape_city_label,
@@ -528,6 +545,9 @@ async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None
             timeout=wall_sec,
         )
         step = "serialize_response"
+        meta["grid_points_completed"] = int(progress_state["done"])
+        meta["grid_points_total"] = int(progress_state["total"])
+        meta["last_point_rows"] = int(progress_state["rows_last_point"])
         records = df.to_dict(orient="records")
         out: dict = {
             "ok": True,
