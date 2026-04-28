@@ -1208,7 +1208,22 @@ def _finalize_vendor_enrichment(acc: dict[str, list]) -> dict[str, str | float |
 async def _fetch_vendor_page_enrichment(browser, url: str) -> dict[str, str | float | None]:
     """Open vendor page (English) and mine __NEXT_DATA__, tel: links, and vendor metadata."""
     ctx = await browser.new_context(**_vendor_browser_context_kwargs())
-    page = await ctx.new_page()
+    try:
+        page = await ctx.new_page()
+    except TargetClosedError:
+        logger.warning("vendor_enrich_target_closed new_page failed url=%s", url)
+        try:
+            await ctx.close()
+        except Exception:
+            pass
+        return {}
+    except Exception as exc:
+        logger.warning("vendor_enrich_new_page_failed url=%s err=%s", url, exc)
+        try:
+            await ctx.close()
+        except Exception:
+            pass
+        return {}
     acc: dict[str, list] = {}
     try:
         await page.goto(url, wait_until=_vendor_goto_wait_until(), timeout=25000)
@@ -1247,7 +1262,7 @@ async def enrich_vendor_detail_pages(
             continue
         by_url.setdefault(u, []).append(r)
     urls = list(by_url.keys())[:max_urls]
-    sem = asyncio.Semaphore(max(1, int(os.getenv("SCRAPER_VENDOR_ENRICH_CONCURRENCY", "3"))))
+    sem = asyncio.Semaphore(3)
     done = 0
     total = len(urls)
     logger.info("enrichment_start urls=%s rows=%s max_urls=%s", total, len(records), max_urls)
@@ -1348,7 +1363,11 @@ async def enrich_vendor_detail_pages(
             done += 1
             logger.info("enrichment_progress %s/%s url=%s", done, total, u)
 
-    await asyncio.gather(*[one(u) for u in urls])
+    # Keep only a small number of enrichment tasks in-flight to avoid context/page pressure.
+    batch_size = 3
+    for i in range(0, len(urls), batch_size):
+        chunk = urls[i : i + batch_size]
+        await asyncio.gather(*[one(u) for u in chunk], return_exceptions=False)
     logger.info("enrichment_done urls=%s rows=%s", total, len(records))
 
 
