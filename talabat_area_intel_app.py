@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import html
+import io
 import math
 import os
+import threading
+import time
 import uuid
+from datetime import datetime
 
 import folium
 import pandas as pd
@@ -54,7 +58,7 @@ _CITY_SLUGS = ["dubai", "sharjah", "abudhabi", "alain", "ajman"]
 
 # Product defaults (no client toggles): full grid + cuisine sweep, keep all listing rows, request Places enrichment.
 _SCRAPE_DEDUPE_BY_VENDOR_URL = False
-_SCRAPE_HIGH_VOLUME = False
+_SCRAPE_HIGH_VOLUME = True
 _SCRAPE_MAX_SAMPLE_POINTS = 6
 _SCRAPE_CLIENT_TIMEOUT_SEC = 1300
 
@@ -150,6 +154,39 @@ button[kind="secondary"] {
   font-size: 0.78rem;
   font-weight: 600;
   margin-left: 0.4rem;
+}
+.platform-pill {
+  display: inline-block;
+  padding: 0.2rem 0.58rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  margin-left: 0.38rem;
+  border: 1px solid transparent;
+}
+.platform-pill.active {
+  background: #fee2e2;
+  color: #991b1b;
+  border-color: #fecaca;
+}
+.platform-pill.soon {
+  background: #f1f5f9;
+  color: #64748b;
+  border-color: #e2e8f0;
+}
+.step-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 0.7rem 0.85rem;
+}
+.step-card.done {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+.step-card.active {
+  border-color: #93c5fd;
+  background: #eff6ff;
 }
 </style>
         """,
@@ -486,7 +523,7 @@ def render_heatmap(
             continue
         heat_rows.append([la, ln])
     if heat_rows:
-        heat_fg = folium.FeatureGroup(name="Talabat density heat", overlay=True, control=True)
+        heat_fg = folium.FeatureGroup(name="Platform listing density", overlay=True, control=True)
         HeatMap(
             heat_rows,
             min_opacity=0.33,
@@ -537,13 +574,13 @@ def render_heatmap(
 
     if basemap == "google":
         st.caption(
-            "Same **Google** basemaps as the pin map. Heat = **Talabat listing density** from this scrape "
+            "Same **Google** basemaps as the pin map. Heat = **Platform listing density** from this scrape "
             "(single aggregator; multi-aggregator overlay is not wired yet)."
         )
     else:
         st.caption(
             "Same English-first basemaps as the pin map. **Street** = full English-style road labels; "
-            "**Satellite** + **Place names overlay** for labels. Heat = **Talabat listing density** from this scrape "
+            "**Satellite** + **Place names overlay** for labels. Heat = **Platform listing density** from this scrape "
             "(single aggregator; multi-aggregator overlay is not wired yet)."
         )
     st_folium(
@@ -837,56 +874,95 @@ def compact_output_df(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     return df.loc[:, keep].copy(), removed
 
 
+def build_excel_export_df(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if "platform" not in out.columns:
+        out["platform"] = "Talabat"
+    if "orders_week_estimate" not in out.columns:
+        if "estimated_orders_per_week" in out.columns:
+            out["orders_week_estimate"] = out["estimated_orders_per_week"]
+        elif "estimated_orders_per_day" in out.columns:
+            out["orders_week_estimate"] = pd.to_numeric(out["estimated_orders_per_day"], errors="coerce") * 7.0
+        else:
+            out["orders_week_estimate"] = ""
+    if "area_label" not in out.columns:
+        if "scrape_target_label" in out.columns:
+            out["area_label"] = out["scrape_target_label"]
+        elif "batch_location_label" in out.columns:
+            out["area_label"] = out["batch_location_label"]
+        else:
+            out["area_label"] = ""
+    out["scrape_date"] = datetime.utcnow().strftime("%Y-%m-%d")
+    export_cols = [
+        "restaurant_name",
+        "brand_display_name",
+        "legal_name",
+        "contact_phone",
+        "cuisines",
+        "orders_week_estimate",
+        "platform",
+        "status",
+        "lat",
+        "lng",
+        "distance_km_from_pin",
+        "area_label",
+        "scrape_date",
+    ]
+    for c in export_cols:
+        if c not in out.columns:
+            out[c] = ""
+    return out.loc[:, export_cols].rename(
+        columns={
+            "restaurant_name": "restaurant",
+            "brand_display_name": "brand",
+            "contact_phone": "phone",
+            "cuisines": "cuisine",
+            "distance_km_from_pin": "distance_from_pin_km",
+        }
+    )
+
+
+def dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
+    bio = io.BytesIO()
+    with pd.ExcelWriter(bio) as writer:
+        df.to_excel(writer, index=False, sheet_name="Area Intel")
+    return bio.getvalue()
+
+
 def main() -> None:
-    st.set_page_config(page_title="Talabat Area Intel (English)", layout="wide")
+    st.set_page_config(page_title="Area Intel | Kitchen Park", layout="wide")
     inject_ui_theme()
     init_state()
 
-    st.markdown("## Talabat UAE Area Intel <span class='exec-pill'>Executive Edition</span>", unsafe_allow_html=True)
-    st.warning(f"Build: `{_BUILD_STAMP}`")
-    st.caption(
-        "**KitchenPark / expansion analytics:** compare cities for outbound acquisition using cuisine, ratings, "
-        "delivery signals, and coverage. Each scrape requests **Google Places** enrichment when the API has a Maps key; "
-        "geocode can still use OpenStreetMap. **Maps:** Google roadmap/satellite when ``GOOGLE_MAPS_API_KEY`` is set "
-        "and **Map Tiles API** is enabled (otherwise Esri). Set ``STREAMLIT_MAP_BASEMAP=esri`` to force Esri."
+    st.markdown(
+        "## Area Intel "
+        "<span class='platform-pill active'>Talabat</span>"
+        "<span class='platform-pill soon'>Deliveroo · Coming soon</span>"
+        "<span class='platform-pill soon'>Careem · Coming soon</span>",
+        unsafe_allow_html=True,
     )
+    st.caption("Kitchen Park · Market Intelligence")
+    st.warning(f"Build: `{_BUILD_STAMP}`")
 
     with st.sidebar:
         st.header("Scrape Controls")
-        st.caption(
-            "**Geocode:** if `GOOGLE_MAPS_API_KEY` is set and `GEOCODE_USE_GOOGLE=1`, Google is tried first; "
-            "otherwise OpenStreetMap Nominatim. **Maps:** same key is reused for **Map Tiles** basemaps unless "
-            "`STREAMLIT_MAP_BASEMAP=esri`. **Scrape:** high-volume listing + Google Places enrich is always requested "
-            "(Places runs only when the key and billing allow it)."
-        )
         api_base_url = get_api_base_url()
         api_key = get_frontend_api_key()
         headers = {"X-API-Key": api_key} if api_key else {}
-        show_advanced = st.toggle("Show advanced debug sections", value=False, help="Show raw meta/debug panels.")
-
-        area_mode = st.radio(
-            "Area mode",
-            ["UAE city (KitchenPark)", "Custom pin"],
-            index=1,
-            help=            "City mode sets a default centre per emirate; **click the map** to move the search pin — "
-            "the API uses that pin, not a hidden fixed city centre. Custom pin uses lat/lng fields only.",
-        )
-        is_city_mode = area_mode.startswith("UAE")
+        show_advanced = False
+        area_mode = "custom"
+        is_city_mode = False
         city_key = "dubai"
-        city_lat, city_lng = DEFAULT_PIN[0], DEFAULT_PIN[1]
-        city_suggested_r = 12.0
-        if is_city_mode:
-            city_key = st.selectbox(
-                "City",
-                _CITY_SLUGS,
-                format_func=lambda k: UAE_CITY_DISPLAY[k],
-                index=0,
-            )
-            city_lat, city_lng, city_suggested_r = UAE_CITY_PRESETS[city_key]
-            st.caption(
-                f"Suggested radius for this emirate: **{city_suggested_r:g} km** "
-                "(input is constrained to **5–10 km**)."
-            )
+
+        st.markdown("**1) Location**")
+        city_key = st.selectbox(
+            "City preset",
+            _CITY_SLUGS,
+            format_func=lambda k: UAE_CITY_DISPLAY[k],
+            index=0,
+        )
+        city_lat, city_lng, _ = UAE_CITY_PRESETS[city_key]
+        if st.button("Use city preset pin", use_container_width=True):
             seed_city_preset_if_changed(
                 city_key,
                 float(city_lat),
@@ -894,64 +970,23 @@ def main() -> None:
                 UAE_CITY_DISPLAY[city_key],
             )
             sync_legacy_pin_mirror()
+            st.rerun()
 
+        target_area_label = ""
+        listing_status_mode = "live"
+        new_on_platform_only = True
+        include_google_coverage = True
+        selected_profile_name = "Complete"
+        radius_pick = st.radio("2) Radius", options=[5, 10], horizontal=True, index=1)
+        radius_km = float(radius_pick)
         target_area_label = st.text_input(
-            "Target area label (optional)",
+            "3) Area label (for exports)",
             value="",
-            help="Stored on every row as scrape_target_label for reporting (e.g. Dubai Marina, DIP). "
-            "Use with Custom pin + radius for micro-market scrapes.",
-        )
-        listing_status_mode = st.selectbox(
-            "Listing status filter",
-            options=["live", "all", "closed"],
-            index=0,
-            format_func=lambda x: {
-                "live": "Live + unknown (drop closed-looking rows)",
-                "all": "All rows (no status filter)",
-                "closed": "Closed-looking rows only",
-            }[x],
-            help="This is our classifier on listing text, not Talabat's full operational status.",
-        )
-        new_on_platform_only = st.checkbox(
-            "New on platform only",
-            value=False,
-            help="Turns on Talabat 'Just Landed' listing mode when the UI exposes it, then keeps rows with "
-            "just_landed=yes or recently_added_90d=yes.",
-        )
-        include_google_coverage = st.checkbox(
-            "Include Google-only coverage layer",
-            value=True,
-            help="Fetches nearby Google restaurants around the same pin/radius and overlays them on maps.",
-        )
-        selected_profile_name = st.selectbox(
-            "Scrape profile",
-            options=list(_SCRAPE_PROFILES.keys()),
-            index=list(_SCRAPE_PROFILES.keys()).index(_DEFAULT_SCRAPE_PROFILE),
-            help="Fast = quickest but shallower coverage; Balanced = good default; Complete = deepest and slowest.",
-        )
-        radius_km = st.number_input(
-            "Radius (km)",
-            min_value=5.0,
-            max_value=10.0,
-            value=float(min(10.0, max(5.0, city_suggested_r if is_city_mode else 10.0))),
-            step=0.5,
-            key="scrape_radius_km_widget",
+            help="Stored as area_label in exports.",
         )
 
-        if not is_city_mode:
-            geocode_query = st.text_input("Search place/address (UAE)", value="")
-            geocode_btn = st.button("Set Pin from Search", use_container_width=True)
-            lp = st.session_state.get("last_geocode_provider")
-            ll = st.session_state.get("last_geocode_label")
-            if lp:
-                lab = str(ll or "").strip()
-                suffix = f" — {lab[:80]}…" if len(lab) > 80 else (f" — {lab}" if lab else "")
-                st.caption(f"**Last geocode provider:** `{lp}`{suffix}")
-            else:
-                st.caption("**Last geocode provider:** — (run *Set Pin from Search* once to record)")
-        else:
-            geocode_query = ""
-            geocode_btn = False
+        geocode_query = st.text_input("Address search (UAE)", value="")
+        geocode_btn = st.button("Set pin from search", use_container_width=True)
 
         if geocode_btn:
             try:
@@ -986,6 +1021,8 @@ def main() -> None:
                         st.warning(f"No geocoding result. {payload.get('error', 'no details')}")
             except Exception as exc:
                 st.error(f"Geocode failed via backend: {exc}")
+        st.warning("Coastline tip: keep the pin slightly inland to avoid sparse ocean-side sampling.")
+        run_single = st.button("Start Scraping", type="primary", use_container_width=True)
 
     _pin_widget_scope = str(city_key) if is_city_mode else "custom_pin_mode"
     st.subheader("Run pin (single source for scraping)")
@@ -1001,7 +1038,6 @@ def main() -> None:
             value=float(loc_ui["lat"]),
             format="%.6f",
             step=0.0001,
-            key=f"run_pin_lat__{_pin_widget_scope}",
         )
     with rp2:
         run_lng = st.number_input(
@@ -1009,7 +1045,6 @@ def main() -> None:
             value=float(loc_ui["lng"]),
             format="%.6f",
             step=0.0001,
-            key=f"run_pin_lng__{_pin_widget_scope}",
         )
     set_scrape_location(
         float(run_lat),
@@ -1019,7 +1054,7 @@ def main() -> None:
     )
     sync_legacy_pin_mirror()
 
-    preview_two_pinned = (not is_city_mode) and str(st.session_state.get("pinned_scrape_count", "one")) == "two"
+    preview_two_pinned = False
     dual_points_for_map: list[dict[str, float | str]] | None = None
     if preview_two_pinned:
         dual_points_for_map = [
@@ -1036,6 +1071,18 @@ def main() -> None:
                 "label": str(st.session_state.get("dual_area_b_label") or "Area B"),
             },
         ]
+
+    pin_done = str(get_scrape_location().get("source") or "") not in ("init", "")
+    step1_cls = "step-card done" if pin_done else "step-card active"
+    step2_cls = "step-card active" if pin_done else "step-card"
+    step3_cls = "step-card"
+    cstep1, cstep2, cstep3 = st.columns(3)
+    with cstep1:
+        st.markdown(f"<div class='{step1_cls}'><b>Step 1</b><br>Drop a pin (search or click map)</div>", unsafe_allow_html=True)
+    with cstep2:
+        st.markdown(f"<div class='{step2_cls}'><b>Step 2</b><br>Set radius &amp; label</div>", unsafe_allow_html=True)
+    with cstep3:
+        st.markdown(f"<div class='{step3_cls}'><b>Step 3</b><br>Download Excel</div>", unsafe_allow_html=True)
 
     st.subheader("Interactive search map")
     folium_out = render_pin_map(
@@ -1066,8 +1113,6 @@ def main() -> None:
                     st.session_state["dual_map_next_slot"] = "A"
                 st.session_state["dual_last_click_sig"] = click_sig
                 # Keep the main run pin synced with the latest map click.
-                st.session_state[f"run_pin_lat__{_pin_widget_scope}"] = click_lat
-                st.session_state[f"run_pin_lng__{_pin_widget_scope}"] = click_lng
                 set_scrape_location(click_lat, click_lng, "Custom pin (map)", "folium_click")
                 sync_legacy_pin_mirror()
                 st.toast(f"Area {slot} pin → {click_lat:.5f}, {click_lng:.5f}", icon="📌")
@@ -1075,8 +1120,6 @@ def main() -> None:
         else:
             if click_sig != str(st.session_state.get("runpin_last_click_sig") or ""):
                 st.session_state["runpin_last_click_sig"] = click_sig
-                st.session_state[f"run_pin_lat__{_pin_widget_scope}"] = click_lat
-                st.session_state[f"run_pin_lng__{_pin_widget_scope}"] = click_lng
                 set_scrape_location(click_lat, click_lng, "Custom pin (map)", "folium_click")
                 sync_legacy_pin_mirror()
                 st.toast(f"Pin → {click_lat:.5f}, {click_lng:.5f}", icon="📍")
@@ -1105,98 +1148,13 @@ def main() -> None:
         "Expected runtime is usually a few minutes, but can be longer on heavy areas. "
         "Scrape wall-clock is controlled by the API service environment."
     )
-    if is_city_mode:
-        pinned_count = "one"
-        st.caption("**Two pinned areas** is only available in **Custom pin** mode (city mode always uses one run pin).")
-    else:
-        pinned_count = st.radio(
-            "Pinned areas to scrape",
-            options=["one", "two"],
-            format_func=lambda v: "One (run pin above + map)" if v == "one" else "Two (pins A + B below)",
-            horizontal=True,
-            key="pinned_scrape_count",
-        )
-    use_two_pinned = (not is_city_mode) and pinned_count == "two"
-
-    if use_two_pinned:
-        st.caption(
-            "Runs two `/scrape` calls (A then B) with the same radius and profile. "
-            "Rows include **`dual_area`** (`A` / `B`) and **`batch_location_label`** (your optional labels). "
-            "Sidebar *Target area label* is not applied — use A/B labels below. "
-            "Map clicks assign pins in sequence: **A**, then **B**, then **A**..."
-        )
-        ca, cb = st.columns(2)
-        with ca:
-            st.markdown("**Area A**")
-            st.number_input("Latitude", key="dual_area_a_lat", format="%.6f", step=0.0001)
-            st.number_input("Longitude", key="dual_area_a_lng", format="%.6f", step=0.0001)
-            st.text_input("Label (optional)", key="dual_area_a_label")
-            if st.button("Copy current run pin → A", key="dual_copy_run_to_a"):
-                st.session_state["dual_area_a_lat"] = float(loc_run["lat"])
-                st.session_state["dual_area_a_lng"] = float(loc_run["lng"])
-                st.rerun()
-        with cb:
-            st.markdown("**Area B**")
-            st.number_input("Latitude", key="dual_area_b_lat", format="%.6f", step=0.0001)
-            st.number_input("Longitude", key="dual_area_b_lng", format="%.6f", step=0.0001)
-            st.text_input("Label (optional)", key="dual_area_b_label")
-            if st.button("Copy current run pin → B", key="dual_copy_run_to_b"):
-                st.session_state["dual_area_b_lat"] = float(loc_run["lat"])
-                st.session_state["dual_area_b_lng"] = float(loc_run["lng"])
-                st.rerun()
-
-    dual_a_ok, dual_b_ok = False, False
-    dual_pin_err = ""
-    if not is_city_mode:
-        try:
-            parse_scrape_pin_or_raise_value_error(
-                st.session_state["dual_area_a_lat"], st.session_state["dual_area_a_lng"]
-            )
-            dual_a_ok = True
-        except ValueError as exc:
-            dual_pin_err = f"Area A pin invalid: {exc}"
-        try:
-            parse_scrape_pin_or_raise_value_error(
-                st.session_state["dual_area_b_lat"], st.session_state["dual_area_b_lng"]
-            )
-            dual_b_ok = True
-        except ValueError as exc:
-            dual_pin_err = dual_pin_err or f"Area B pin invalid: {exc}"
-    pins_identical = False
-    if not is_city_mode and dual_a_ok and dual_b_ok:
-        pins_identical = abs(float(st.session_state["dual_area_a_lat"]) - float(st.session_state["dual_area_b_lat"])) < 1e-6 and abs(
-            float(st.session_state["dual_area_a_lng"]) - float(st.session_state["dual_area_b_lng"])
-        ) < 1e-6
-    dual_ready = (not is_city_mode) and dual_a_ok and dual_b_ok and not pins_identical
-    if use_two_pinned and dual_pin_err:
-        st.warning(dual_pin_err)
-    if use_two_pinned and pins_identical:
-        st.warning("Area A and Area B pins are identical — move B or use *Copy current run pin* after moving the map.")
-
-    run_single = st.button(
-        "Start scraping",
-        type="primary",
-        use_container_width=True,
-        disabled=use_two_pinned,
-    )
+    pinned_count = "one"
+    use_two_pinned = False
     run_two_pins = False
-    if use_two_pinned:
-        run_two_pins = st.button(
-            "Scrape two areas (A + B)",
-            type="primary",
-            use_container_width=True,
-            disabled=not dual_ready,
-        )
 
     loc_fp = get_scrape_location()
     dual_sig = "none"
-    if use_two_pinned:
-        dual_sig = (
-            f"A:{float(st.session_state['dual_area_a_lat']):.5f},{float(st.session_state['dual_area_a_lng']):.5f}|"
-            f"B:{float(st.session_state['dual_area_b_lat']):.5f},{float(st.session_state['dual_area_b_lng']):.5f}"
-        )
-    elif not is_city_mode:
-        dual_sig = "one_pin"
+    dual_sig = "one_pin"
 
     current_fingerprint = "|".join(
         [
@@ -1215,9 +1173,27 @@ def main() -> None:
         ]
     )
 
+    def _start_scrape_timer(timer_box):
+        stop_event = threading.Event()
+        start_ts = time.time()
+
+        def _tick():
+            while not stop_event.is_set():
+                elapsed = int(time.time() - start_ts)
+                mins = elapsed // 60
+                secs = elapsed % 60
+                timer_box.markdown(f"⏱ Scraping · {mins:02d}:{secs:02d} elapsed")
+                time.sleep(1)
+
+        th = threading.Thread(target=_tick, daemon=True)
+        th.start()
+        return stop_event, start_ts
+
     if run_two_pins:
         progress = st.progress(0.0)
         status_box = st.empty()
+        timer_box = st.empty()
+        stop_event, start_ts = _start_scrape_timer(timer_box)
         a_lab = str(st.session_state.get("dual_area_a_label") or "").strip() or "Area A"
         b_lab = str(st.session_state.get("dual_area_b_label") or "").strip() or "Area B"
         dual_area_df = pd.DataFrame(
@@ -1260,6 +1236,9 @@ def main() -> None:
                 base_payload=base_payload,
                 timeout_sec=_SCRAPE_CLIENT_TIMEOUT_SEC,
             )
+        stop_event.set()
+        elapsed = int(time.time() - start_ts)
+        timer_box.success(f"Done in {elapsed // 60:02d}:{elapsed % 60:02d}")
         progress.progress(1.0)
         st.session_state["results_df"] = dual_df
         st.session_state["google_coverage_df"] = pd.DataFrame()
@@ -1280,6 +1259,8 @@ def main() -> None:
     if run_single:
         progress = st.progress(0.0)
         status_box = st.empty()
+        timer_box = st.empty()
+        stop_event, start_ts = _start_scrape_timer(timer_box)
         if not include_google_coverage:
             st.session_state["google_coverage_df"] = pd.DataFrame()
 
@@ -1433,6 +1414,9 @@ def main() -> None:
                 st.session_state["results_df"] = df
                 st.session_state["last_run_done"] = True
                 st.session_state["results_fingerprint"] = current_fingerprint
+        stop_event.set()
+        elapsed = int(time.time() - start_ts)
+        timer_box.success(f"Done in {elapsed // 60:02d}:{elapsed % 60:02d}")
 
     df = st.session_state.get("results_df", pd.DataFrame())
     if df is None or df.empty:
@@ -1446,6 +1430,8 @@ def main() -> None:
         return
 
     view_df, dropped_cols = compact_output_df(df)
+    if "platform" not in view_df.columns:
+        view_df["platform"] = "Talabat"
     if dropped_cols:
         st.caption(f"Hiding **{len(dropped_cols)}** all-empty columns from table/export (noise reduction).")
 
@@ -1480,19 +1466,45 @@ def main() -> None:
         "Runs use high-volume listing coverage, **vendor pages for many unique restaurants** (API caps), "
         "and Google Places when the API has a Maps key. Tune `RESTAURANT_DETAIL_ENRICH_MAX` / wall clock on the host if runs time out."
     )
-    not_closed = int((df["status"] != "closed").sum()) if "status" in df.columns else int(len(df))
-    m1, m2 = st.columns(2)
-    m1.metric("Rows in export", int(len(df)))
-    m2.metric("Not closed", not_closed)
+    brand_series = df.get("brand_id", df.get("brand_display_name", pd.Series(dtype=str)))
+    brand_count = int(pd.Series(brand_series).astype(str).str.strip().replace("", pd.NA).dropna().nunique())
+    rating_series = _pick_rating_series(df)
+    avg_rating = float(rating_series.dropna().mean()) if not rating_series.dropna().empty else 0.0
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total rows", int(len(df)))
+    m2.metric("Unique brands", brand_count)
+    m3.metric("Avg rating", f"{avg_rating:.2f}" if avg_rating > 0 else "—")
 
-    tab_exec, tab_results, tab_heatmap, tab_outbound = st.tabs(
-        ["Executive", "Results", "Heatmap", "Outbound"]
+    tab_results, tab_heatmap, tab_outbound = st.tabs(
+        ["Results", "Heatmap", "Whitespace"]
     )
 
     gdf = st.session_state.get("google_coverage_df", pd.DataFrame())
 
-    with tab_exec:
-        render_executive_mode(df, meta)
+    with tab_results:
+        st.dataframe(view_df, use_container_width=True, height=460)
+        excel_df = build_excel_export_df(view_df)
+        excel_bytes = dataframe_to_excel_bytes(excel_df)
+        c1, c2, c3 = st.columns([2, 1, 1])
+        c1.download_button(
+            "Download Excel",
+            data=excel_bytes,
+            file_name="area_intel_results.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+        c2.download_button(
+            "CSV",
+            data=view_df.to_csv(index=False).encode("utf-8"),
+            file_name="area_intel_results.csv",
+            mime="text/csv",
+        )
+        c3.download_button(
+            "JSON",
+            data=view_df.to_json(orient="records", force_ascii=False).encode("utf-8"),
+            file_name="area_intel_results.json",
+            mime="application/json",
+        )
         if isinstance(gdf, pd.DataFrame) and not gdf.empty:
             talabat_place_ids = set(df.get("google_place_id", pd.Series(dtype=str)).astype(str).str.strip().str.lower().tolist())
             talabat_place_ids.discard("")
@@ -1501,36 +1513,8 @@ def main() -> None:
                 google_only = gdf.loc[~google_place_ids.isin(talabat_place_ids)].copy()
             else:
                 google_only = gdf.copy()
-            cgo1, cgo2 = st.columns(2)
-            cgo1.metric("Google nearby candidates", int(len(gdf)))
-            cgo2.metric("Google-only (not in Talabat rows)", int(len(google_only)))
             with st.expander("Google-only coverage candidates", expanded=False):
-                st.caption(
-                    "Nearby Google restaurants in the same pin/radius that are not matched to current Talabat rows by place_id."
-                )
-                st.dataframe(google_only, use_container_width=True, height=280)
-                st.download_button(
-                    "Download Google-only CSV",
-                    data=google_only.to_csv(index=False).encode("utf-8"),
-                    file_name="google_only_coverage_candidates.csv",
-                    mime="text/csv",
-                )
-
-    with tab_results:
-        st.dataframe(view_df, use_container_width=True, height=460)
-        c1, c2 = st.columns(2)
-        c1.download_button(
-            "Download CSV",
-            data=view_df.to_csv(index=False).encode("utf-8"),
-            file_name="talabat_area_intel_results.csv",
-            mime="text/csv",
-        )
-        c2.download_button(
-            "Download JSON",
-            data=view_df.to_json(orient="records", force_ascii=False).encode("utf-8"),
-            file_name="talabat_area_intel_results.json",
-            mime="application/json",
-        )
+                st.dataframe(google_only, use_container_width=True, height=240)
 
     meta_pin_lat = meta.get("effective_scrape_pin_lat")
     meta_pin_lng = meta.get("effective_scrape_pin_lng")
