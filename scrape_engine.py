@@ -8,6 +8,7 @@ import os
 import random
 import re
 import traceback
+from contextlib import suppress
 from datetime import datetime, timezone
 from typing import Any
 
@@ -1246,7 +1247,10 @@ async def _fetch_vendor_page_enrichment(browser, url: str) -> dict[str, str | fl
     except Exception:
         pass
     finally:
-        await ctx.close()
+        with suppress(Exception):
+            await page.close()
+        with suppress(Exception):
+            await ctx.close()
 
     # Second pass: managed scraper HTML (different IP / rendering) merges into the same acc.
     try:
@@ -1647,6 +1651,8 @@ async def scrape_one_point(
             pass
         return []
     listing_urls = capped_listing_urls(listing_cuisine_sweep)
+    # On constrained hosts, keep fallback browser sweep short.
+    listing_urls = listing_urls[: max(1, int(os.getenv("SCRAPER_FALLBACK_LISTING_URLS", "2")))]
     allow_fast = _listing_fast_path_enabled() and not listing_cuisine_sweep and not paginate_listings
     merged_all: list[RestaurantRecord] = []
     strict = _env_truthy(os.getenv("SCRAPER_STRICT_LISTING_ERRORS"))
@@ -1654,6 +1660,12 @@ async def scrape_one_point(
     goto_until = _listing_goto_wait_until()
     try:
         for listing_url in listing_urls:
+            try:
+                if hasattr(browser, "is_connected") and not browser.is_connected():
+                    logger.warning("listing_browser_disconnected sample=(%.5f,%.5f), abort point", sample_lat, sample_lng)
+                    break
+            except Exception:
+                break
             try:
                 await page.goto(listing_url, wait_until=goto_until, timeout=60000)
                 await page.wait_for_timeout(post_nav_ms)
@@ -1702,6 +1714,9 @@ async def scrape_one_point(
                 if strict:
                     raise
                 continue
+        return merged_all
+    except asyncio.CancelledError:
+        logger.warning("scrape_one_point cancelled sample=(%.5f,%.5f)", sample_lat, sample_lng)
         return merged_all
     except TargetClosedError:
         logger.warning("TargetClosedError sample=(%.5f,%.5f), skipping point", sample_lat, sample_lng)
@@ -2033,7 +2048,7 @@ async def run_area_scrape(
     scroll_rounds, scroll_wait_ms = _listing_scroll_params(scroll_rounds, scroll_wait_ms)
     if _env_truthy(os.getenv("SCRAPER_HUMANIZE")):
         scroll_wait_ms = int(scroll_wait_ms * float(os.getenv("SCRAPER_HUMANIZE_SCROLL_WAIT_MULT", "1.12")))
-    sem = asyncio.Semaphore(min(4, max(1, int(os.getenv("SCRAPER_PLAYWRIGHT_CONCURRENCY", "4")))))
+    sem = asyncio.Semaphore(min(2, max(1, int(os.getenv("SCRAPER_PLAYWRIGHT_CONCURRENCY", "1")))))
     records: list[RestaurantRecord] = []
     raw_listing_count = 0
 
@@ -2069,11 +2084,12 @@ async def run_area_scrape(
             async def worker(pt: tuple[float, float]) -> list[RestaurantRecord]:
                 nonlocal done
                 lat, lng = pt
+                task: asyncio.Task | None = None
                 async with sem:
                     local_browser = None
                     try:
                         local_browser = await launch_browser_instance()
-                        rows = await asyncio.wait_for(
+                        task = asyncio.create_task(
                             scrape_one_point(
                                 browser=local_browser,
                                 pin_lat=pin_lat,
@@ -2085,9 +2101,9 @@ async def run_area_scrape(
                                 scroll_rounds=scroll_rounds,
                                 scroll_wait_ms=scroll_wait_ms,
                                 listing_cuisine_sweep=hv,
-                            ),
-                            timeout=per_point_timeout,
+                            )
                         )
+                        rows = await asyncio.wait_for(task, timeout=per_point_timeout)
                     except TargetClosedError:
                         logger.warning("sample_target_closed sample=(%.5f,%.5f) skipping", lat, lng)
                         rows = []
@@ -2103,6 +2119,11 @@ async def run_area_scrape(
                         logger.warning("sample_error sample=(%.5f,%.5f) err=%s", lat, lng, exc)
                         rows = []
                     finally:
+                        if task is not None:
+                            if not task.done():
+                                task.cancel()
+                                with suppress(asyncio.CancelledError, Exception):
+                                    await task
                         if local_browser is not None:
                             try:
                                 await local_browser.close()
