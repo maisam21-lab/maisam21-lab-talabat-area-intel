@@ -68,6 +68,65 @@ CLOSED_HINTS = ["closed", "temporarily closed", "not accepting"]
 LIVE_HINTS = ["open now", "accepting orders", "live"]
 
 
+def _checkpoint_file_path(
+    pin_lat: float,
+    pin_lng: float,
+    radius_km: float,
+    spacing_km: float,
+    scrape_city: str,
+    scrape_target_label: str,
+) -> str:
+    base = (os.getenv("SCRAPER_CHECKPOINT_DIR") or "/tmp/area_intel_checkpoints").strip() or "/tmp/area_intel_checkpoints"
+    os.makedirs(base, exist_ok=True)
+    key = (
+        f"{pin_lat:.5f}|{pin_lng:.5f}|{radius_km:.2f}|{spacing_km:.2f}|"
+        f"{(scrape_city or '').strip().lower()}|{(scrape_target_label or '').strip().lower()}"
+    )
+    safe = re.sub(r"[^a-zA-Z0-9_.-]", "_", key)
+    return os.path.join(base, f"scrape_ckpt_{safe}.json")
+
+
+def _save_checkpoint(
+    path: str,
+    points: list[tuple[float, float]],
+    completed_idx: set[int],
+    records_dicts: list[dict[str, Any]],
+) -> None:
+    payload = {
+        "version": 1,
+        "points": [[float(a), float(b)] for a, b in points],
+        "completed_idx": sorted(int(i) for i in completed_idx),
+        "records": records_dicts,
+        "updated_ts": datetime.now(timezone.utc).isoformat(),
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f)
+
+
+def _load_checkpoint(path: str, points: list[tuple[float, float]]) -> tuple[set[int], list[RestaurantRecord], list[dict[str, Any]]]:
+    if not os.path.exists(path):
+        return set(), [], []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
+        return set(), [], []
+    ck_points = payload.get("points") or []
+    norm_ck_points = [(round(float(x[0]), 6), round(float(x[1]), 6)) for x in ck_points if isinstance(x, list) and len(x) == 2]
+    norm_points = [(round(float(a), 6), round(float(b), 6)) for a, b in points]
+    if norm_ck_points != norm_points:
+        return set(), [], []
+    completed = set(int(i) for i in (payload.get("completed_idx") or []) if isinstance(i, int) or str(i).isdigit())
+    rec_dicts = [r for r in (payload.get("records") or []) if isinstance(r, dict)]
+    recs: list[RestaurantRecord] = []
+    for d in rec_dicts:
+        try:
+            recs.append(RestaurantRecord(**d))
+        except Exception:
+            continue
+    return completed, recs, rec_dicts
+
+
 def classify_status(blob: str) -> str:
     txt = (blob or "").strip().lower()
     if any(x in txt for x in CLOSED_HINTS):
@@ -2045,10 +2104,25 @@ async def run_area_scrape(
     if meta_out is not None:
         meta_out["grid_size"] = int(len(points))
         meta_out["last_completed_step"] = "grid_capped"
+    checkpoint_enabled = _env_truthy(os.getenv("SCRAPER_ENABLE_CHECKPOINTS", "1"))
+    checkpoint_path = _checkpoint_file_path(pin_lat, pin_lng, radius_km, spacing_km, scrape_city, scrape_target_label)
+    completed_idx: set[int] = set()
+    restored_records: list[RestaurantRecord] = []
+    checkpoint_records_dicts: list[dict[str, Any]] = []
+    if checkpoint_enabled:
+        completed_idx, restored_records, checkpoint_records_dicts = _load_checkpoint(checkpoint_path, points)
+        if meta_out is not None:
+            meta_out["checkpoint_enabled"] = True
+            meta_out["checkpoint_restored_points"] = int(len(completed_idx))
+            meta_out["checkpoint_restored_rows"] = int(len(restored_records))
+    pending_items: list[tuple[int, tuple[float, float]]] = [
+        (i, pt) for i, pt in enumerate(points) if i not in completed_idx
+    ]
     scroll_rounds, scroll_wait_ms = _listing_scroll_params(scroll_rounds, scroll_wait_ms)
     if _env_truthy(os.getenv("SCRAPER_HUMANIZE")):
         scroll_wait_ms = int(scroll_wait_ms * float(os.getenv("SCRAPER_HUMANIZE_SCROLL_WAIT_MULT", "1.12")))
     sem = asyncio.Semaphore(min(2, max(1, int(os.getenv("SCRAPER_PLAYWRIGHT_CONCURRENCY", "1")))))
+    checkpoint_lock = asyncio.Lock()
     records: list[RestaurantRecord] = []
     raw_listing_count = 0
 
@@ -2069,7 +2143,7 @@ async def run_area_scrape(
             meta_out["last_completed_step"] = last_step
         async with async_playwright() as p:
             done = 0
-            total = len(points)
+            total = len(pending_items)
             per_point_timeout = max(
                 45.0,
                 float(os.getenv("SCRAPER_PER_POINT_TIMEOUT_SEC", "45")),
@@ -2081,69 +2155,99 @@ async def run_area_scrape(
                     args=CHROMIUM_LAUNCH_ARGS,
                 )
 
-            async def worker(pt: tuple[float, float]) -> list[RestaurantRecord]:
+            async def worker(idx: int, pt: tuple[float, float]) -> list[RestaurantRecord]:
                 nonlocal done
                 lat, lng = pt
                 task: asyncio.Task | None = None
                 async with sem:
                     local_browser = None
-                    try:
-                        local_browser = await launch_browser_instance()
-                        task = asyncio.create_task(
-                            scrape_one_point(
-                                browser=local_browser,
-                                pin_lat=pin_lat,
-                                pin_lng=pin_lng,
-                                radius_km=radius_km,
-                                sample_lat=lat,
-                                sample_lng=lng,
-                                just_landed_only=just_landed_only,
-                                scroll_rounds=scroll_rounds,
-                                scroll_wait_ms=scroll_wait_ms,
-                                listing_cuisine_sweep=hv,
+                    rows: list[RestaurantRecord] = []
+                    max_retries = max(0, int(os.getenv("SCRAPER_POINT_TARGET_CLOSED_RETRIES", "2")))
+                    for attempt in range(max_retries + 1):
+                        try:
+                            local_browser = await launch_browser_instance()
+                            task = asyncio.create_task(
+                                scrape_one_point(
+                                    browser=local_browser,
+                                    pin_lat=pin_lat,
+                                    pin_lng=pin_lng,
+                                    radius_km=radius_km,
+                                    sample_lat=lat,
+                                    sample_lng=lng,
+                                    just_landed_only=just_landed_only,
+                                    scroll_rounds=scroll_rounds,
+                                    scroll_wait_ms=scroll_wait_ms,
+                                    listing_cuisine_sweep=hv,
+                                )
                             )
-                        )
-                        rows = await asyncio.wait_for(task, timeout=per_point_timeout)
-                    except TargetClosedError:
-                        logger.warning("sample_target_closed sample=(%.5f,%.5f) skipping", lat, lng)
-                        rows = []
-                    except TimeoutError:
-                        logger.warning(
-                            "Point (%.5f,%.5f) timed out after %ss, skipping",
-                            lat,
-                            lng,
-                            per_point_timeout,
-                        )
-                        rows = []
-                    except Exception as exc:
-                        logger.warning("sample_error sample=(%.5f,%.5f) err=%s", lat, lng, exc)
-                        rows = []
-                    finally:
-                        if task is not None:
-                            if not task.done():
+                            rows = await asyncio.wait_for(task, timeout=per_point_timeout)
+                            break
+                        except TargetClosedError:
+                            logger.warning(
+                                "sample_target_closed sample=(%.5f,%.5f) attempt=%s/%s",
+                                lat,
+                                lng,
+                                attempt + 1,
+                                max_retries + 1,
+                            )
+                            rows = []
+                            if attempt < max_retries:
+                                await asyncio.sleep(1.0)
+                        except TimeoutError:
+                            logger.warning(
+                                "Point (%.5f,%.5f) timed out after %ss, skipping",
+                                lat,
+                                lng,
+                                per_point_timeout,
+                            )
+                            rows = []
+                            break
+                        except Exception as exc:
+                            logger.warning("sample_error sample=(%.5f,%.5f) err=%s", lat, lng, exc)
+                            rows = []
+                            break
+                        finally:
+                            if task is not None and not task.done():
                                 task.cancel()
                                 with suppress(asyncio.CancelledError, Exception):
                                     await task
-                        if local_browser is not None:
-                            try:
-                                await local_browser.close()
-                            except Exception:
-                                pass
+                            if local_browser is not None:
+                                with suppress(Exception):
+                                    await local_browser.close()
+                            local_browser = None
                 done += 1
                 if progress_cb:
                     progress_cb(done, total, lat, lng, len(rows))
+                if checkpoint_enabled:
+                    async with checkpoint_lock:
+                        completed_idx.add(int(idx))
+                        checkpoint_records_dicts.extend([r.to_dict() for r in rows])
+                        await asyncio.to_thread(
+                            _save_checkpoint,
+                            checkpoint_path,
+                            points,
+                            completed_idx,
+                            checkpoint_records_dicts,
+                        )
                 return rows
 
             last_step = "scrape_grid_points"
             if meta_out is not None:
                 meta_out["last_completed_step"] = last_step
-            batches = await asyncio.gather(*[worker(pt) for pt in points], return_exceptions=False)
+            batches = await asyncio.gather(*[worker(i, pt) for i, pt in pending_items], return_exceptions=False)
 
             last_step = "merge_batches"
             if meta_out is not None:
                 meta_out["last_completed_step"] = last_step
             if dedupe_by_vendor_url:
                 dedupe: dict[str, RestaurantRecord] = {}
+                for r in restored_records:
+                    ck = _canonical_vendor_url(r.restaurant_url)
+                    if not ck:
+                        dedupe[r.branch_sku] = r
+                        continue
+                    cur = dedupe.get(ck)
+                    dedupe[ck] = r if cur is None else _pick_better_row(pin_lat, pin_lng, cur, r)
                 for batch in batches:
                     for r in batch:
                         ck = _canonical_vendor_url(r.restaurant_url)
@@ -2157,7 +2261,7 @@ async def run_area_scrape(
                             dedupe[ck] = _pick_better_row(pin_lat, pin_lng, cur, r)
                 records = list(dedupe.values())
             else:
-                records = []
+                records = list(restored_records)
                 for batch in batches:
                     records.extend(batch)
 
@@ -2208,6 +2312,9 @@ async def run_area_scrape(
                 meta_out["last_completed_step"] = "enrichment_done"
             await browser.close()
             browser = None
+            if checkpoint_enabled:
+                with suppress(Exception):
+                    os.remove(checkpoint_path)
     except Exception as exc:
         if meta_out is not None:
             meta_out["last_completed_step"] = last_step
@@ -2232,8 +2339,9 @@ async def run_area_scrape(
 
     if meta_out is not None:
         meta_out["last_completed_step"] = "post_enrichment"
-        meta_out["grid_points_completed"] = int(done if "done" in locals() else 0)
-        meta_out["partial_results"] = bool(int(done if "done" in locals() else 0) < int(len(points)))
+        completed_total = int(len(completed_idx)) if "completed_idx" in locals() else int(done if "done" in locals() else 0)
+        meta_out["grid_points_completed"] = completed_total
+        meta_out["partial_results"] = bool(completed_total < int(len(points)))
     enrich_records_with_google_places(records, force=google_places_enrich)
     if meta_out is not None:
         meta_out["last_completed_step"] = "google_places_done"
