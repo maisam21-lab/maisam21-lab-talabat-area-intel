@@ -88,6 +88,75 @@ _DEFAULT_SCRAPE_PROFILE = "Complete"
 _BUILD_STAMP = os.getenv("APP_BUILD_STAMP", "2026-04-23-executive-mode-80dbf21")
 
 
+def inject_ui_theme() -> None:
+    """Apply a cleaner, executive-style UI theme for Streamlit controls and sections."""
+    st.markdown(
+        """
+<style>
+:root {
+  --bg: #f6f8fc;
+  --card: #ffffff;
+  --text: #0f172a;
+  --muted: #475569;
+  --line: #e2e8f0;
+  --brand: #2563eb;
+}
+.stApp {
+  background: linear-gradient(180deg, #f8fbff 0%, var(--bg) 280px, var(--bg) 100%);
+}
+.block-container {
+  max-width: 1380px;
+  padding-top: 1.2rem;
+  padding-bottom: 2rem;
+}
+h1, h2, h3 {
+  letter-spacing: -0.02em;
+}
+[data-testid="stSidebar"] {
+  border-right: 1px solid var(--line);
+}
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+  padding-top: 0.4rem;
+}
+div[data-testid="stMetric"] {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.65rem 0.85rem 0.55rem 0.85rem;
+  box-shadow: 0 1px 2px rgba(2, 6, 23, 0.04);
+}
+div[data-testid="stAlert"] {
+  border-radius: 12px;
+}
+div[data-testid="stDataFrame"] {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+}
+button[kind="primary"] {
+  border-radius: 999px !important;
+  font-weight: 600 !important;
+}
+button[kind="secondary"] {
+  border-radius: 999px !important;
+}
+.exec-pill {
+  display: inline-block;
+  padding: 0.22rem 0.65rem;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 0.78rem;
+  font-weight: 600;
+  margin-left: 0.4rem;
+}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def init_state() -> None:
     ensure_scrape_location(
         default_lat=float(DEFAULT_PIN[0]),
@@ -774,9 +843,10 @@ def compact_output_df(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 
 def main() -> None:
     st.set_page_config(page_title="Talabat Area Intel (English)", layout="wide")
+    inject_ui_theme()
     init_state()
 
-    st.title("Talabat UAE Area Intel")
+    st.markdown("## Talabat UAE Area Intel <span class='exec-pill'>Executive Edition</span>", unsafe_allow_html=True)
     st.warning(f"Build: `{_BUILD_STAMP}`")
     st.caption(
         "**KitchenPark / expansion analytics:** compare cities for outbound acquisition using cuisine, ratings, "
@@ -796,6 +866,7 @@ def main() -> None:
         api_base_url = get_api_base_url()
         api_key = get_frontend_api_key()
         headers = {"X-API-Key": api_key} if api_key else {}
+        show_advanced = st.toggle("Show advanced debug sections", value=False, help="Show raw meta/debug panels.")
 
         area_mode = st.radio(
             "Area mode",
@@ -1366,7 +1437,7 @@ def main() -> None:
         )
 
     meta = st.session_state.get("last_scrape_run_meta") or {}
-    if meta:
+    if meta and show_advanced:
         with st.expander("Resolved scrape parameters (debug)", expanded=False):
             st.json(meta)
 
@@ -1387,38 +1458,57 @@ def main() -> None:
         "Runs use high-volume listing coverage, **vendor pages for many unique restaurants** (API caps), "
         "and Google Places when the API has a Maps key. Tune `RESTAURANT_DETAIL_ENRICH_MAX` / wall clock on the host if runs time out."
     )
-    render_executive_mode(df, meta)
+    not_closed = int((df["status"] != "closed").sum()) if "status" in df.columns else int(len(df))
     m1, m2 = st.columns(2)
     m1.metric("Rows in export", int(len(df)))
-    m2.metric("Not closed", int((df["status"] != "closed").sum()))
+    m2.metric("Not closed", not_closed)
+
+    tab_exec, tab_results, tab_heatmap, tab_outbound = st.tabs(
+        ["Executive", "Results", "Heatmap", "Outbound"]
+    )
 
     gdf = st.session_state.get("google_coverage_df", pd.DataFrame())
-    if isinstance(gdf, pd.DataFrame) and not gdf.empty:
-        talabat_place_ids = set(df.get("google_place_id", pd.Series(dtype=str)).astype(str).str.strip().str.lower().tolist())
-        talabat_place_ids.discard("")
-        if "google_place_id" in gdf.columns:
-            google_place_ids = gdf["google_place_id"].astype(str).str.strip().str.lower()
-            google_only = gdf.loc[~google_place_ids.isin(talabat_place_ids)].copy()
-        else:
-            google_only = gdf.copy()
-        cgo1, cgo2 = st.columns(2)
-        cgo1.metric("Google nearby candidates", int(len(gdf)))
-        cgo2.metric("Google-only (not in Talabat rows)", int(len(google_only)))
-        with st.expander("Google-only coverage candidates", expanded=False):
-            st.caption(
-                "Nearby Google restaurants in the same pin/radius that are not matched to current Talabat rows by place_id."
-            )
-            st.dataframe(google_only, use_container_width=True, height=280)
-            st.download_button(
-                "Download Google-only CSV",
-                data=google_only.to_csv(index=False).encode("utf-8"),
-                file_name="google_only_coverage_candidates.csv",
-                mime="text/csv",
-            )
 
-    st.dataframe(view_df, use_container_width=True, height=420)
+    with tab_exec:
+        render_executive_mode(df, meta)
+        if isinstance(gdf, pd.DataFrame) and not gdf.empty:
+            talabat_place_ids = set(df.get("google_place_id", pd.Series(dtype=str)).astype(str).str.strip().str.lower().tolist())
+            talabat_place_ids.discard("")
+            if "google_place_id" in gdf.columns:
+                google_place_ids = gdf["google_place_id"].astype(str).str.strip().str.lower()
+                google_only = gdf.loc[~google_place_ids.isin(talabat_place_ids)].copy()
+            else:
+                google_only = gdf.copy()
+            cgo1, cgo2 = st.columns(2)
+            cgo1.metric("Google nearby candidates", int(len(gdf)))
+            cgo2.metric("Google-only (not in Talabat rows)", int(len(google_only)))
+            with st.expander("Google-only coverage candidates", expanded=False):
+                st.caption(
+                    "Nearby Google restaurants in the same pin/radius that are not matched to current Talabat rows by place_id."
+                )
+                st.dataframe(google_only, use_container_width=True, height=280)
+                st.download_button(
+                    "Download Google-only CSV",
+                    data=google_only.to_csv(index=False).encode("utf-8"),
+                    file_name="google_only_coverage_candidates.csv",
+                    mime="text/csv",
+                )
 
-    render_outbound_prioritization_dashboard(df)
+    with tab_results:
+        st.dataframe(view_df, use_container_width=True, height=460)
+        c1, c2 = st.columns(2)
+        c1.download_button(
+            "Download CSV",
+            data=view_df.to_csv(index=False).encode("utf-8"),
+            file_name="talabat_area_intel_results.csv",
+            mime="text/csv",
+        )
+        c2.download_button(
+            "Download JSON",
+            data=view_df.to_json(orient="records", force_ascii=False).encode("utf-8"),
+            file_name="talabat_area_intel_results.json",
+            mime="application/json",
+        )
 
     meta_pin_lat = meta.get("effective_scrape_pin_lat")
     meta_pin_lng = meta.get("effective_scrape_pin_lng")
@@ -1432,29 +1522,19 @@ def main() -> None:
         else:
             loc_hm = get_scrape_location()
             hm_lat, hm_lng = float(loc_hm["lat"]), float(loc_hm["lng"])
-    st.caption(f"Heatmap center uses the effective scrape pin: `{hm_lat:.6f}, {hm_lng:.6f}`")
-    render_heatmap(
-        df,
-        pin_lat=hm_lat,
-        pin_lng=hm_lng,
-        radius_km=float(radius_km),
-        supply_df=st.session_state.get("supply_overlay_df"),
-        google_coverage_df=st.session_state.get("google_coverage_df"),
-    )
+    with tab_heatmap:
+        st.caption(f"Heatmap center uses the effective scrape pin: `{hm_lat:.6f}, {hm_lng:.6f}`")
+        render_heatmap(
+            df,
+            pin_lat=hm_lat,
+            pin_lng=hm_lng,
+            radius_km=float(radius_km),
+            supply_df=st.session_state.get("supply_overlay_df"),
+            google_coverage_df=st.session_state.get("google_coverage_df"),
+        )
 
-    c1, c2 = st.columns(2)
-    c1.download_button(
-        "Download CSV",
-        data=view_df.to_csv(index=False).encode("utf-8"),
-        file_name="talabat_area_intel_results.csv",
-        mime="text/csv",
-    )
-    c2.download_button(
-        "Download JSON",
-        data=view_df.to_json(orient="records", force_ascii=False).encode("utf-8"),
-        file_name="talabat_area_intel_results.json",
-        mime="application/json",
-    )
+    with tab_outbound:
+        render_outbound_prioritization_dashboard(df)
 
 
 if __name__ == "__main__":
