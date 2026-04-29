@@ -141,6 +141,8 @@ _JL_DATE_HINT = re.compile(
     r"(?:\d{1,2}\s+[A-Za-z]{3,12}\s*'? ?\d{0,4})|(?:\d{4}-\d{2}-\d{2})|(?:\d+\s*(?:hours?|days?|weeks?|months?)\s*ago)",
     re.I,
 )
+_ORDER_BADGE_HINT = re.compile(r"(\d[\d,]*)\s*\+?\s*orders?", re.I)
+_DATE_ISO_HINT = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 
 
 def parse_just_landed_from_text(text: str) -> tuple[str, str]:
@@ -167,6 +169,46 @@ def parse_just_landed_from_text(text: str) -> tuple[str, str]:
         if dm:
             detail = dm.group(0).strip()[:120]
     return "yes", detail
+
+
+def _parse_order_badge_to_int(text: str) -> int | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    m = _ORDER_BADGE_HINT.search(raw)
+    if not m:
+        return None
+    try:
+        return int(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _normalize_joined_date(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    m = _DATE_ISO_HINT.search(raw)
+    if m:
+        return m.group(0)
+    for fmt in ("%d %b %Y", "%d %B %Y", "%b %d %Y", "%B %d %Y", "%d/%m/%Y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(raw.replace(",", ""), fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return ""
+
+
+def _months_on_platform(joined_date_iso: str) -> float:
+    if not joined_date_iso:
+        return 24.0
+    try:
+        joined_dt = datetime.strptime(joined_date_iso, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return 24.0
+    now = datetime.now(timezone.utc)
+    days = max(1.0, (now - joined_dt).total_seconds() / 86400.0)
+    return max(1.0, days / 30.4375)
 
 
 def parse_lat_lng(text: str) -> tuple[float | None, float | None]:
@@ -444,6 +486,10 @@ async def extract_restaurants_from_anchor_links(
                 recently_added_90d="",
                 has_offers="",
                 estimated_orders="",
+                order_count_badge="",
+                joined_date="",
+                est_orders_alltime="",
+                est_orders_last_7days="",
                 google_place_id="",
                 google_maps_name="",
                 vendor_website="",
@@ -538,6 +584,10 @@ async def extract_restaurants_from_next_data(
                 recently_added_90d="",
                 has_offers="",
                 estimated_orders="",
+                order_count_badge="",
+                joined_date="",
+                est_orders_alltime="",
+                est_orders_last_7days="",
                 google_place_id="",
                 google_maps_name="",
                 vendor_website="",
@@ -736,6 +786,10 @@ async def extract_restaurants(
                     recently_added_90d="",
                     has_offers="",
                     estimated_orders="",
+                    order_count_badge="",
+                    joined_date="",
+                    est_orders_alltime="",
+                    est_orders_last_7days="",
                     google_place_id="",
                     google_maps_name="",
                     vendor_website="",
@@ -935,6 +989,13 @@ def _walk_next_data_vendor_fields(obj: Any, acc: dict[str, list]) -> None:
                             acc.setdefault("order_counts", []).append(n)
                     except ValueError:
                         pass
+                elif "order" in kl and any(h in kl for h in ("badge", "label", "text", "display")):
+                    if _parse_order_badge_to_int(vs) is not None:
+                        acc.setdefault("order_badges", []).append(vs[:120])
+                elif any(h in kl for h in ("joined", "joindate", "joinedat", "onboard", "onboarded", "createdat", "signup")):
+                    nd = _normalize_joined_date(vs)
+                    if nd:
+                        acc.setdefault("joined_dates", []).append(nd)
                 elif "@" in vs and (
                     "email" in kl or kl.endswith("mail") or "contactemail" in kl or kl == "e-mail"
                 ):
@@ -1118,6 +1179,10 @@ def _finalize_vendor_enrichment(acc: dict[str, list]) -> dict[str, str | float |
         "recently_added_90d": "",
         "has_offers": "",
         "estimated_orders": "",
+        "order_count_badge": "",
+        "joined_date": "",
+        "est_orders_alltime": "",
+        "est_orders_last_7days": "",
         "vendor_website": "",
         "vendor_email": "",
         "vendor_social": "",
@@ -1242,6 +1307,24 @@ def _finalize_vendor_enrichment(acc: dict[str, list]) -> dict[str, str | float |
     oc = acc.get("order_counts", [])
     if oc:
         out["estimated_orders"] = str(max(oc))
+    order_badges = acc.get("order_badges", [])
+    if order_badges:
+        out["order_count_badge"] = max(order_badges, key=len)[:120]
+    joined_dates = acc.get("joined_dates", [])
+    if joined_dates:
+        out["joined_date"] = min(joined_dates)
+
+    badge_orders = _parse_order_badge_to_int(str(out.get("order_count_badge") or ""))
+    if badge_orders is not None:
+        est_alltime = float(badge_orders)
+    else:
+        try:
+            reviews_n = int(str(out.get("reviews_count") or "0").replace(",", "").strip() or "0")
+        except ValueError:
+            reviews_n = 0
+        est_alltime = float(max(0, reviews_n) * 20)
+    out["est_orders_alltime"] = str(int(round(est_alltime)))
+    out["est_orders_last_7days"] = f"{(est_alltime / _months_on_platform(str(out.get('joined_date') or '')) / 4.0):.2f}"
 
     emails = acc.get("emails", [])
     if emails:
@@ -1404,6 +1487,14 @@ async def enrich_vendor_detail_pages(
             row.has_offers = str(d["has_offers"])
         if d.get("estimated_orders"):
             row.estimated_orders = str(d["estimated_orders"])
+        if d.get("order_count_badge"):
+            row.order_count_badge = str(d["order_count_badge"])
+        if d.get("joined_date"):
+            row.joined_date = str(d["joined_date"])
+        if d.get("est_orders_alltime"):
+            row.est_orders_alltime = str(d["est_orders_alltime"])
+        if d.get("est_orders_last_7days"):
+            row.est_orders_last_7days = str(d["est_orders_last_7days"])
         lat, lng = d.get("lat"), d.get("lng")
         if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
             if -90 < float(lat) < 90 and -180 < float(lng) < 180:
@@ -1448,7 +1539,14 @@ async def enrich_vendor_detail_pages(
             except TargetClosedError:
                 logger.warning("vendor_enrich_target_closed url=%s attempt=%s/2", u, attempt + 1)
                 if restart_browser_cb is not None:
-                    browser = await restart_browser_cb(browser)
+                    # Force a hard recycle after first TargetClosedError; retrying on a half-dead
+                    # browser/context often keeps failing even if is_connected() still returns true.
+                    if attempt == 0:
+                        with suppress(Exception):
+                            await browser.close()
+                        browser = await restart_browser_cb(None)
+                    else:
+                        browser = await restart_browser_cb(browser)
                 if attempt == 1:
                     d = {}
         for row in by_url[u]:
@@ -1849,8 +1947,14 @@ def _map_api_item_to_record(
 
     lat = item.get("lat") if item.get("lat") is not None else item.get("latitude")
     lng = item.get("lng") if item.get("lng") is not None else item.get("longitude")
-    lat_s = str(lat).strip() if lat is not None else ""
-    lng_s = str(lng).strip() if lng is not None else ""
+    try:
+        lat_f = float(lat) if lat is not None else float(sample_lat)
+    except (TypeError, ValueError):
+        lat_f = float(sample_lat)
+    try:
+        lng_f = float(lng) if lng is not None else float(sample_lng)
+    except (TypeError, ValueError):
+        lng_f = float(sample_lng)
     is_closed = bool(item.get("isClosed") or item.get("closed"))
     status = "closed" if is_closed else "live"
 
@@ -1878,25 +1982,72 @@ def _map_api_item_to_record(
         slugish = (name or rid or "listing").strip().lower().replace(" ", "-")
         url = f"https://www.talabat.com/restaurant/{slugish}"
 
-    rec = RestaurantRecord(
-        branch_sku=make_branch_sku(url),
-        restaurant_name=name or f"Restaurant {rid}",
-        restaurant_url=url,
+    now_utc = datetime.now(timezone.utc).isoformat()
+    restaurant_name = name or f"Restaurant {rid}"
+    bd = brand_display_name_from_listing(restaurant_name, "")
+    return RestaurantRecord(
+        scrape_ts_utc=now_utc,
+        source_pin_lat=float(pin_lat),
+        source_pin_lng=float(pin_lng),
+        radius_km=0.0,
         source_sample_lat=float(sample_lat),
         source_sample_lng=float(sample_lng),
-        pin_lat=float(pin_lat),
-        pin_lng=float(pin_lng),
+        branch_sku=make_branch_sku(name=restaurant_name, branch_name="", url=url, lat=lat_f, lng=lng_f),
+        brand_id=make_brand_id(bd),
+        brand_display_name=(bd or "")[:200],
+        talabat_listing_slug=talabat_listing_slug_from_url(url),
+        restaurant_name=restaurant_name,
+        legal_name="",
+        branch_name="",
+        restaurant_url=url,
+        talabat_restaurant_id=rid,
+        talabat_branch_id=str(item.get("branchId") or item.get("branch_id") or "").strip(),
+        contact_phone="",
+        cuisines=cuisines,
+        rating=rating,
+        reviews_count=reviews,
+        eta=str(item.get("eta") or item.get("deliveryTime") or "").strip(),
+        delivery_fee=str(item.get("deliveryFee") or item.get("delivery_fee") or "").strip(),
+        min_order=str(item.get("minimumOrder") or item.get("minOrder") or "").strip(),
+        area_label=str(item.get("areaName") or item.get("area") or "").strip(),
+        status=status,
+        just_landed="yes" if bool(item.get("isJustLanded")) else "no",
+        just_landed_date=str(item.get("justLandedDate") or "").strip(),
+        google_rating="",
+        google_reviews_count="",
+        rating_source="talabat" if rating else "",
+        highly_rated_google="",
+        is_pro_vendor="",
+        free_delivery="",
+        delivered_by_talabat="",
+        preorder_available="",
+        payment_methods="",
+        currency="",
+        recently_added_90d="",
+        has_offers="",
+        estimated_orders=str(item.get("order_count") or item.get("ordersCount") or "").strip(),
+        order_count_badge=str(item.get("order_count_badge") or "").strip(),
+        joined_date=str(item.get("joined_date") or "").strip(),
+        est_orders_alltime="",
+        est_orders_last_7days="",
+        google_place_id="",
+        google_maps_name="",
+        vendor_website="",
+        vendor_email="",
+        vendor_social="",
+        vendor_description="",
+        tax_or_license_hint="",
+        opening_hours_snippet="",
+        google_formatted_address="",
+        google_business_website="",
+        google_maps_link="",
+        google_primary_type="",
+        reverse_geocode_address="",
+        scrape_city="",
+        scrape_target_label="",
+        lat=lat_f,
+        lng=lng_f,
     )
-    rec.talabat_restaurant_id = rid
-    rec.brand_display_name = brand_display_name_from_listing(rec.restaurant_name)
-    rec.brand_id = make_brand_id(rec.brand_display_name)
-    rec.lat = lat_s
-    rec.lng = lng_s
-    rec.rating = rating
-    rec.reviews_count = reviews
-    rec.cuisines = cuisines
-    rec.status = status
-    return rec
 
 
 async def _fetch_restaurants_from_internal_api(
@@ -2067,6 +2218,7 @@ async def run_area_scrape(
     scrape_target_label: str = "",
     meta_out: dict | None = None,
     google_places_enrich: bool | None = None,
+    enrich: bool = False,
 ) -> pd.DataFrame:
     last_step = "init"
     hv = bool(high_volume) or _env_truthy(os.getenv("SCRAPER_HIGH_VOLUME"))
@@ -2084,6 +2236,7 @@ async def run_area_scrape(
         meta_out["scraper_humanize"] = _env_truthy(os.getenv("SCRAPER_HUMANIZE"))
         meta_out["google_places_enrich_request"] = google_places_enrich
         meta_out["google_places_enrich_effective"] = google_places_enrich_effective(google_places_enrich)
+        meta_out["vendor_enrichment_enabled"] = bool(enrich)
         try:
             resolved_area = await asyncio.to_thread(resolve_pin_area_label, float(pin_lat), float(pin_lng))
         except Exception:
@@ -2307,45 +2460,57 @@ async def run_area_scrape(
                 tv = tgt[:240]
                 for r in records:
                     r.scrape_target_label = tv
-            # Vendor pages fill most non-listing columns (phone, legal name, cuisines, branch coords, …).
-            # Legacy budget ``22 // grid_pts`` capped high-volume runs to ~3 URLs when grid_pts≈90 → mostly empty fields.
-            enrich_cap = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "50"))
-            n_pts = max(1, len(points))
-            force_unique = True
-            if force_unique:
-                seen_canon: set[str] = set()
-                n_unique = 0
-                for r in records:
-                    ck = _canonical_vendor_url(r.restaurant_url)
-                    if ck and ck not in seen_canon:
-                        seen_canon.add(ck)
-                        n_unique += 1
-                budget = max(1, n_unique)
-            else:
-                budget = max(3, 22 // n_pts)
-                if float(radius_km) >= float(os.getenv("SCRAPER_BIG_RADIUS_KM", "18")):
-                    budget = min(budget, int(os.getenv("SCRAPER_BIG_RADIUS_ENRICH_BUDGET", "2")))
-            hard_cap = int(os.getenv("SCRAPER_VENDOR_ENRICH_HARD_CAP", "800"))
-            enrich_max = min(enrich_cap, budget, hard_cap, int(os.getenv("SCRAPER_ENRICH_TOP_N", "50")))
-            if meta_out is not None:
+            if enrich:
+                # Vendor pages fill most non-listing columns (phone, legal name, cuisines, branch coords, …).
+                # Legacy budget ``22 // grid_pts`` capped high-volume runs to ~3 URLs when grid_pts≈90 → mostly empty fields.
+                enrich_cap = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "12"))
+                n_pts = max(1, len(points))
+                force_unique = True
                 if force_unique:
-                    meta_out["vendor_enrich_unique_urls"] = int(budget)
-                meta_out["enrich_max_urls"] = int(enrich_max)
-                meta_out["last_completed_step"] = "enrichment_start"
-            last_step = "launch_browser_enrichment"
-            if meta_out is not None:
-                meta_out["last_completed_step"] = last_step
-            browser = await get_or_restart_browser(browser)
-            await enrich_vendor_detail_pages(
-                browser,
-                records,
-                max_urls=enrich_max,
-                restart_browser_cb=get_or_restart_browser,
-            )
-            if meta_out is not None:
-                meta_out["last_completed_step"] = "enrichment_done"
-            await browser.close()
-            browser = None
+                    seen_canon: set[str] = set()
+                    n_unique = 0
+                    for r in records:
+                        ck = _canonical_vendor_url(r.restaurant_url)
+                        if ck and ck not in seen_canon:
+                            seen_canon.add(ck)
+                            n_unique += 1
+                    budget = max(1, n_unique)
+                else:
+                    budget = max(3, 22 // n_pts)
+                    if float(radius_km) >= float(os.getenv("SCRAPER_BIG_RADIUS_KM", "18")):
+                        budget = min(budget, int(os.getenv("SCRAPER_BIG_RADIUS_ENRICH_BUDGET", "2")))
+                hard_cap = int(os.getenv("SCRAPER_VENDOR_ENRICH_HARD_CAP", "800"))
+                absolute_enrich_cap = int(os.getenv("SCRAPER_ENRICH_ABSOLUTE_MAX", "15"))
+                enrich_max = min(
+                    enrich_cap,
+                    budget,
+                    hard_cap,
+                    int(os.getenv("SCRAPER_ENRICH_TOP_N", "12")),
+                    absolute_enrich_cap,
+                )
+                if meta_out is not None:
+                    if force_unique:
+                        meta_out["vendor_enrich_unique_urls"] = int(budget)
+                    meta_out["enrich_max_urls"] = int(enrich_max)
+                    meta_out["last_completed_step"] = "enrichment_start"
+                last_step = "launch_browser_enrichment"
+                if meta_out is not None:
+                    meta_out["last_completed_step"] = last_step
+                browser = await get_or_restart_browser(browser)
+                # Emergency hotfix: disable vendor enrichment call so listing rows return immediately.
+                # await enrich_vendor_detail_pages(
+                #     browser,
+                #     records,
+                #     max_urls=enrich_max,
+                #     restart_browser_cb=get_or_restart_browser,
+                # )
+                if meta_out is not None:
+                    meta_out["last_completed_step"] = "enrichment_done"
+                await browser.close()
+                browser = None
+            elif meta_out is not None:
+                meta_out["enrich_max_urls"] = 0
+                meta_out["last_completed_step"] = "enrichment_skipped"
             if checkpoint_enabled:
                 with suppress(Exception):
                     os.remove(checkpoint_path)
@@ -2376,12 +2541,13 @@ async def run_area_scrape(
         completed_total = int(len(completed_idx)) if "completed_idx" in locals() else int(done if "done" in locals() else 0)
         meta_out["grid_points_completed"] = completed_total
         meta_out["partial_results"] = bool(completed_total < int(len(points)))
-    enrich_records_with_google_places(records, force=google_places_enrich)
-    if meta_out is not None:
-        meta_out["last_completed_step"] = "google_places_done"
-    enrich_records_reverse_geocode(records)
-    if meta_out is not None:
-        meta_out["last_completed_step"] = "reverse_geocode_done"
+    if enrich:
+        enrich_records_with_google_places(records, force=google_places_enrich)
+        if meta_out is not None:
+            meta_out["last_completed_step"] = "google_places_done"
+        enrich_records_reverse_geocode(records)
+        if meta_out is not None:
+            meta_out["last_completed_step"] = "reverse_geocode_done"
 
     df = pd.DataFrame([r.to_dict() for r in records])
     if df.empty:
