@@ -1387,6 +1387,9 @@ def main() -> None:
                             if enqueue_resp.status_code >= 400:
                                 return int(enqueue_resp.status_code), {}
                             enqueue_data = enqueue_resp.json() if enqueue_resp.content else {}
+                            # Backward compatibility: older API versions return final scrape payload directly from /scrape.
+                            if isinstance(enqueue_data, dict) and "records" in enqueue_data:
+                                return 200, enqueue_data
                             rid = str(
                                 enqueue_data.get("request_id")
                                 or enqueue_resp.headers.get("X-Request-ID")

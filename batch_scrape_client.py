@@ -4,6 +4,35 @@ from typing import Any
 
 import pandas as pd
 import requests
+import time
+
+
+def _poll_result(
+    *,
+    api_base_url: str,
+    headers: dict[str, str],
+    request_id: str,
+    timeout_sec: float,
+    poll_every_sec: float = 10.0,
+) -> dict[str, Any]:
+    deadline = time.time() + float(timeout_sec)
+    while time.time() < deadline:
+        r = requests.get(
+            f"{api_base_url.rstrip('/')}/result/{request_id}",
+            headers=headers,
+            timeout=30,
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(f"Result poll failed: HTTP {r.status_code}")
+        data = r.json() if r.content else {}
+        status = str((data or {}).get("status") or "").lower()
+        if status == "complete":
+            return data
+        if status == "failed":
+            err = str((data or {}).get("error") or "Scrape job failed")
+            raise RuntimeError(err)
+        time.sleep(poll_every_sec)
+    raise RuntimeError("Result poll timed out before completion")
 
 
 def run_dual_area_scrape_via_api(
@@ -34,12 +63,27 @@ def run_dual_area_scrape_via_api(
                 f"{api_base_url.rstrip('/')}/scrape",
                 json=payload,
                 headers=req_headers,
-                timeout=timeout_sec,
+                timeout=min(float(timeout_sec), 60.0),
             )
             if r.status_code >= 400:
                 request_errors.append(f"Location {i+1}: HTTP {r.status_code}")
                 continue
-            data = r.json() if r.content else {}
+            enqueue = r.json() if r.content else {}
+            # Backward compatibility: older API versions return final scrape payload directly from /scrape.
+            if isinstance(enqueue, dict) and "records" in enqueue:
+                data = enqueue
+            else:
+                rid = str((enqueue or {}).get("request_id") or req_headers.get("X-Request-ID") or "").strip()
+                if not rid:
+                    request_errors.append(f"Location {i+1}: Missing request_id from /scrape")
+                    continue
+                data = _poll_result(
+                    api_base_url=api_base_url,
+                    headers=req_headers,
+                    request_id=rid,
+                    timeout_sec=timeout_sec,
+                    poll_every_sec=10.0,
+                )
             location_df = pd.DataFrame((data or {}).get("records", []))
             if location_df.empty:
                 continue
