@@ -1460,12 +1460,16 @@ def main() -> None:
                         )
                         if em_enqueue.status_code < 400:
                             em_enqueue_data = em_enqueue.json() if em_enqueue.content else {}
-                            em_rid = str(
-                                em_enqueue_data.get("request_id")
-                                or em_enqueue.headers.get("X-Request-ID")
-                                or api_request_id
-                            ).strip()
-                            em_data = _poll_result(em_rid)
+                            # Backward compatibility: older API versions return final scrape payload directly.
+                            if isinstance(em_enqueue_data, dict) and "records" in em_enqueue_data:
+                                em_data = em_enqueue_data
+                            else:
+                                em_rid = str(
+                                    em_enqueue_data.get("request_id")
+                                    or em_enqueue.headers.get("X-Request-ID")
+                                    or api_request_id
+                                ).strip()
+                                em_data = _poll_result(em_rid)
                             em_df = pd.DataFrame(em_data.get("records", []))
                             em_df = ensure_just_landed_columns(em_df)
                             if not em_df.empty:
