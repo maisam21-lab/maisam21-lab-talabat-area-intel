@@ -1917,19 +1917,50 @@ async def scrape_one_point(
 
 
 def _extract_restaurant_items(payload: Any) -> list[dict[str, Any]]:
-    if isinstance(payload, list):
-        return [x for x in payload if isinstance(x, dict)]
-    if not isinstance(payload, dict):
+    def _looks_like_restaurant_entry(d: dict[str, Any]) -> bool:
+        keys = {str(k).lower() for k in d.keys()}
+        hints = {
+            "id",
+            "restaurantid",
+            "uuid",
+            "name",
+            "title",
+            "url",
+            "lat",
+            "lng",
+            "latitude",
+            "longitude",
+        }
+        return bool(keys & hints)
+
+    def _find_list(node: Any, depth: int = 0) -> list[dict[str, Any]]:
+        if depth > 4:
+            return []
+        if isinstance(node, list):
+            rows = [x for x in node if isinstance(x, dict) and _looks_like_restaurant_entry(x)]
+            if rows:
+                return rows
+            for it in node:
+                got = _find_list(it, depth + 1)
+                if got:
+                    return got
+            return []
+        if isinstance(node, dict):
+            for k in ("restaurants", "items", "results", "data", "vendors", "hits", "list"):
+                if k in node:
+                    got = _find_list(node.get(k), depth + 1)
+                    if got:
+                        return got
+            for v in node.values():
+                got = _find_list(v, depth + 1)
+                if got:
+                    return got
         return []
-    for key in ("restaurants", "items", "results", "data"):
-        block = payload.get(key)
-        if isinstance(block, list):
-            return [x for x in block if isinstance(x, dict)]
-        if isinstance(block, dict):
-            for key2 in ("restaurants", "items", "results"):
-                arr = block.get(key2)
-                if isinstance(arr, list):
-                    return [x for x in arr if isinstance(x, dict)]
+
+    if isinstance(payload, list):
+        return _find_list(payload)
+    if isinstance(payload, dict):
+        return _find_list(payload)
     return []
 
 
@@ -1940,6 +1971,19 @@ def _map_api_item_to_record(
     sample_lat: float,
     sample_lng: float,
 ) -> RestaurantRecord | None:
+    def _is_non_vendor_slug(slug: str) -> bool:
+        bad = {
+            "city",
+            "cities",
+            "cuisine",
+            "cuisines",
+            "all-areas",
+            "areas",
+            "restaurants",
+            "restaurant",
+        }
+        return slug in bad
+
     rid = str(item.get("id") or item.get("restaurantId") or item.get("uuid") or "").strip()
     name = str(item.get("name") or item.get("title") or "").strip()
     if not name and not rid:
@@ -1981,6 +2025,9 @@ def _map_api_item_to_record(
     if not url:
         slugish = (name or rid or "listing").strip().lower().replace(" ", "-")
         url = f"https://www.talabat.com/restaurant/{slugish}"
+    slug = talabat_listing_slug_from_url(url).strip().lower()
+    if _is_non_vendor_slug(slug):
+        return None
 
     now_utc = datetime.now(timezone.utc).isoformat()
     restaurant_name = name or f"Restaurant {rid}"
