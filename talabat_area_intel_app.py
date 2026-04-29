@@ -195,6 +195,9 @@ button[kind="secondary"] {
 
 
 def init_state() -> None:
+    # Hard-reset deprecated widget-bound keys that caused StreamlitAPIException in older builds.
+    st.session_state.pop("run_pin_lat__custom_pin_mode", None)
+    st.session_state.pop("run_pin_lng__custom_pin_mode", None)
     ensure_scrape_location(
         default_lat=float(DEFAULT_PIN[0]),
         default_lng=float(DEFAULT_PIN[1]),
@@ -203,7 +206,9 @@ def init_state() -> None:
     )
     sync_legacy_pin_mirror()
     st.session_state.setdefault("results_df", pd.DataFrame())
+    st.session_state.setdefault("last_successful_results_df", pd.DataFrame())
     st.session_state.setdefault("last_run_done", False)
+    st.session_state.setdefault("last_run_returned_zero", False)
     st.session_state.setdefault("results_fingerprint", None)
     st.session_state.setdefault("last_scrape_run_meta", {})
     st.session_state.setdefault("_last_successful_run_effective_pin", None)
@@ -478,7 +483,7 @@ def render_pin_map(
         fmap,
         width=1400,
         height=520,
-        use_container_width=True,
+        width="stretch",
         returned_objects=["last_clicked", "center"],
         key="talabat_pin_map",
     )
@@ -585,9 +590,8 @@ def render_heatmap(
         )
     st_folium(
         fmap,
-        width=1400,
+        width="stretch",
         height=480,
-        use_container_width=True,
         key="talabat_heatmap_map",
     )
 
@@ -638,7 +642,7 @@ def render_outbound_prioritization_dashboard(df: pd.DataFrame) -> None:
         w_scale=w_scale,
     )
     view = format_for_dashboard(scored)
-    st.dataframe(view, use_container_width=True, height=380)
+    st.dataframe(view, width="stretch", height=380)
 
     top_n = view.head(18).copy()
     if not top_n.empty and "Outbound_priority" in top_n.columns:
@@ -787,7 +791,7 @@ def render_executive_mode(df: pd.DataFrame, meta: dict) -> None:
         st.markdown("**Top opportunity areas**")
         st.dataframe(
             top.rename(columns={"__area": "Area"})[["Area", "opportunity_score", "orders_proxy", "restaurants", "avg_rating", "rows"]],
-            use_container_width=True,
+            width="stretch",
             height=260,
         )
         if not top.empty:
@@ -845,6 +849,8 @@ def compact_output_df(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         "restaurant_url",
         "legal_name",
         "contact_phone",
+        "just_landed",
+        "just_landed_date",
         "rating",
         "google_rating",
         "rating_effective",
@@ -872,6 +878,21 @@ def compact_output_df(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         else:
             removed.append(c)
     return df.loc[:, keep].copy(), removed
+
+
+def ensure_just_landed_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep Just Landed signal visible in UI/exports with stable defaults."""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    if "just_landed" not in out.columns:
+        out["just_landed"] = "false"
+    jl = out["just_landed"].astype(str).str.strip().str.lower()
+    out["just_landed"] = jl.map({"yes": "true", "true": "true"}).fillna("false")
+    if "just_landed_date" not in out.columns:
+        out["just_landed_date"] = ""
+    out["just_landed_date"] = out["just_landed_date"].fillna("").astype(str).str.strip()
+    return out
 
 
 def build_excel_export_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -902,6 +923,8 @@ def build_excel_export_df(df: pd.DataFrame) -> pd.DataFrame:
         "orders_week_estimate",
         "platform",
         "status",
+        "just_landed",
+        "just_landed_date",
         "lat",
         "lng",
         "distance_km_from_pin",
@@ -962,7 +985,7 @@ def main() -> None:
             index=0,
         )
         city_lat, city_lng, _ = UAE_CITY_PRESETS[city_key]
-        if st.button("Use city preset pin", use_container_width=True):
+        if st.button("Use city preset pin", width="stretch"):
             seed_city_preset_if_changed(
                 city_key,
                 float(city_lat),
@@ -974,7 +997,11 @@ def main() -> None:
 
         target_area_label = ""
         listing_status_mode = "live"
-        new_on_platform_only = True
+        new_on_platform_only = st.checkbox(
+            "Just Landed only",
+            value=False,
+            help="When enabled, only vendors marked as newly launched are included.",
+        )
         include_google_coverage = True
         selected_profile_name = "Complete"
         radius_pick = st.radio("2) Radius", options=[5, 10], horizontal=True, index=1)
@@ -986,7 +1013,7 @@ def main() -> None:
         )
 
         geocode_query = st.text_input("Address search (UAE)", value="")
-        geocode_btn = st.button("Set pin from search", use_container_width=True)
+        geocode_btn = st.button("Set pin from search", width="stretch")
 
         if geocode_btn:
             try:
@@ -1022,7 +1049,7 @@ def main() -> None:
             except Exception as exc:
                 st.error(f"Geocode failed via backend: {exc}")
         st.warning("Coastline tip: keep the pin slightly inland to avoid sparse ocean-side sampling.")
-        run_single = st.button("Start Scraping", type="primary", use_container_width=True)
+        run_single = st.button("Start Scraping", type="primary", width="stretch")
 
     _pin_widget_scope = str(city_key) if is_city_mode else "custom_pin_mode"
     st.subheader("Run pin (single source for scraping)")
@@ -1031,21 +1058,33 @@ def main() -> None:
         "The API echoes pins and radius counts in **Resolved scrape parameters** after each run."
     )
     loc_ui = get_scrape_location()
+    lat_internal_key = f"_run_pin_lat__{_pin_widget_scope}"
+    lng_internal_key = f"_run_pin_lng__{_pin_widget_scope}"
+    st.session_state.setdefault(lat_internal_key, float(loc_ui["lat"]))
+    st.session_state.setdefault(lng_internal_key, float(loc_ui["lng"]))
+    source_now = str(loc_ui.get("source") or "")
+    if source_now in {"folium_click", "geocode", "city_preset", "init"}:
+        st.session_state[lat_internal_key] = float(loc_ui["lat"])
+        st.session_state[lng_internal_key] = float(loc_ui["lng"])
     rp1, rp2 = st.columns(2)
     with rp1:
         run_lat = st.number_input(
             "Run pin latitude",
-            value=float(loc_ui["lat"]),
+            value=float(st.session_state[lat_internal_key]),
             format="%.6f",
             step=0.0001,
+            key=f"run_pin_lat_input__{_pin_widget_scope}",
         )
     with rp2:
         run_lng = st.number_input(
             "Run pin longitude",
-            value=float(loc_ui["lng"]),
+            value=float(st.session_state[lng_internal_key]),
             format="%.6f",
             step=0.0001,
+            key=f"run_pin_lng_input__{_pin_widget_scope}",
         )
+    st.session_state[lat_internal_key] = float(run_lat)
+    st.session_state[lng_internal_key] = float(run_lng)
     set_scrape_location(
         float(run_lat),
         float(run_lng),
@@ -1182,7 +1221,10 @@ def main() -> None:
                 elapsed = int(time.time() - start_ts)
                 mins = elapsed // 60
                 secs = elapsed % 60
-                timer_box.markdown(f"⏱ Scraping · {mins:02d}:{secs:02d} elapsed")
+                try:
+                    timer_box.markdown(f"⏱ Scraping · {mins:02d}:{secs:02d} elapsed")
+                except Exception:
+                    return
                 time.sleep(1)
 
         th = threading.Thread(target=_tick, daemon=True)
@@ -1220,11 +1262,12 @@ def main() -> None:
             "scroll_rounds": int(profile_cfg["scroll_rounds"]),
             "scroll_wait_ms": int(profile_cfg["scroll_wait_ms"]),
             "status_filter": "all",
-            "just_landed_only": False,
+            "just_landed_only": bool(new_on_platform_only),
             "max_sample_points": int(profile_cfg["max_sample_points"]),
             "dedupe_by_vendor_url": _SCRAPE_DEDUPE_BY_VENDOR_URL,
             "high_volume": bool(profile_cfg["high_volume"]),
             "google_places_enrich": bool(profile_cfg["google_places_enrich"]),
+            "enrich": False,
             "scrape_target_label": None,
             "city": None,
         }
@@ -1236,11 +1279,22 @@ def main() -> None:
                 base_payload=base_payload,
                 timeout_sec=_SCRAPE_CLIENT_TIMEOUT_SEC,
             )
+        dual_df = ensure_just_landed_columns(dual_df)
         stop_event.set()
         elapsed = int(time.time() - start_ts)
         timer_box.success(f"Done in {elapsed // 60:02d}:{elapsed % 60:02d}")
         progress.progress(1.0)
-        st.session_state["results_df"] = dual_df
+        previous_success_df = st.session_state.get("last_successful_results_df", pd.DataFrame())
+        if dual_df is not None and not dual_df.empty:
+            st.session_state["results_df"] = dual_df
+            st.session_state["last_successful_results_df"] = dual_df
+            st.session_state["last_run_returned_zero"] = False
+        elif previous_success_df is not None and not previous_success_df.empty:
+            st.session_state["results_df"] = previous_success_df
+            st.session_state["last_run_returned_zero"] = True
+        else:
+            st.session_state["results_df"] = dual_df
+            st.session_state["last_run_returned_zero"] = True
         st.session_state["google_coverage_df"] = pd.DataFrame()
         st.session_state["last_run_done"] = True
         st.session_state["results_fingerprint"] = current_fingerprint
@@ -1286,6 +1340,7 @@ def main() -> None:
                     "dedupe_by_vendor_url": _SCRAPE_DEDUPE_BY_VENDOR_URL,
                     "high_volume": bool(profile_cfg["high_volume"]),
                     "google_places_enrich": bool(profile_cfg["google_places_enrich"]),
+                    "enrich": False,
                     "scrape_target_label": target_area_label.strip() or None,
                     "pin_lat": float(loc_req["lat"]),
                     "pin_lng": float(loc_req["lng"]),
@@ -1303,74 +1358,118 @@ def main() -> None:
                     request_id = uuid.uuid4().hex
                     req_headers = dict(headers)
                     req_headers["X-Request-ID"] = request_id
-                    def _post_scrape(req_payload: dict, timeout_msg: str) -> requests.Response | None:
+                    def _poll_result(request_id_to_poll: str, total_timeout_sec: float = _SCRAPE_CLIENT_TIMEOUT_SEC) -> dict:
+                        deadline = time.time() + float(total_timeout_sec)
+                        while time.time() < deadline:
+                            poll_resp = requests.get(
+                                f"{api_base_url.rstrip('/')}/result/{request_id_to_poll}",
+                                headers=req_headers,
+                                timeout=30,
+                            )
+                            if poll_resp.status_code >= 400:
+                                raise RuntimeError(_friendly_api_error(poll_resp))
+                            poll_data = poll_resp.json() if poll_resp.content else {}
+                            poll_status = str((poll_data or {}).get("status") or "").lower()
+                            if poll_status == "complete":
+                                return poll_data
+                            if poll_status == "failed":
+                                raise RuntimeError(str((poll_data or {}).get("error") or "Remote scrape job failed"))
+                            time.sleep(10)
+                        raise RuntimeError("Remote scrape job timed out while waiting for completion.")
+
+                    def _post_scrape(req_payload: dict, timeout_msg: str) -> tuple[int, dict] | None:
                         try:
-                            return requests.post(
+                            enqueue_resp = requests.post(
                                 f"{api_base_url.rstrip('/')}/scrape",
                                 json=req_payload,
                                 headers=req_headers,
-                                timeout=_SCRAPE_CLIENT_TIMEOUT_SEC,
+                                timeout=min(float(_SCRAPE_CLIENT_TIMEOUT_SEC), 60.0),
                             )
+                            if enqueue_resp.status_code >= 400:
+                                return int(enqueue_resp.status_code), {}
+                            enqueue_data = enqueue_resp.json() if enqueue_resp.content else {}
+                            rid = str(
+                                enqueue_data.get("request_id")
+                                or enqueue_resp.headers.get("X-Request-ID")
+                                or request_id
+                            ).strip()
+                            if not rid:
+                                raise RuntimeError("Missing request_id from /scrape enqueue response")
+                            result_data = _poll_result(rid)
+                            return 200, result_data
                         except requests.exceptions.ReadTimeout:
                             status_box.warning(timeout_msg)
                             return None
 
-                    response = _post_scrape(payload, "Primary scrape hit client read-timeout. Retrying with lighter settings...")
-                    if response is None or response.status_code >= 400:
-                        code = int(response.status_code) if response is not None else 504
+                    scrape_result = _post_scrape(payload, "Primary scrape hit client read-timeout. Retrying with lighter settings...")
+                    if scrape_result is None or int(scrape_result[0]) >= 400:
+                        code = int(scrape_result[0]) if scrape_result is not None else 504
                         # Hosted gateway timeouts are common; retry with progressively lighter payloads.
                         if code in (502, 504):
                             fallback_payload = dict(payload)
                             fallback_payload["high_volume"] = False
+                            fallback_payload["just_landed_only"] = False
+                            fallback_payload["status_filter"] = "all"
                             fallback_payload["max_sample_points"] = min(int(payload["max_sample_points"]), 12)
                             fallback_payload["scroll_rounds"] = 10
                             fallback_notes.append("Fallback 1 used: disabled high-volume, reduced grid sample cap and scroll rounds.")
-                            response = _post_scrape(
+                            scrape_result = _post_scrape(
                                 fallback_payload,
                                 "Lighter retry also hit read-timeout. Retrying once with ultra-light settings...",
                             )
-                            code = int(response.status_code) if response is not None else 504
+                            code = int(scrape_result[0]) if scrape_result is not None else 504
                             if code in (502, 504):
                                 ultra_payload = dict(fallback_payload)
+                                ultra_payload["just_landed_only"] = False
+                                ultra_payload["status_filter"] = "all"
                                 ultra_payload["max_sample_points"] = min(int(fallback_payload["max_sample_points"]), 4)
                                 ultra_payload["scroll_rounds"] = 8
                                 ultra_payload["spacing_km"] = 2.5
                                 fallback_notes.append("Fallback 2 used: ultra-light profile with very low sample cap and wider spacing.")
-                                response = _post_scrape(
+                                scrape_result = _post_scrape(
                                     ultra_payload,
                                     "Ultra-light retry also hit read-timeout.",
                                 )
-                        if response is None:
+                        if scrape_result is None:
                             raise RuntimeError(
                                 "Client read-timeout after all retries. Backend is overloaded or blocked by host limits."
                             )
-                        if response.status_code >= 400:
-                            raise RuntimeError(_friendly_api_error(response))
-                    api_data = response.json()
-                    api_request_id = str(api_data.get("request_id") or response.headers.get("X-Request-ID") or request_id)
+                        if int(scrape_result[0]) >= 400:
+                            raise RuntimeError(f"HTTP {int(scrape_result[0])} from /scrape enqueue")
+                    api_data = scrape_result[1] if scrape_result is not None else {}
+                    api_request_id = str(api_data.get("request_id") or request_id)
                     df = pd.DataFrame(api_data.get("records", []))
+                    df = ensure_just_landed_columns(df)
                     if df.empty:
                         status_box.warning("Scrape returned 0 rows. Trying emergency single-point fallback...")
                         emergency_payload = dict(payload)
                         emergency_payload["high_volume"] = False
                         emergency_payload["dedupe_by_vendor_url"] = True
+                        emergency_payload["just_landed_only"] = False
                         emergency_payload["status_filter"] = "all"
                         emergency_payload["max_sample_points"] = 1
                         emergency_payload["scroll_rounds"] = 4
                         emergency_payload["scroll_wait_ms"] = min(int(payload["scroll_wait_ms"]), 700)
-                        em_resp = requests.post(
+                        em_enqueue = requests.post(
                             f"{api_base_url.rstrip('/')}/scrape",
                             json=emergency_payload,
                             headers=req_headers,
-                            timeout=_SCRAPE_CLIENT_TIMEOUT_SEC,
+                            timeout=min(float(_SCRAPE_CLIENT_TIMEOUT_SEC), 60.0),
                         )
-                        if em_resp.status_code < 400:
-                            em_data = em_resp.json()
+                        if em_enqueue.status_code < 400:
+                            em_enqueue_data = em_enqueue.json() if em_enqueue.content else {}
+                            em_rid = str(
+                                em_enqueue_data.get("request_id")
+                                or em_enqueue.headers.get("X-Request-ID")
+                                or api_request_id
+                            ).strip()
+                            em_data = _poll_result(em_rid)
                             em_df = pd.DataFrame(em_data.get("records", []))
+                            em_df = ensure_just_landed_columns(em_df)
                             if not em_df.empty:
                                 df = em_df
                                 api_request_id = str(
-                                    em_data.get("request_id") or em_resp.headers.get("X-Request-ID") or api_request_id
+                                    em_data.get("request_id") or api_request_id
                                 )
                                 api_data = em_data
                     gdf = pd.DataFrame()
@@ -1411,7 +1510,17 @@ def main() -> None:
                     df = pd.DataFrame()
                     st.session_state["google_coverage_df"] = pd.DataFrame()
 
-                st.session_state["results_df"] = df
+                previous_success_df = st.session_state.get("last_successful_results_df", pd.DataFrame())
+                if df is not None and not df.empty:
+                    st.session_state["results_df"] = df
+                    st.session_state["last_successful_results_df"] = df
+                    st.session_state["last_run_returned_zero"] = False
+                elif previous_success_df is not None and not previous_success_df.empty:
+                    st.session_state["results_df"] = previous_success_df
+                    st.session_state["last_run_returned_zero"] = True
+                else:
+                    st.session_state["results_df"] = df
+                    st.session_state["last_run_returned_zero"] = True
                 st.session_state["last_run_done"] = True
                 st.session_state["results_fingerprint"] = current_fingerprint
         stop_event.set()
@@ -1419,6 +1528,27 @@ def main() -> None:
         timer_box.success(f"Done in {elapsed // 60:02d}:{elapsed % 60:02d}")
 
     df = st.session_state.get("results_df", pd.DataFrame())
+    if st.session_state.get("last_run_returned_zero", False):
+        st.warning(
+            "Latest scrape returned 0 rows. Showing your last successful results so the table stays available."
+        )
+    if df is None or df.empty:
+        gdf_fallback = st.session_state.get("google_coverage_df", pd.DataFrame())
+        if isinstance(gdf_fallback, pd.DataFrame) and not gdf_fallback.empty:
+            g = gdf_fallback.copy()
+            df = pd.DataFrame(
+                {
+                    "restaurant_name": g.get("name", pd.Series([""] * len(g))),
+                    "google_rating": g.get("rating", pd.Series([""] * len(g))),
+                    "google_reviews_count": g.get("user_ratings_total", pd.Series([""] * len(g))),
+                    "google_place_id": g.get("google_place_id", pd.Series([""] * len(g))),
+                    "lat": g.get("lat", pd.Series([None] * len(g))),
+                    "lng": g.get("lng", pd.Series([None] * len(g))),
+                    "platform": pd.Series(["Google coverage"] * len(g)),
+                    "status": pd.Series(["coverage_only"] * len(g)),
+                }
+            )
+            st.info("Showing Google coverage rows while platform scrape returns zero restaurants.")
     if df is None or df.empty:
         if st.session_state.get("last_run_done"):
             st.warning(
@@ -1482,7 +1612,7 @@ def main() -> None:
     gdf = st.session_state.get("google_coverage_df", pd.DataFrame())
 
     with tab_results:
-        st.dataframe(view_df, use_container_width=True, height=460)
+        st.dataframe(view_df, width="stretch", height=460)
         excel_df = build_excel_export_df(view_df)
         excel_bytes = dataframe_to_excel_bytes(excel_df)
         c1, c2, c3 = st.columns([2, 1, 1])
@@ -1491,7 +1621,7 @@ def main() -> None:
             data=excel_bytes,
             file_name="area_intel_results.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
+            width="stretch",
         )
         c2.download_button(
             "CSV",
@@ -1514,7 +1644,7 @@ def main() -> None:
             else:
                 google_only = gdf.copy()
             with st.expander("Google-only coverage candidates", expanded=False):
-                st.dataframe(google_only, use_container_width=True, height=240)
+                st.dataframe(google_only, width="stretch", height=240)
 
     meta_pin_lat = meta.get("effective_scrape_pin_lat")
     meta_pin_lng = meta.get("effective_scrape_pin_lng")
