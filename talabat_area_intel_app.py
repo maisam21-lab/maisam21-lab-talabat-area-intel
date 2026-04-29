@@ -481,7 +481,6 @@ def render_pin_map(
         )
     out = st_folium(
         fmap,
-        width=1400,
         height=520,
         width="stretch",
         returned_objects=["last_clicked", "center"],
