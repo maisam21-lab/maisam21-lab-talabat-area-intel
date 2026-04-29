@@ -79,6 +79,10 @@ class RestaurantRecord:
     has_offers: str
     # From __NEXT_DATA__ when Talabat exposes counts; otherwise empty
     estimated_orders: str
+    order_count_badge: str
+    joined_date: str
+    est_orders_alltime: str
+    est_orders_last_7days: str
     # Google Places (Text Search + Details) when GOOGLE_PLACES_ENRICH is enabled
     google_place_id: str
     google_maps_name: str
