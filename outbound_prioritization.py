@@ -40,12 +40,12 @@ def _safe_int(x: Any) -> int | None:
 def _primary_cuisine(cuisines: Any) -> str:
     raw = str(cuisines or "").strip()
     if not raw:
-        return "Unknown"
+        return ""
     for sep in (",", "|", ";", "/"):
         if sep in raw:
             raw = raw.split(sep)[0].strip()
             break
-    return raw[:120] if raw else "Unknown"
+    return raw[:120] if raw else ""
 
 
 def _brand_key(row: pd.Series) -> str:
@@ -131,7 +131,7 @@ def build_brand_prioritization_table(df: pd.DataFrame) -> pd.DataFrame:
         else:
             display_name = str(key)
         cuisine_mode = g["_primary_cuisine"].mode()
-        primary = str(cuisine_mode.iloc[0]) if len(cuisine_mode) else "Unknown"
+        primary = str(cuisine_mode.iloc[0]) if len(cuisine_mode) else ""
         n_stores = int(len(g))
         est_vals = [x for x in g["_est_int"].tolist() if x is not None and x > 0]
         # If Talabat repeats chain-level total on each branch, max ≈ total; if per-branch, sum is safer.

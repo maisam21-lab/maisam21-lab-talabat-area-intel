@@ -133,7 +133,8 @@ def classify_status(blob: str) -> str:
         return "closed"
     if any(x in txt for x in LIVE_HINTS):
         return "live"
-    return "unknown"
+    # Empty reads cleaner in exports than a literal "unknown" sentinel.
+    return ""
 
 
 _JUST_LANDED_HINT = re.compile(r"just\s*landed", re.I)
@@ -537,7 +538,7 @@ async def extract_restaurants_from_next_data(
     for path in paths:
         url = normalize_talabat_url(path)
         path_slug = url.rstrip("/").split("/")[-1]
-        name = path_slug.replace("-", " ").title() if path_slug else "Unknown"
+        name = path_slug.replace("-", " ").title() if path_slug else "Unnamed listing"
         sku = make_branch_sku(name=name, branch_name="", url=url, lat=sample_lat, lng=sample_lng)
         bd = brand_display_name_from_listing(name, "")
         bid = make_brand_id(bd)
@@ -568,7 +569,7 @@ async def extract_restaurants_from_next_data(
                 delivery_fee="",
                 min_order="",
                 area_label="",
-                status="unknown",
+                status="",
                 just_landed="no",
                 just_landed_date="",
                 google_rating="",
@@ -618,7 +619,8 @@ def _merge_restaurant_rows_by_url(*batches: list[RestaurantRecord]) -> list[Rest
         branch = (row.branch_name or "").strip()
         blob = f"{name} {branch}".lower()
         jl_boost = 1 if row.just_landed == "yes" else 0
-        status_boost = 1 if row.status and row.status != "unknown" else 0
+        st = str(row.status or "").strip().lower()
+        status_boost = 1 if st in ("live", "closed") else 0
         return (jl_boost + status_boost, len(branch), len(name))
 
     best: dict[str, RestaurantRecord] = {}

@@ -857,6 +857,70 @@ def get_api_base_url() -> str:
     return os.getenv("API_BASE_URL", "https://maisam21-lab-talabat-area-intel.onrender.com").strip().rstrip("/")
 
 
+_PLACEHOLDER_CELL_LOWER = frozenset(
+    {
+        "",
+        "unknown",
+        "n/a",
+        "na",
+        "none",
+        "null",
+        "-",
+        "—",
+        "nan",
+        "undefined",
+        "n.a.",
+        "(null)",
+    }
+)
+
+
+def _meaningful_value_mask(s: pd.Series) -> pd.Series:
+    """True where a cell counts as real data (not blank / common sentinel strings)."""
+    if pd.api.types.is_numeric_dtype(s):
+        return s.notna()
+    if pd.api.types.is_bool_dtype(s):
+        return s.notna()
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return s.notna()
+    t = s.astype(str).str.strip()
+    low = t.str.lower()
+    return s.notna() & ~low.isin(_PLACEHOLDER_CELL_LOWER)
+
+
+def polish_dataframe_display_noise(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize noisy empty sentinels to blank cells for table / CSV / Excel."""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+
+    def _clean_cell(val: object) -> object:
+        if val is None:
+            return ""
+        if isinstance(val, float) and pd.isna(val):
+            return ""
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return val
+        s = str(val).strip()
+        if s.lower() in _PLACEHOLDER_CELL_LOWER:
+            return ""
+        return s
+
+    for c in out.columns:
+        ser = out[c]
+        if pd.api.types.is_numeric_dtype(ser) or pd.api.types.is_bool_dtype(ser):
+            continue
+        if pd.api.types.is_datetime64_any_dtype(ser):
+            continue
+        if hasattr(ser.dtype, "categories"):
+            out[c] = ser.astype(str).map(_clean_cell)
+            continue
+        if not (pd.api.types.is_object_dtype(ser) or pd.api.types.is_string_dtype(ser)):
+            continue
+        out[c] = ser.map(_clean_cell)
+    return out
+
+
 def _friendly_api_error(response: requests.Response) -> str:
     rid = (response.headers.get("X-Request-ID") or "").strip()
     code = int(response.status_code)
@@ -906,19 +970,14 @@ def compact_output_df(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         "lng",
         "distance_km_from_pin",
     ]
-    exclude_always = {"status", "area_label"}
     keep: list[str] = [c for c in core if c in df.columns]
     removed: list[str] = []
 
     for c in df.columns:
         if c in keep:
             continue
-        if c in exclude_always:
-            removed.append(c)
-            continue
         s = df[c]
-        non_empty = (s.notna()) & (s.astype(str).str.strip() != "")
-        if bool(non_empty.any()):
+        if bool(_meaningful_value_mask(s).any()):
             keep.append(c)
         else:
             removed.append(c)
@@ -1620,6 +1679,7 @@ def main() -> None:
         return
 
     view_df, dropped_cols = compact_output_df(df)
+    view_df = polish_dataframe_display_noise(view_df)
     if "platform" not in view_df.columns:
         view_df["platform"] = "Talabat"
     if dropped_cols:

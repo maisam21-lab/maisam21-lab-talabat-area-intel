@@ -81,7 +81,7 @@ class ScrapeRequest(BaseModel):
     # Hex grid spacing; lower values increase coverage and runtime.
     spacing_km: float = Field(default=1.8, ge=0.35, le=3.0)
     concurrency: int = Field(default=3, ge=1, le=6)
-    # "live" = drop rows classified as closed (keeps unknown + open); "all" = no status filter; "closed" = closed only.
+    # "live" = drop closed rows (keeps open + unset/empty status); "all" = no filter; "closed" = closed only.
     status_filter: str = Field(
         default="live",
         description="live | all | closed — see API docs; not the same as Talabat Pro 'live' badge.",
