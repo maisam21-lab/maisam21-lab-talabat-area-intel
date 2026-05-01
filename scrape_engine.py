@@ -85,6 +85,7 @@ _LISTING_HTML_HEADERS = {
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
     "Referer": "https://www.talabat.com/en/uae/restaurants",
 }
 
@@ -534,18 +535,39 @@ async def extract_restaurants_from_anchor_links(
     return results
 
 
+def _extract_next_data_json_text(html: str) -> str | None:
+    """Pull raw JSON from ``__NEXT_DATA__`` script (more reliable than a single-line regex on huge pages)."""
+    for needle in ('id="__NEXT_DATA__"', "id='__NEXT_DATA__'"):
+        pos = html.find(needle)
+        if pos < 0:
+            continue
+        gt = html.find(">", pos)
+        if gt < 0:
+            return None
+        start = gt + 1
+        end = html.find("</script>", start)
+        if end < 0:
+            return None
+        raw = html[start:end].strip()
+        return raw or None
+    return None
+
+
 def _next_data_vendor_paths_from_html_fetch(listing_url: str) -> list[str]:
     """Parse ``__NEXT_DATA__`` from a listing HTML page (Talabat often 404s the legacy JSON API)."""
     try:
-        r = requests.get(listing_url, headers=_LISTING_HTML_HEADERS, timeout=28)
+        r = requests.get(listing_url, headers=_LISTING_HTML_HEADERS, timeout=35)
     except requests.RequestException:
         return []
     if r.status_code >= 400 or not r.content:
         return []
-    m = _NEXT_DATA_BLOCK.search(r.text)
-    if not m:
-        return []
-    data = parse_next_data_script(m.group(1))
+    raw = _extract_next_data_json_text(r.text)
+    if not raw:
+        m = _NEXT_DATA_BLOCK.search(r.text)
+        if not m:
+            return []
+        raw = m.group(1).strip()
+    data = parse_next_data_script(raw)
     if not data:
         return []
     return paths_from_next_data_json(data)
@@ -1887,22 +1909,6 @@ async def scrape_one_point(
     api_rows = await _fetch_restaurants_from_internal_api(pin_lat, pin_lng, sample_lat, sample_lng)
     if api_rows:
         return api_rows
-    http_rows = await _fetch_restaurants_from_listing_http(
-        pin_lat,
-        pin_lng,
-        radius_km,
-        sample_lat,
-        sample_lng,
-        listing_cuisine_sweep=listing_cuisine_sweep,
-    )
-    if http_rows:
-        logger.info(
-            "talabat_listing_http_next_data sample=(%.5f,%.5f) rows=%s",
-            sample_lat,
-            sample_lng,
-            len(http_rows),
-        )
-        return http_rows
 
     context = None
     page = None
@@ -2045,7 +2051,7 @@ def _extract_restaurant_items(payload: Any) -> list[dict[str, Any]]:
         return bool(keys & hints)
 
     def _find_list(node: Any, depth: int = 0) -> list[dict[str, Any]]:
-        if depth > 4:
+        if depth > 12:
             return []
         if isinstance(node, list):
             rows = [x for x in node if isinstance(x, dict) and _looks_like_restaurant_entry(x)]
@@ -2458,7 +2464,28 @@ async def run_area_scrape(
     )
 
     browser = None
+    http_seed: list[RestaurantRecord] = []
     try:
+        if _env_truthy(os.getenv("SCRAPER_HTTP_LISTING_SEED", "1")):
+            last_step = "listing_http_seed"
+            if meta_out is not None:
+                meta_out["last_completed_step"] = last_step
+            try:
+                http_seed = await _fetch_restaurants_from_listing_http(
+                    pin_lat,
+                    pin_lng,
+                    radius_km,
+                    pin_lat,
+                    pin_lng,
+                    listing_cuisine_sweep=hv,
+                )
+            except Exception as exc:
+                logger.warning("listing_http_seed_failed err=%s", exc)
+                http_seed = []
+            logger.info("talabat_http_seed_rows=%s grid_pts=%s", len(http_seed), len(points))
+            if meta_out is not None:
+                meta_out["http_listing_seed_rows"] = int(len(http_seed))
+
         last_step = "launch_playwright"
         if meta_out is not None:
             meta_out["last_completed_step"] = last_step
@@ -2573,7 +2600,7 @@ async def run_area_scrape(
                 meta_out["last_completed_step"] = last_step
             if dedupe_by_vendor_url:
                 dedupe: dict[str, RestaurantRecord] = {}
-                for r in restored_records:
+                for r in restored_records + http_seed:
                     ck = _canonical_vendor_url(r.restaurant_url)
                     if not ck:
                         dedupe[r.branch_sku] = r
@@ -2593,7 +2620,7 @@ async def run_area_scrape(
                             dedupe[ck] = _pick_better_row(pin_lat, pin_lng, cur, r)
                 records = list(dedupe.values())
             else:
-                records = list(restored_records)
+                records = list(restored_records) + list(http_seed)
                 for batch in batches:
                     records.extend(batch)
 
