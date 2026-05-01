@@ -1,6 +1,7 @@
 streamlit
 playwright
 pandas
+openpyxl
 numpy
 folium
 streamlit-folium

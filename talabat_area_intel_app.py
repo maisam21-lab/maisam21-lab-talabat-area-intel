@@ -946,7 +946,7 @@ def build_excel_export_df(df: pd.DataFrame) -> pd.DataFrame:
 
 def dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
     bio = io.BytesIO()
-    with pd.ExcelWriter(bio) as writer:
+    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Area Intel")
     return bio.getvalue()
 
