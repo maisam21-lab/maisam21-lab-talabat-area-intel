@@ -13,6 +13,7 @@ import folium
 import pandas as pd
 import requests
 import streamlit as st
+from branca.element import Element
 from folium.plugins import Fullscreen, HeatMap, MousePosition
 from streamlit_folium import st_folium
 
@@ -37,6 +38,7 @@ try:
 except ImportError:
     # Deployment-safe fallback when an older module version is present.
     from batch_scrape_client import run_batch_scrape_via_api as run_dual_area_scrape_via_api
+from geo_utils import haversine_series_km_from_pin
 from google_map_tiles import (
     ensure_google_map_tile_sessions,
     google_2d_tile_url_template,
@@ -514,9 +516,16 @@ def render_heatmap(
     )
     basemap = _configure_map_basemaps(fmap)
 
+    slack_km = float(radius_km) + 0.4
+    d_computed = haversine_series_km_from_pin(
+        float(pin_lat), float(pin_lng), view_df["lat"], view_df["lng"]
+    )
     if "distance_km_from_pin" in view_df.columns:
-        dist = pd.to_numeric(view_df["distance_km_from_pin"], errors="coerce")
-        view_df = view_df.loc[dist.notna() & (dist <= float(radius_km) + 0.4)].copy()
+        d_col = pd.to_numeric(view_df["distance_km_from_pin"], errors="coerce")
+        d_eff = d_col.where(d_col.notna(), d_computed)
+    else:
+        d_eff = d_computed
+    view_df = view_df.loc[d_eff <= slack_km].copy()
 
     heat_rows: list[list[float]] = []
     for _, row in view_df.iterrows():
@@ -526,17 +535,53 @@ def render_heatmap(
         except (TypeError, ValueError):
             continue
         heat_rows.append([la, ln])
+
+    heat_source = "platform"
+    if not heat_rows and google_coverage_df is not None and isinstance(google_coverage_df, pd.DataFrame):
+        if "lat" in google_coverage_df.columns and "lng" in google_coverage_df.columns:
+            gc = google_coverage_df.copy()
+            la_s = pd.to_numeric(gc["lat"], errors="coerce")
+            ln_s = pd.to_numeric(gc["lng"], errors="coerce")
+            gc = gc.loc[la_s.notna() & ln_s.notna()].copy()
+            if not gc.empty:
+                d_gc = haversine_series_km_from_pin(
+                    float(pin_lat), float(pin_lng), gc["lat"], gc["lng"]
+                )
+                gc = gc.loc[d_gc <= slack_km].copy()
+                for _, row in gc.iterrows():
+                    try:
+                        heat_rows.append([float(row["lat"]), float(row["lng"])])
+                    except (TypeError, ValueError):
+                        continue
+                if heat_rows:
+                    heat_source = "google_coverage"
+
+    heat_layer_name = (
+        "Platform listing density"
+        if heat_source == "platform"
+        else "Google coverage density (no platform coords in radius)"
+    )
     if heat_rows:
-        heat_fg = folium.FeatureGroup(name="Platform listing density", overlay=True, control=True)
+        heat_fg = folium.FeatureGroup(name=heat_layer_name, overlay=True, control=True, show=True)
         HeatMap(
             heat_rows,
-            min_opacity=0.33,
-            max_zoom=17,
-            radius=18,
-            blur=12,
+            min_opacity=0.4,
+            max_zoom=18,
+            radius=22,
+            blur=14,
             gradient={0.4: "#2563EB", 0.6: "#7C3AED", 0.8: "#F59E0B", 0.96: "#EF4444"},
         ).add_to(heat_fg)
         heat_fg.add_to(fmap)
+        # Leaflet.heat canvas can sit under some raster tile stacks; keep it above basemaps.
+        fmap.get_root().header.add_child(
+            Element("<style>.leaflet-heatmap-layer { z-index: 650 !important; }</style>")
+        )
+    else:
+        st.warning(
+            "No in-radius points with coordinates to plot. "
+            "If the table has rows but no **lat**/**lng**, enable enrichment or widen radius; "
+            "or use **Google-only coverage** when the platform scrape is empty."
+        )
 
     folium.Circle(
         location=[float(pin_lat), float(pin_lng)],
