@@ -13,7 +13,7 @@ import folium
 import pandas as pd
 import requests
 import streamlit as st
-from branca.element import Element
+import streamlit.components.v1 as components
 from folium.plugins import Fullscreen, HeatMap, MousePosition
 from streamlit_folium import st_folium
 
@@ -484,7 +484,7 @@ def render_pin_map(
     out = st_folium(
         fmap,
         height=520,
-        width="stretch",
+        use_container_width=True,
         returned_objects=["last_clicked", "center"],
         key="talabat_pin_map",
     )
@@ -562,7 +562,7 @@ def render_heatmap(
         else "Google coverage density (no platform coords in radius)"
     )
     if heat_rows:
-        heat_fg = folium.FeatureGroup(name=heat_layer_name, overlay=True, control=True, show=True)
+        heat_fg = folium.FeatureGroup(name=heat_layer_name, overlay=True, control=True)
         HeatMap(
             heat_rows,
             min_opacity=0.4,
@@ -572,10 +572,6 @@ def render_heatmap(
             gradient={0.4: "#2563EB", 0.6: "#7C3AED", 0.8: "#F59E0B", 0.96: "#EF4444"},
         ).add_to(heat_fg)
         heat_fg.add_to(fmap)
-        # Leaflet.heat canvas can sit under some raster tile stacks; keep it above basemaps.
-        fmap.get_root().header.add_child(
-            Element("<style>.leaflet-heatmap-layer { z-index: 650 !important; }</style>")
-        )
     else:
         st.warning(
             "No in-radius points with coordinates to plot. "
@@ -623,21 +619,26 @@ def render_heatmap(
 
     if basemap == "google":
         st.caption(
-            "Same **Google** basemaps as the pin map. Heat = **Platform listing density** from this scrape "
-            "(single aggregator; multi-aggregator overlay is not wired yet)."
+            "Same **Google** basemaps as the pin map. "
+            + (
+                "**Heat** uses Google coverage points (Talabat had no coordinates in this view)."
+                if heat_source == "google_coverage"
+                else "**Heat** = **platform listing density** from this scrape (single aggregator)."
+            )
         )
     else:
         st.caption(
-            "Same English-first basemaps as the pin map. **Street** = full English-style road labels; "
-            "**Satellite** + **Place names overlay** for labels. Heat = **Platform listing density** from this scrape "
-            "(single aggregator; multi-aggregator overlay is not wired yet)."
+            "Same English-first basemaps as the pin map. **Street** / **Satellite** + **Place names overlay** in the layer control. "
+            + (
+                "**Heat** uses Google coverage points (Talabat had no coordinates in this view)."
+                if heat_source == "google_coverage"
+                else "**Heat** = **platform listing density** from this scrape (single aggregator)."
+            )
         )
-    st_folium(
-        fmap,
-        width="stretch",
-        height=480,
-        key="talabat_heatmap_map",
-    )
+    # st_folium can render a blank iframe inside ``st.tabs`` on some Streamlit Cloud builds; full HTML
+    # via ``components.html`` matches Folium's notebook/static path and reliably loads Leaflet + plugins.
+    fig = folium.Figure().add_child(fmap)
+    components.html(fig.render(), height=535, width=None, scrolling=False)
 
 
 def get_frontend_api_key() -> str:
@@ -922,6 +923,14 @@ def compact_output_df(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         else:
             removed.append(c)
     return df.loc[:, keep].copy(), removed
+
+
+def is_google_coverage_only_results(df: pd.DataFrame) -> bool:
+    """True when every row is the Google coverage fallback (Talabat scrape returned no restaurants)."""
+    if df is None or df.empty or "platform" not in df.columns:
+        return False
+    v = df["platform"].astype(str).str.strip().str.lower()
+    return bool(len(v) and (v == "google coverage").all())
 
 
 def ensure_just_landed_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -1599,7 +1608,6 @@ def main() -> None:
                     "status": pd.Series(["coverage_only"] * len(g)),
                 }
             )
-            st.info("Showing Google coverage rows while platform scrape returns zero restaurants.")
     if df is None or df.empty:
         if st.session_state.get("last_run_done"):
             st.warning(
@@ -1639,21 +1647,34 @@ def main() -> None:
                 "The API `scrape_run_meta.effective_scrape_pin_*` is for the displayed rows; re-run to align."
             )
 
-    st.success(
-        f"Collected **{len(df):,}** rows. Same brand may appear for different branches or grid samples; "
-        "use **brand_id** for rollups and **branch_sku** for unique rows."
-    )
-    st.caption(
-        "Runs use high-volume listing coverage, **vendor pages for many unique restaurants** (API caps), "
-        "and Google Places when the API has a Maps key. Tune `RESTAURANT_DETAIL_ENRICH_MAX` / wall clock on the host if runs time out."
-    )
+    coverage_only = is_google_coverage_only_results(df)
+    if coverage_only:
+        st.warning(
+            f"**Last Talabat scrape returned 0 restaurants.** Showing **{len(df):,} Google Places** near your pin "
+            "(coverage API: hotels, chains, POIs). These rows are **not** Talabat listings, vendor URLs, or order data. "
+            "Use Render → API **Logs** for `/scrape`, try radius **10 km**, status **all**, and confirm the response includes `records`."
+        )
+    else:
+        st.success(
+            f"Collected **{len(df):,}** rows. Same brand may appear for different branches or grid samples; "
+            "use **brand_id** for rollups and **branch_sku** for unique rows."
+        )
+        st.caption(
+            "Runs use high-volume listing coverage, **vendor pages for many unique restaurants** (API caps), "
+            "and Google Places when the API has a Maps key. Tune `RESTAURANT_DETAIL_ENRICH_MAX` / wall clock on the host if runs time out."
+        )
     brand_series = df.get("brand_id", df.get("brand_display_name", pd.Series(dtype=str)))
     brand_count = int(pd.Series(brand_series).astype(str).str.strip().replace("", pd.NA).dropna().nunique())
+    if brand_count == 0 and "google_place_id" in df.columns:
+        gpid = df["google_place_id"].astype(str).str.strip().replace("", pd.NA)
+        brand_count = int(gpid.dropna().nunique())
+    if brand_count == 0 and "restaurant_name" in df.columns:
+        brand_count = int(df["restaurant_name"].astype(str).str.strip().replace("", pd.NA).dropna().nunique())
     rating_series = _pick_rating_series(df)
     avg_rating = float(rating_series.dropna().mean()) if not rating_series.dropna().empty else 0.0
     m1, m2, m3 = st.columns(3)
     m1.metric("Total rows", int(len(df)))
-    m2.metric("Unique brands", brand_count)
+    m2.metric("Unique places (Google)" if coverage_only else "Unique brands", brand_count)
     m3.metric("Avg rating", f"{avg_rating:.2f}" if avg_rating > 0 else "—")
 
     tab_results, tab_heatmap, tab_outbound = st.tabs(
