@@ -1745,6 +1745,12 @@ def main() -> None:
     gdf = st.session_state.get("google_coverage_df", pd.DataFrame())
 
     with tab_results:
+        if coverage_only:
+            st.info(
+                "**Nothing in this table comes from Talabat listings** — it is **Google coverage only** "
+                "(nearby Places). Talabat rows always include a **`restaurant_url`** on `talabat.com`. "
+                "The last `/scrape` returned **0** listing `records`; use API **Logs** on Render and re-run after fixing scrape errors or filters."
+            )
         st.dataframe(view_df, width="stretch", height=460)
         excel_df = build_excel_export_df(view_df)
         excel_bytes = dataframe_to_excel_bytes(excel_df)
