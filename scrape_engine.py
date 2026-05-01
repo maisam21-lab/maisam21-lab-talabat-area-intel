@@ -2588,10 +2588,13 @@ async def run_area_scrape(
         completed_total = int(len(completed_idx)) if "completed_idx" in locals() else int(done if "done" in locals() else 0)
         meta_out["grid_points_completed"] = completed_total
         meta_out["partial_results"] = bool(completed_total < int(len(points)))
-    if enrich:
+    # Google Places backfill on Talabat listing rows: independent of ``enrich`` (Playwright vendor pages).
+    # Streamlit sends enrich=false for stability; profiles still set google_places_enrich=true when a Maps key exists.
+    if google_places_enrich_effective(google_places_enrich):
         enrich_records_with_google_places(records, force=google_places_enrich)
         if meta_out is not None:
             meta_out["last_completed_step"] = "google_places_done"
+    if enrich:
         enrich_records_reverse_geocode(records)
         if meta_out is not None:
             meta_out["last_completed_step"] = "reverse_geocode_done"

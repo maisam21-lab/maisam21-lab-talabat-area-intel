@@ -1232,7 +1232,8 @@ def main() -> None:
     else:
         st.write(f"**Run pin:** `{float(loc_run['lat']):.6f}, {float(loc_run['lng']):.6f}`")
     st.write(
-        f"Radius: `{radius_km} km` · Profile: `{selected_profile_name}` · Google Places when API key is set · "
+        f"Radius: `{radius_km} km` · Profile: `{selected_profile_name}` · "
+        f"**Talabat rows → Google Places** backfill when the API has `GOOGLE_MAPS_API_KEY` (profile requests it) · "
         f"Status: `{listing_status_mode}` · New-only: `{new_on_platform_only}` · "
         f"Target label: `{target_area_label.strip() or '—'}`"
     )

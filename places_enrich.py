@@ -1,6 +1,8 @@
-"""Optional backfill of phone, business name, and place_id via Google Places API (legacy HTTP).
+"""Optional backfill of phone, business name, and place_id on Talabat rows via Google Places (HTTP).
 
-Requires GOOGLE_MAPS_API_KEY with Places API enabled. Gated by GOOGLE_PLACES_ENRICH=1.
+Requires GOOGLE_MAPS_API_KEY with Places API enabled. Runs when the scrape request sets
+``google_places_enrich: true`` (then env GOOGLE_PLACES_ENRICH is ignored), or when
+``GOOGLE_PLACES_ENRICH=1`` and the request does not force false.
 """
 
 from __future__ import annotations

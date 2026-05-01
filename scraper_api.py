@@ -19,6 +19,8 @@ from uae_cities import resolve_city
 
 app = FastAPI(title="Talabat Area Scraper API", version="1.0.0")
 logger = logging.getLogger("talabat_area_intel.api")
+_JOB_RESULTS: dict[str, dict] = {}
+_JOB_LOCK = asyncio.Lock()
 
 
 @app.middleware("http")
@@ -127,6 +129,10 @@ class ScrapeRequest(BaseModel):
     google_places_enrich: bool | None = Field(
         default=None,
         description="If true, run Google Places enrichment when GOOGLE_MAPS_API_KEY is set. If false, skip. If null, use env GOOGLE_PLACES_ENRICH.",
+    )
+    enrich: bool = Field(
+        default=False,
+        description="If false, skip vendor/google/reverse enrichment and return listing rows only.",
     )
 
 
@@ -439,6 +445,90 @@ def google_coverage(payload: GoogleCoverageRequest, x_api_key: str | None = Head
 async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None = Header(default=None)) -> dict:
     request_id = getattr(request.state, "request_id", "")
     verify_api_key(x_api_key)
+    if not request_id:
+        request_id = uuid.uuid4().hex
+    if payload.status_filter not in {"all", "live", "closed"}:
+        raise HTTPException(status_code=400, detail="status_filter must be one of: all, live, closed")
+
+    async with _JOB_LOCK:
+        _JOB_RESULTS[request_id] = {
+            "status": "queued",
+            "request_id": request_id,
+            "submitted_at": asyncio.get_running_loop().time(),
+        }
+
+    async def _run_job() -> None:
+        async with _JOB_LOCK:
+            cur = _JOB_RESULTS.get(request_id) or {}
+            cur["status"] = "running"
+            _JOB_RESULTS[request_id] = cur
+        try:
+            result = await _execute_scrape(payload, request_id=request_id)
+            async with _JOB_LOCK:
+                _JOB_RESULTS[request_id] = {
+                    "status": "complete",
+                    "request_id": request_id,
+                    "result": result,
+                    "submitted_at": cur.get("submitted_at"),
+                }
+        except HTTPException as exc:
+            async with _JOB_LOCK:
+                _JOB_RESULTS[request_id] = {
+                    "status": "failed",
+                    "request_id": request_id,
+                    "error": str(exc.detail),
+                    "status_code": int(exc.status_code),
+                    "submitted_at": cur.get("submitted_at"),
+                }
+        except Exception as exc:
+            logger.error("scrape_job_failed request_id=%s error=%s\n%s", request_id, exc, traceback.format_exc())
+            async with _JOB_LOCK:
+                _JOB_RESULTS[request_id] = {
+                    "status": "failed",
+                    "request_id": request_id,
+                    "error": f"Scrape failed: {exc}",
+                    "status_code": 500,
+                    "submitted_at": cur.get("submitted_at"),
+                }
+
+    asyncio.create_task(_run_job())
+    return {
+        "ok": True,
+        "request_id": request_id,
+        "status": "queued",
+    }
+
+
+@app.get("/result/{request_id}")
+async def get_scrape_result(request_id: str, x_api_key: str | None = Header(default=None)) -> dict:
+    verify_api_key(x_api_key)
+    async with _JOB_LOCK:
+        job = _JOB_RESULTS.get(request_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="request_id not found")
+    status = str(job.get("status") or "unknown")
+    if status == "complete":
+        out = dict(job.get("result") or {})
+        out["status"] = "complete"
+        out["ok"] = True
+        out["request_id"] = request_id
+        return out
+    if status == "failed":
+        return {
+            "ok": False,
+            "status": "failed",
+            "request_id": request_id,
+            "error": str(job.get("error") or "Scrape job failed"),
+            "status_code": int(job.get("status_code") or 500),
+        }
+    return {
+        "ok": True,
+        "status": status,
+        "request_id": request_id,
+    }
+
+
+async def _execute_scrape(payload: ScrapeRequest, *, request_id: str) -> dict:
     if payload.status_filter not in {"all", "live", "closed"}:
         raise HTTPException(status_code=400, detail="status_filter must be one of: all, live, closed")
 
@@ -522,6 +612,11 @@ async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None
                     rows_from_point,
                 )
 
+        # Safety override for Render stability: Playwright vendor-page enrichment only when allowed.
+        # Google Places backfill (phone / place_id / Google fields) is NOT gated by SCRAPER_ALLOW_ENRICH;
+        # it runs from ``google_places_enrich`` + GOOGLE_MAPS_API_KEY (see scrape_engine).
+        allow_enrich = os.getenv("SCRAPER_ALLOW_ENRICH", "0").strip().lower() in ("1", "true", "yes", "on")
+        effective_enrich = bool(payload.enrich) and allow_enrich
         df = await asyncio.wait_for(
             run_area_scrape(
                 pin_lat=pin_lat,
@@ -541,6 +636,7 @@ async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None
                 scrape_target_label=(payload.scrape_target_label or "").strip(),
                 meta_out=meta,
                 google_places_enrich=payload.google_places_enrich,
+                enrich=effective_enrich,
             ),
             timeout=wall_sec,
         )
@@ -558,6 +654,8 @@ async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None
             "high_volume": payload.high_volume,
             "status_filter": payload.status_filter,
             "just_landed_only": payload.just_landed_only,
+            "enrich_requested": bool(payload.enrich),
+            "enrich_effective": bool(effective_enrich),
             "scrape_target_label": (payload.scrape_target_label or "").strip(),
             "scrape_wall_clock_sec_applied": int(wall_sec),
             "pin_lat": pin_lat,
