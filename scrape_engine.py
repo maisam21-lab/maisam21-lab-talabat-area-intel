@@ -19,6 +19,7 @@ from playwright._impl._errors import TargetClosedError
 
 from geo_utils import generate_points_in_radius, haversine_km, haversine_series_km_from_pin, refine_grid_spacing
 from listing_urls import capped_listing_urls
+from talabat_urls import UAE_VENDOR_URL_RE, canonical_uae_vendor_url, is_vendor_slug
 from pin_resolve import resolve_pin_area_label
 from models import (
     RestaurantRecord,
@@ -88,6 +89,18 @@ _LISTING_HTML_HEADERS = {
     "Accept-Encoding": "gzip, deflate, br",
     "Referer": "https://www.talabat.com/en/uae/restaurants",
 }
+_LISTING_HTML_MOBILE_HEADERS = {
+    **_LISTING_HTML_HEADERS,
+    "User-Agent": (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+    ),
+}
+# Relative or absolute listing-card hrefs (SSR HTML often has these when __NEXT_DATA__ is minimal).
+_RELATIVE_UAE_VENDOR_HREF_RE = re.compile(
+    r'''(?:href|data-href)\s*=\s*["'](?:https://(?:www\.)?talabat\.com)?/(?:en/)?uae/([a-z0-9][a-z0-9\-]*)''',
+    re.I,
+)
 
 
 def _checkpoint_file_path(
@@ -553,24 +566,78 @@ def _extract_next_data_json_text(html: str) -> str | None:
     return None
 
 
-def _next_data_vendor_paths_from_html_fetch(listing_url: str) -> list[str]:
-    """Parse ``__NEXT_DATA__`` from a listing HTML page (Talabat often 404s the legacy JSON API)."""
+def _fetch_listing_page_html(listing_url: str, headers: dict[str, str]) -> str | None:
     try:
-        r = requests.get(listing_url, headers=_LISTING_HTML_HEADERS, timeout=35)
+        r = requests.get(listing_url, headers=headers, timeout=35)
     except requests.RequestException:
-        return []
+        return None
     if r.status_code >= 400 or not r.content:
-        return []
-    raw = _extract_next_data_json_text(r.text)
-    if not raw:
-        m = _NEXT_DATA_BLOCK.search(r.text)
-        if not m:
-            return []
-        raw = m.group(1).strip()
-    data = parse_next_data_script(raw)
-    if not data:
-        return []
-    return paths_from_next_data_json(data)
+        return None
+    return r.text
+
+
+def _vendor_urls_from_html_regex(html: str) -> list[str]:
+    """Collect vendor URLs from absolute links and ``href=/uae/{{slug}}`` patterns in SSR HTML."""
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def push_slug(slug: str) -> None:
+        s = slug.strip().lower()
+        if not is_vendor_slug(s):
+            return
+        u = canonical_uae_vendor_url(s)
+        kl = u.lower()
+        if kl in seen:
+            return
+        seen.add(kl)
+        out.append(u)
+
+    for m in UAE_VENDOR_URL_RE.finditer(html):
+        push_slug(m.group(1))
+    for m in _RELATIVE_UAE_VENDOR_HREF_RE.finditer(html):
+        push_slug(m.group(1))
+    return out
+
+
+def _vendor_urls_from_listing_html(html: str) -> list[str]:
+    """Merge ``__NEXT_DATA__`` vendor paths and raw HTML ``/uae/{{slug}}`` links."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+
+    def add_raw(url_or_path: str) -> None:
+        nu = normalize_talabat_url(url_or_path).split("?")[0].rstrip("/").lower()
+        if nu in seen:
+            return
+        seen.add(nu)
+        ordered.append(url_or_path)
+
+    raw_nd = _extract_next_data_json_text(html)
+    if not raw_nd:
+        m = _NEXT_DATA_BLOCK.search(html)
+        if m:
+            raw_nd = m.group(1).strip()
+    if raw_nd:
+        data = parse_next_data_script(raw_nd)
+        if data:
+            for p in paths_from_next_data_json(data):
+                add_raw(p)
+
+    for u in _vendor_urls_from_html_regex(html):
+        add_raw(u)
+
+    return ordered
+
+
+def _listing_vendor_urls_from_page(listing_url: str) -> list[str]:
+    """One GET per hub URL: Next payload + visible anchors (works when __NEXT_DATA__ is empty)."""
+    html = _fetch_listing_page_html(listing_url, _LISTING_HTML_HEADERS)
+    urls = _vendor_urls_from_listing_html(html or "")
+    if not urls and _env_truthy(os.getenv("SCRAPER_HTTP_LISTING_MOBILE_FALLBACK", "1")):
+        html2 = _fetch_listing_page_html(listing_url, _LISTING_HTML_MOBILE_HEADERS)
+        urls = _vendor_urls_from_listing_html(html2 or "")
+        if urls:
+            logger.info("listing_html_mobile_ua url=%s vendors=%s", listing_url, len(urls))
+    return urls
 
 
 def records_from_next_data_paths(
@@ -1867,11 +1934,11 @@ async def _fetch_restaurants_from_listing_http(
     def _run() -> list[RestaurantRecord]:
         urls = capped_listing_urls(listing_cuisine_sweep)
         max_pages = max(1, int(os.getenv("SCRAPER_HTTP_LISTING_PAGES", "12")))
-        max_paths = max(40, int(os.getenv("SCRAPER_HTTP_LISTING_MAX_PATHS", "500")))
+        max_paths = max(120, int(os.getenv("SCRAPER_HTTP_LISTING_MAX_PATHS", "900")))
         ordered_paths: list[str] = []
         seen_norm: set[str] = set()
         for listing_url in urls[:max_pages]:
-            for p in _next_data_vendor_paths_from_html_fetch(listing_url):
+            for p in _listing_vendor_urls_from_page(listing_url):
                 nu = normalize_talabat_url(p).split("?")[0].rstrip("/").lower()
                 if nu in seen_norm:
                     continue
@@ -2485,6 +2552,13 @@ async def run_area_scrape(
             logger.info("talabat_http_seed_rows=%s grid_pts=%s", len(http_seed), len(points))
             if meta_out is not None:
                 meta_out["http_listing_seed_rows"] = int(len(http_seed))
+            if not http_seed:
+                logger.warning(
+                    "talabat_http_seed_empty pin=(%.5f,%.5f) — no vendor URLs from listing HTML "
+                    "(datacenter block or empty shell). Check Render logs; try SCRAPER_HTTP_LISTING_PAGES.",
+                    pin_lat,
+                    pin_lng,
+                )
 
         last_step = "launch_playwright"
         if meta_out is not None:
