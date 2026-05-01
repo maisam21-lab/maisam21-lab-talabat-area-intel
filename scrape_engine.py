@@ -66,6 +66,27 @@ CARD_SELECTORS = [
 ]
 CLOSED_HINTS = ["closed", "temporarily closed", "not accepting"]
 LIVE_HINTS = ["open now", "accepting orders", "live"]
+_NON_VENDOR_SLUGS = frozenset(
+    {
+        "city",
+        "cities",
+        "cuisine",
+        "cuisines",
+        "all-areas",
+        "areas",
+        "restaurants",
+        "restaurant",
+    }
+)
+_LISTING_HTML_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.talabat.com/en/uae/restaurants",
+}
 
 
 def _checkpoint_file_path(
@@ -513,30 +534,39 @@ async def extract_restaurants_from_anchor_links(
     return results
 
 
-async def extract_restaurants_from_next_data(
-    page,
+def _next_data_vendor_paths_from_html_fetch(listing_url: str) -> list[str]:
+    """Parse ``__NEXT_DATA__`` from a listing HTML page (Talabat often 404s the legacy JSON API)."""
+    try:
+        r = requests.get(listing_url, headers=_LISTING_HTML_HEADERS, timeout=28)
+    except requests.RequestException:
+        return []
+    if r.status_code >= 400 or not r.content:
+        return []
+    m = _NEXT_DATA_BLOCK.search(r.text)
+    if not m:
+        return []
+    data = parse_next_data_script(m.group(1))
+    if not data:
+        return []
+    return paths_from_next_data_json(data)
+
+
+def records_from_next_data_paths(
+    paths: list[str],
     pin_lat: float,
     pin_lng: float,
     radius_km: float,
     sample_lat: float,
     sample_lng: float,
 ) -> list[RestaurantRecord]:
-    raw = await page.evaluate(
-        """() => {
-      const el = document.getElementById('__NEXT_DATA__');
-      return el ? el.textContent : null;
-    }"""
-    )
-    data = parse_next_data_script(raw or "")
-    if not data:
-        return []
-    paths = paths_from_next_data_json(data)
-    if not paths:
-        return []
+    """Build listing rows from vendor URL paths (same shape as browser ``__NEXT_DATA__`` extraction)."""
     now_utc = datetime.now(timezone.utc).isoformat()
     results: list[RestaurantRecord] = []
     for path in paths:
         url = normalize_talabat_url(path)
+        slug = talabat_listing_slug_from_url(url).strip().lower()
+        if slug in _NON_VENDOR_SLUGS:
+            continue
         path_slug = url.rstrip("/").split("/")[-1]
         name = path_slug.replace("-", " ").title() if path_slug else "Unnamed listing"
         sku = make_branch_sku(name=name, branch_name="", url=url, lat=sample_lat, lng=sample_lng)
@@ -609,6 +639,29 @@ async def extract_restaurants_from_next_data(
             )
         )
     return results
+
+
+async def extract_restaurants_from_next_data(
+    page,
+    pin_lat: float,
+    pin_lng: float,
+    radius_km: float,
+    sample_lat: float,
+    sample_lng: float,
+) -> list[RestaurantRecord]:
+    raw = await page.evaluate(
+        """() => {
+      const el = document.getElementById('__NEXT_DATA__');
+      return el ? el.textContent : null;
+    }"""
+    )
+    data = parse_next_data_script(raw or "")
+    if not data:
+        return []
+    paths = paths_from_next_data_json(data)
+    if not paths:
+        return []
+    return records_from_next_data_paths(paths, pin_lat, pin_lng, radius_km, sample_lat, sample_lng)
 
 
 def _merge_restaurant_rows_by_url(*batches: list[RestaurantRecord]) -> list[RestaurantRecord]:
@@ -1773,6 +1826,46 @@ def add_rating_and_order_rate_proxies(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+async def _fetch_restaurants_from_listing_http(
+    pin_lat: float,
+    pin_lng: float,
+    radius_km: float,
+    sample_lat: float,
+    sample_lng: float,
+    *,
+    listing_cuisine_sweep: bool,
+) -> list[RestaurantRecord]:
+    """
+    Fast Talabat listing path: pull ``__NEXT_DATA__`` from public listing HTML.
+
+    Talabat's ``/api/v2/restaurants`` JSON endpoint often returns 404; the consumer site still embeds
+    vendor URLs in Next.js payload, which we parse without a browser.
+    """
+
+    def _run() -> list[RestaurantRecord]:
+        urls = capped_listing_urls(listing_cuisine_sweep)
+        max_pages = max(1, int(os.getenv("SCRAPER_HTTP_LISTING_PAGES", "12")))
+        max_paths = max(40, int(os.getenv("SCRAPER_HTTP_LISTING_MAX_PATHS", "500")))
+        ordered_paths: list[str] = []
+        seen_norm: set[str] = set()
+        for listing_url in urls[:max_pages]:
+            for p in _next_data_vendor_paths_from_html_fetch(listing_url):
+                nu = normalize_talabat_url(p).split("?")[0].rstrip("/").lower()
+                if nu in seen_norm:
+                    continue
+                seen_norm.add(nu)
+                ordered_paths.append(p)
+                if len(ordered_paths) >= max_paths:
+                    break
+            if len(ordered_paths) >= max_paths:
+                break
+        return records_from_next_data_paths(
+            ordered_paths, pin_lat, pin_lng, radius_km, sample_lat, sample_lng
+        )
+
+    return await asyncio.to_thread(_run)
+
+
 async def scrape_one_point(
     browser,
     pin_lat: float,
@@ -1794,6 +1887,22 @@ async def scrape_one_point(
     api_rows = await _fetch_restaurants_from_internal_api(pin_lat, pin_lng, sample_lat, sample_lng)
     if api_rows:
         return api_rows
+    http_rows = await _fetch_restaurants_from_listing_http(
+        pin_lat,
+        pin_lng,
+        radius_km,
+        sample_lat,
+        sample_lng,
+        listing_cuisine_sweep=listing_cuisine_sweep,
+    )
+    if http_rows:
+        logger.info(
+            "talabat_listing_http_next_data sample=(%.5f,%.5f) rows=%s",
+            sample_lat,
+            sample_lng,
+            len(http_rows),
+        )
+        return http_rows
 
     context = None
     page = None
@@ -1828,8 +1937,8 @@ async def scrape_one_point(
             pass
         return []
     listing_urls = capped_listing_urls(listing_cuisine_sweep)
-    # On constrained hosts, keep fallback browser sweep short.
-    listing_urls = listing_urls[: max(1, int(os.getenv("SCRAPER_FALLBACK_LISTING_URLS", "2")))]
+    # On constrained hosts, cap how many hub pages Playwright opens (HTTP path above usually fills rows first).
+    listing_urls = listing_urls[: max(1, int(os.getenv("SCRAPER_FALLBACK_LISTING_URLS", "8")))]
     allow_fast = _listing_fast_path_enabled() and not listing_cuisine_sweep and not paginate_listings
     merged_all: list[RestaurantRecord] = []
     strict = _env_truthy(os.getenv("SCRAPER_STRICT_LISTING_ERRORS"))
@@ -1973,19 +2082,6 @@ def _map_api_item_to_record(
     sample_lat: float,
     sample_lng: float,
 ) -> RestaurantRecord | None:
-    def _is_non_vendor_slug(slug: str) -> bool:
-        bad = {
-            "city",
-            "cities",
-            "cuisine",
-            "cuisines",
-            "all-areas",
-            "areas",
-            "restaurants",
-            "restaurant",
-        }
-        return slug in bad
-
     rid = str(item.get("id") or item.get("restaurantId") or item.get("uuid") or "").strip()
     name = str(item.get("name") or item.get("title") or "").strip()
     if not name and not rid:
@@ -2028,7 +2124,7 @@ def _map_api_item_to_record(
         slugish = (name or rid or "listing").strip().lower().replace(" ", "-")
         url = f"https://www.talabat.com/restaurant/{slugish}"
     slug = talabat_listing_slug_from_url(url).strip().lower()
-    if _is_non_vendor_slug(slug):
+    if slug in _NON_VENDOR_SLUGS:
         return None
 
     now_utc = datetime.now(timezone.utc).isoformat()
@@ -2130,6 +2226,11 @@ async def _fetch_restaurants_from_internal_api(
                 timeout=20,
             )
             if r.status_code >= 400:
+                if offset == 0:
+                    logger.info(
+                        "talabat_listing_api_http=%s (HTML __NEXT_DATA__ fetch or Playwright will be used)",
+                        r.status_code,
+                    )
                 break
             data = r.json() if r.content else {}
             items = _extract_restaurant_items(data)
