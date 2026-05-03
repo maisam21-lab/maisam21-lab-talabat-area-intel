@@ -45,6 +45,8 @@ services:
     restart: unless-stopped
     environment:
       API_BASE_URL: http://api:8000
+      # Shown in the UI “Build:” banner; override in .env e.g. APP_BUILD_STAMP=$(git rev-parse --short HEAD)
+      APP_BUILD_STAMP: ${APP_BUILD_STAMP:-2026-05-03-vm-docker-compose}
       STREAMLIT_SERVER_HEADLESS: "true"
       STREAMLIT_SERVER_ENABLE_CORS: "false"
       STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION: "false"
@@ -67,6 +69,9 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./deploy/ssl:/etc/nginx/ssl:ro
+      - ./deploy/nginx.optional_site_auth.conf:/etc/nginx/snippets/optional_site_auth.conf:ro
+      # Optional UI/API browser password (after creating deploy/.htpasswd — see that file’s header):
+      # - ./deploy/.htpasswd:/etc/nginx/.htpasswd:ro
     depends_on:
       - streamlit
       - api
