@@ -421,12 +421,12 @@ def _folium_click_latlng(folium_out: dict | None) -> tuple[float, float] | None:
                 raw_lng = lc.get("lon")
             if raw_lng is not None:
                 try:
-                    return float(lc["lat"]), float(raw_lng)
+                    return float(str(lc["lat"]).strip()), float(str(raw_lng).strip())
                 except (TypeError, ValueError):
                     pass
         if isinstance(lc, (list, tuple)) and len(lc) >= 2:
             try:
-                return float(lc[0]), float(lc[1])
+                return float(str(lc[0]).strip()), float(str(lc[1]).strip())
             except (TypeError, ValueError):
                 pass
     ob = out.get("last_object_clicked")
@@ -474,7 +474,8 @@ def render_pin_map(
 
     basemap = _configure_map_basemaps(fmap)
 
-    area = folium.FeatureGroup(name="Search area").add_to(fmap)
+    # Non-interactive group so clicks reach the basemap (Leaflet passes events to the map).
+    area = folium.FeatureGroup(name="Search area", interactive=False).add_to(fmap)
 
     folium.Circle(
         location=[lat, lng],
@@ -568,14 +569,26 @@ def render_pin_map(
             "or keep **Place names overlay** on. Layer control: top-right. "
             "Click the **map background** to move the pin."
         )
+    # ``returned_objects=None`` returns full interaction dict — some streamlit-folium / tile setups
+    # omit ``last_clicked`` when the list is too narrow, which makes map clicks look dead.
+    _map_zoom = int(st.session_state.get("_pin_map_zoom_ui", 12))
+    _map_zoom = max(3, min(19, _map_zoom))
     out = st_folium(
         fmap,
         height=520,
         use_container_width=True,
-        returned_objects=["last_clicked", "last_object_clicked", "center"],
+        returned_objects=None,
+        center=(lat, lng),
+        zoom=_map_zoom,
         key="talabat_pin_map",
     )
     out = dict(out or {})
+    z = out.get("zoom")
+    if z is not None:
+        try:
+            st.session_state["_pin_map_zoom_ui"] = max(3, min(19, int(z)))
+        except (TypeError, ValueError):
+            pass
     return out
 
 
@@ -1372,6 +1385,9 @@ def main() -> None:
         )
     st.session_state[lat_internal_key] = float(run_lat)
     st.session_state[lng_internal_key] = float(run_lng)
+    # Typing new lat/lng must reset map dedupe so the next click (even near the same coords) applies.
+    if abs(float(run_lat) - float(loc_ui["lat"])) > 1e-9 or abs(float(run_lng) - float(loc_ui["lng"])) > 1e-9:
+        st.session_state["runpin_last_click_sig"] = ""
     set_scrape_location(
         float(run_lat),
         float(run_lng),
