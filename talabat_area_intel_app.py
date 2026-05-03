@@ -49,7 +49,7 @@ from uae_cities import UAE_CITY_DISPLAY, UAE_CITY_PRESETS
 
 DEFAULT_PIN = (25.2048, 55.2708)
 
-# More grid points + deeper scroll = more listing URLs merged (slower; watch SCRAPER_WALL_CLOCK_SEC on Render).
+# More grid points + deeper scroll = more listing URLs merged (slower; watch SCRAPER_WALL_CLOCK_SEC on the API host).
 _DEFAULT_MAX_SAMPLE_POINTS = 6
 _DEFAULT_SPACING_KM = 1.8
 _DEFAULT_SCROLL_ROUNDS = 6
@@ -62,10 +62,26 @@ _CITY_SLUGS = ["dubai", "sharjah", "abudhabi", "alain", "ajman"]
 _SCRAPE_DEDUPE_BY_VENDOR_URL = False
 _SCRAPE_HIGH_VOLUME = True
 _SCRAPE_MAX_SAMPLE_POINTS = 6
+# Default max time for /result polling when the payload does not set scrape_wall_clock_sec.
 _SCRAPE_CLIENT_TIMEOUT_SEC = 1300
 # POST /scrape only enqueues ({request_id, queued}); polling uses /result. Use (connect, read) timeouts because
 # Streamlit Cloud → raw ``http://`` IP can stall on **connect** (read-only bump does not help).
 _SCRAPE_POST_TIMEOUT_SEC = float(os.getenv("SCRAPER_API_POST_TIMEOUT_SEC", "600"))
+
+
+def _scrape_poll_budget_sec_for_payload(payload: dict) -> float:
+    """Upper bound for /result polling; must exceed API scrape_wall_clock_sec when the client sends it."""
+    wall = int((payload or {}).get("scrape_wall_clock_sec") or 0)
+    budget = float(_SCRAPE_CLIENT_TIMEOUT_SEC)
+    if wall > 0:
+        budget = max(budget, float(wall) + 180.0)
+    try:
+        raw_pb = str(st.secrets.get("SCRAPER_POLL_TOTAL_TIMEOUT_SEC", "")).strip()
+        if raw_pb:
+            budget = max(300.0, min(float(raw_pb), 10800.0))
+    except Exception:
+        pass
+    return min(budget, 10800.0)
 
 _SCRAPE_PROFILES: dict[str, dict] = {
     # Quick baseline in constrained hosting.
@@ -1335,7 +1351,8 @@ def main() -> None:
         "Scrape wall-clock is controlled by the API service environment. "
         "If you see **client read-timeout** on enqueue, Streamlit Cloud may be slow to open TCP to a raw http IP — "
         'in Secrets add SCRAPER_API_POST_TIMEOUT_SEC = "900", or put HTTPS (Caddy) in front of the API and use '
-        "https in API_BASE_URL."
+        "https in API_BASE_URL. For long Worker runs, poll time follows `scrape_wall_clock_sec`; override with "
+        'SCRAPER_POLL_TOTAL_TIMEOUT_SEC = "3600" if needed.'
     )
     pinned_count = "one"
     use_two_pinned = False
@@ -1424,13 +1441,14 @@ def main() -> None:
         _wall = profile_cfg.get("scrape_wall_clock_sec")
         if _wall is not None:
             base_payload["scrape_wall_clock_sec"] = int(_wall)
+        _dual_poll_budget = _scrape_poll_budget_sec_for_payload(base_payload)
         with st.spinner("Dual-area scrape: running pin A, then pin B..."):
             dual_df, dual_errors = run_dual_area_scrape_via_api(
                 api_base_url=api_base_url,
                 headers=headers,
                 locations_df=dual_area_df,
                 base_payload=base_payload,
-                timeout_sec=_SCRAPE_CLIENT_TIMEOUT_SEC,
+                timeout_sec=_dual_poll_budget,
             )
         dual_df = ensure_just_landed_columns(dual_df)
         stop_event.set()
@@ -1533,6 +1551,7 @@ def main() -> None:
                     payload["city"] = None
                 if not target_area_label.strip() and is_city_mode:
                     payload["scrape_target_label"] = UAE_CITY_DISPLAY.get(city_key, city_key)
+                _poll_budget_sec = _scrape_poll_budget_sec_for_payload(payload)
                 try:
                     fallback_notes: list[str] = []
                     request_id = uuid.uuid4().hex
@@ -1561,10 +1580,10 @@ def main() -> None:
                         try:
                             raw = str(st.secrets.get("SCRAPER_API_POST_TIMEOUT_SEC", "")).strip()
                             if raw:
-                                return max(120.0, min(float(raw), float(_SCRAPE_CLIENT_TIMEOUT_SEC)))
+                                return max(120.0, min(float(raw), float(_poll_budget_sec)))
                         except Exception:
                             pass
-                        return max(120.0, min(float(_SCRAPE_POST_TIMEOUT_SEC), float(_SCRAPE_CLIENT_TIMEOUT_SEC)))
+                        return max(120.0, min(float(_SCRAPE_POST_TIMEOUT_SEC), float(_poll_budget_sec)))
 
                     _read_t = _enqueue_read_timeout_sec()
                     _connect_t = min(60.0, _read_t)
@@ -1590,7 +1609,7 @@ def main() -> None:
                             ).strip()
                             if not rid:
                                 raise RuntimeError("Missing request_id from /scrape enqueue response")
-                            result_data = _poll_result(rid)
+                            result_data = _poll_result(rid, total_timeout_sec=_poll_budget_sec)
                             return 200, result_data
                         except requests.exceptions.ReadTimeout:
                             status_box.warning(timeout_msg)
@@ -1662,7 +1681,7 @@ def main() -> None:
                                     or em_enqueue.headers.get("X-Request-ID")
                                     or api_request_id
                                 ).strip()
-                                em_data = _poll_result(em_rid)
+                                em_data = _poll_result(em_rid, total_timeout_sec=_poll_budget_sec)
                             em_df = pd.DataFrame(em_data.get("records", []))
                             em_df = ensure_just_landed_columns(em_df)
                             if not em_df.empty:
@@ -1777,7 +1796,7 @@ def main() -> None:
         if st.session_state.get("last_run_done"):
             st.warning(
                 "**No restaurants extracted.** Try radius **10 km**, status **all** (temporarily), Just Landed **off**, then run again. "
-                "If it still returns zero rows, open Render → API service → **Logs** for the failing `/scrape` call."
+                "If it still returns zero rows, check the API host logs (e.g. VPS: `docker compose … logs` for the `/scrape` request)."
             )
         else:
             st.info("No results yet. Set pin and click Start Scraping.")
@@ -1818,7 +1837,7 @@ def main() -> None:
         st.warning(
             f"**Last Talabat scrape returned 0 restaurants.** Showing **{len(df):,} Google Places** near your pin "
             "(coverage API: hotels, chains, POIs). These rows are **not** Talabat listings, vendor URLs, or order data. "
-            "Use Render → API **Logs** for `/scrape`, try radius **10 km**, status **all**, and confirm the response includes `records`."
+            "Use API host **Logs** for `/scrape` (VPS: `docker compose` logs), try radius **10 km**, status **all**, and confirm the response includes `records`."
         )
     else:
         st.success(
@@ -1854,7 +1873,7 @@ def main() -> None:
             st.info(
                 "**Nothing in this table comes from Talabat listings** — it is **Google coverage only** "
                 "(nearby Places). Talabat rows always include a **`restaurant_url`** on `talabat.com`. "
-                "The last `/scrape` returned **0** listing `records`; use API **Logs** on Render and re-run after fixing scrape errors or filters."
+                "The last `/scrape` returned **0** listing `records`; use API **Logs** on the host (VPS / `docker compose`) and re-run after fixing scrape errors or filters."
             )
         st.dataframe(view_df, width="stretch", height=460)
         excel_df = build_excel_export_df(view_df)
