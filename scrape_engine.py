@@ -1915,6 +1915,22 @@ def add_rating_and_order_rate_proxies(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _listing_seed_hub_urls(grid_high_volume: bool) -> list[str]:
+    """
+    Hub URLs used only for HTTP + Playwright listing seeds.
+
+    When the Streamlit client hits timeouts it disables ``high_volume``; ``capped_listing_urls(False)``
+    would otherwise expose only two hubs. By default we still sweep the main cuisine hubs for seeds
+    while leaving the per-grid-point behaviour controlled by ``grid_high_volume``.
+    """
+    if _env_truthy(os.getenv("SCRAPER_LISTING_SEED_FULL_HUBS", "1")):
+        raw = capped_listing_urls(True)
+    else:
+        raw = capped_listing_urls(grid_high_volume)
+    cap = max(2, int(os.getenv("SCRAPER_LISTING_SEED_MAX_HUB_URLS", "16")))
+    return raw[: min(cap, len(raw))]
+
+
 async def _fetch_restaurants_from_listing_http(
     pin_lat: float,
     pin_lng: float,
@@ -1932,7 +1948,7 @@ async def _fetch_restaurants_from_listing_http(
     """
 
     def _run() -> list[RestaurantRecord]:
-        urls = capped_listing_urls(listing_cuisine_sweep)
+        urls = _listing_seed_hub_urls(listing_cuisine_sweep)
         max_pages = max(1, int(os.getenv("SCRAPER_HTTP_LISTING_PAGES", "12")))
         max_paths = max(120, int(os.getenv("SCRAPER_HTTP_LISTING_MAX_PATHS", "900")))
         ordered_paths: list[str] = []
@@ -1953,6 +1969,88 @@ async def _fetch_restaurants_from_listing_http(
         )
 
     return await asyncio.to_thread(_run)
+
+
+async def _playwright_listing_seed_records(
+    browser,
+    pin_lat: float,
+    pin_lng: float,
+    radius_km: float,
+    listing_hub_urls: list[str],
+    *,
+    scroll_rounds: int,
+    scroll_wait_ms: int,
+) -> list[RestaurantRecord]:
+    """
+    Single-browser pass over listing hub URLs: DOM extraction (anchors/cards/__NEXT_DATA__) plus
+    HTML vendor paths after scroll — mirrors ``scrape_one_point`` listing logic without depending on
+    a cold ``requests`` HTML body.
+    """
+    if not listing_hub_urls:
+        return []
+    rounds = max(
+        scroll_rounds,
+        max(4, int(os.getenv("SCRAPER_PLAYWRIGHT_SEED_SCROLL_ROUNDS_MIN", "8"))),
+    )
+    wait_ms = max(400, scroll_wait_ms)
+    max_paths = max(
+        120,
+        int(os.getenv("SCRAPER_PLAYWRIGHT_SEED_MAX_PATHS", os.getenv("SCRAPER_HTTP_LISTING_MAX_PATHS", "900"))),
+    )
+    goto_until = _listing_goto_wait_until()
+    post_nav_ms = _post_navigation_wait_ms()
+    acc: list[RestaurantRecord] = []
+
+    for listing_url in listing_hub_urls:
+        context = None
+        page = None
+        try:
+            try:
+                if hasattr(browser, "is_connected") and not browser.is_connected():
+                    logger.warning("playwright_listing_seed_browser_disconnected url=%s", listing_url)
+                    break
+            except Exception:
+                break
+            context = await browser.new_context(**_listing_browser_context_kwargs(pin_lat, pin_lng))
+            page = await context.new_page()
+            await page.goto(listing_url, wait_until=goto_until, timeout=60000)
+            await page.wait_for_timeout(post_nav_ms)
+            await dismiss_common_overlays(page)
+            rows_pre = await extract_restaurants(page, pin_lat, pin_lng, radius_km, pin_lat, pin_lng)
+            await auto_scroll(page, rounds=rounds, wait_ms=wait_ms)
+            await page.wait_for_timeout(min(2500, post_nav_ms + 500))
+            rows_post = await extract_restaurants(page, pin_lat, pin_lng, radius_km, pin_lat, pin_lng)
+            paths = _vendor_urls_from_listing_html((await page.content()) or "")
+            if len(paths) > max_paths:
+                paths = paths[:max_paths]
+            path_recs = records_from_next_data_paths(
+                paths, pin_lat, pin_lng, radius_km, pin_lat, pin_lng
+            )
+            dom_union = _union_listing_batches(rows_pre, rows_post)
+            hub_rows = _merge_restaurant_rows_by_url(dom_union, path_recs)
+            acc = _merge_restaurant_rows_by_url(acc, hub_rows)
+            logger.info(
+                "playwright_listing_seed_hub url=%s dom_union=%s path_recs=%s hub_rows=%s acc_rows=%s",
+                listing_url,
+                len(dom_union),
+                len(path_recs),
+                len(hub_rows),
+                len(acc),
+            )
+        except TargetClosedError:
+            logger.warning("playwright_listing_seed_target_closed url=%s", listing_url)
+            break
+        except Exception as exc:
+            logger.warning("playwright_listing_seed_hub_failed url=%s err=%s", listing_url, exc)
+        finally:
+            with suppress(Exception):
+                if page is not None:
+                    await page.close()
+            with suppress(Exception):
+                if context is not None:
+                    await context.close()
+
+    return acc
 
 
 async def scrape_one_point(
@@ -2552,10 +2650,14 @@ async def run_area_scrape(
             logger.info("talabat_http_seed_rows=%s grid_pts=%s", len(http_seed), len(points))
             if meta_out is not None:
                 meta_out["http_listing_seed_rows"] = int(len(http_seed))
-            if not http_seed:
+                _hp = max(1, int(os.getenv("SCRAPER_HTTP_LISTING_PAGES", "12")))
+                meta_out["listing_seed_hub_urls_http"] = _listing_seed_hub_urls(hv)[:_hp]
+            pw_seed_enabled = _env_truthy(os.getenv("SCRAPER_PLAYWRIGHT_LISTING_SEED", "1"))
+            if not http_seed and not pw_seed_enabled:
                 logger.warning(
                     "talabat_http_seed_empty pin=(%.5f,%.5f) — no vendor URLs from listing HTML "
-                    "(datacenter block or empty shell). Check Render logs; try SCRAPER_HTTP_LISTING_PAGES.",
+                    "(datacenter block or empty shell). Playwright listing seed is disabled; "
+                    "enable SCRAPER_PLAYWRIGHT_LISTING_SEED or raise SCRAPER_HTTP_LISTING_PAGES.",
                     pin_lat,
                     pin_lng,
                 )
@@ -2576,6 +2678,55 @@ async def run_area_scrape(
                     headless=True,
                     args=CHROMIUM_LAUNCH_ARGS,
                 )
+
+            seed_browser = None
+            if _env_truthy(os.getenv("SCRAPER_PLAYWRIGHT_LISTING_SEED", "1")):
+                last_step = "playwright_listing_seed"
+                if meta_out is not None:
+                    meta_out["last_completed_step"] = last_step
+                try:
+                    seed_browser = await launch_browser_instance()
+                    seed_url_cap = max(1, int(os.getenv("SCRAPER_PLAYWRIGHT_SEED_URLS", "8")))
+                    hub_urls = _listing_seed_hub_urls(hv)[:seed_url_cap]
+                    if meta_out is not None:
+                        meta_out["listing_seed_hub_urls_used"] = list(hub_urls)[:24]
+                        meta_out["listing_seed_full_hubs"] = _env_truthy(
+                            os.getenv("SCRAPER_LISTING_SEED_FULL_HUBS", "1")
+                        )
+                    pw_seed_rows = await _playwright_listing_seed_records(
+                        seed_browser,
+                        pin_lat,
+                        pin_lng,
+                        radius_km,
+                        hub_urls,
+                        scroll_rounds=scroll_rounds,
+                        scroll_wait_ms=scroll_wait_ms,
+                    )
+                    http_seed = _merge_restaurant_rows_by_url(http_seed, pw_seed_rows)
+                    logger.info(
+                        "talabat_playwright_seed_rows=%s listing_seed_total=%s",
+                        len(pw_seed_rows),
+                        len(http_seed),
+                    )
+                    if meta_out is not None:
+                        meta_out["playwright_listing_seed_rows"] = int(len(pw_seed_rows))
+                        meta_out["listing_seed_rows_total"] = int(len(http_seed))
+                    if not http_seed:
+                        logger.warning(
+                            "talabat_listing_seed_empty pin=(%.5f,%.5f) — HTTP + Playwright hub seed "
+                            "found no vendor URLs (block, geo, or DOM change). Check Render logs.",
+                            pin_lat,
+                            pin_lng,
+                        )
+                except Exception as exc:
+                    logger.warning("playwright_listing_seed_failed err=%s", exc)
+                    if meta_out is not None:
+                        meta_out["playwright_listing_seed_error"] = str(exc)[:500]
+                finally:
+                    if seed_browser is not None:
+                        with suppress(Exception):
+                            await seed_browser.close()
+                        seed_browser = None
 
             async def get_or_restart_browser(current_browser=None):
                 try:
@@ -2748,13 +2899,17 @@ async def run_area_scrape(
                 if meta_out is not None:
                     meta_out["last_completed_step"] = last_step
                 browser = await get_or_restart_browser(browser)
-                # Emergency hotfix: disable vendor enrichment call so listing rows return immediately.
-                # await enrich_vendor_detail_pages(
-                #     browser,
-                #     records,
-                #     max_urls=enrich_max,
-                #     restart_browser_cb=get_or_restart_browser,
-                # )
+                if _env_truthy(os.getenv("SCRAPER_VENDOR_PAGE_ENRICH", "0")):
+                    await enrich_vendor_detail_pages(
+                        browser,
+                        records,
+                        max_urls=enrich_max,
+                        restart_browser_cb=get_or_restart_browser,
+                    )
+                else:
+                    logger.info(
+                        "vendor_page_enrich_skipped set SCRAPER_VENDOR_PAGE_ENRICH=1 for Playwright vendor detail fill"
+                    )
                 if meta_out is not None:
                     meta_out["last_completed_step"] = "enrichment_done"
                 await browser.close()

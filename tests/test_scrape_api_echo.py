@@ -1,4 +1,4 @@
-"""API /scrape must always echo location debug fields in scrape_run_meta."""
+"""API scrape execution must echo location debug fields in scrape_run_meta."""
 
 from __future__ import annotations
 
@@ -6,8 +6,6 @@ import unittest
 from unittest.mock import patch
 
 import pandas as pd
-from starlette.requests import Request
-
 import scraper_api
 
 
@@ -36,10 +34,8 @@ class TestScrapeApiEcho(unittest.IsolatedAsyncioTestCase):
             client_asserted_pin_lat=25.2048,
             client_asserted_pin_lng=55.2708,
         )
-        request = Request({"type": "http", "headers": []})
-        request.state.request_id = "test-rid-123"
         with patch.object(scraper_api, "run_area_scrape", side_effect=fake_run_area_scrape):
-            out = await scraper_api.scrape(req, request=request, x_api_key=None)
+            out = await scraper_api._execute_scrape(req, request_id="test-rid-123")
 
         meta = out.get("scrape_run_meta") or {}
         required = {

@@ -1,0 +1,10 @@
+# TLS reverse proxy in front of the scraper API (recommended for multi-user Streamlit).
+# 1. Point DNS api.yourdomain.com to this VPS.
+# 2. Install Caddy on the host: https://caddyserver.com/docs/install
+# 3. Copy this file to /etc/caddy/Caddyfile (adjust domain + API key header if you terminate TLS elsewhere).
+#
+# The API listens on 127.0.0.1:8000 from docker-compose.worker.yml (do not publish 8000 publicly if using Caddy).
+
+api.example.com {
+	reverse_proxy 127.0.0.1:8000
+}

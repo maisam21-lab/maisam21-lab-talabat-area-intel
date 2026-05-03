@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import pandas as pd
 import requests
 import time
+
+_POST_TIMEOUT_CAP = float(os.getenv("SCRAPER_API_POST_TIMEOUT_SEC", "180"))
 
 
 def _poll_result(
@@ -63,7 +66,7 @@ def run_dual_area_scrape_via_api(
                 f"{api_base_url.rstrip('/')}/scrape",
                 json=payload,
                 headers=req_headers,
-                timeout=min(float(timeout_sec), 60.0),
+                timeout=min(float(timeout_sec), _POST_TIMEOUT_CAP),
             )
             if r.status_code >= 400:
                 request_errors.append(f"Location {i+1}: HTTP {r.status_code}")

@@ -80,6 +80,10 @@ When `GOOGLE_MAPS_API_KEY` is present in **Streamlit** secrets (or the process e
 
 The frontend sends scrape and geocode requests to Render and then displays/downloads results.
 
+### VPS worker (better Talabat egress for all users)
+
+If Render/datacenter IPs return **empty Talabat** listings, run the same `Dockerfile.api` on a **small Linux VPS** with the worker env file and point Streamlit `API_BASE_URL` at it. Step-by-step: **[DEPLOY_VPS_WORKER.md](DEPLOY_VPS_WORKER.md)** (`docker-compose.worker.yml`, `env.worker.example`, `scripts/run_worker_docker.sh`).
+
 ## API payload example
 
 ```json

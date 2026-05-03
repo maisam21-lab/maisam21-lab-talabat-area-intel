@@ -63,6 +63,9 @@ _SCRAPE_DEDUPE_BY_VENDOR_URL = False
 _SCRAPE_HIGH_VOLUME = True
 _SCRAPE_MAX_SAMPLE_POINTS = 6
 _SCRAPE_CLIENT_TIMEOUT_SEC = 1300
+# POST /scrape only enqueues ({request_id, queued}); polling uses /result. A 60s cap here caused false
+# ``ReadTimeout`` during Render cold start / slow TLS from Streamlit Cloud → API.
+_SCRAPE_POST_TIMEOUT_SEC = float(os.getenv("SCRAPER_API_POST_TIMEOUT_SEC", "180"))
 
 _SCRAPE_PROFILES: dict[str, dict] = {
     # Quick baseline in constrained hosting.
@@ -72,6 +75,7 @@ _SCRAPE_PROFILES: dict[str, dict] = {
         "scroll_rounds": 6,
         "scroll_wait_ms": 500,
         "google_places_enrich": True,
+        "enrich": False,
     },
     # Better coverage with moderate runtime.
     "Balanced": {
@@ -80,14 +84,26 @@ _SCRAPE_PROFILES: dict[str, dict] = {
         "scroll_rounds": 6,
         "scroll_wait_ms": 500,
         "google_places_enrich": True,
+        "enrich": False,
     },
-    # Highest completeness; slower and more timeout-prone.
+    # Highest listing coverage on shared hosts; vendor Playwright enrich stays off unless API sets SCRAPER_VENDOR_PAGE_ENRICH.
     "Complete": {
         "high_volume": True,
         "max_sample_points": 20,
         "scroll_rounds": 6,
         "scroll_wait_ms": 500,
         "google_places_enrich": True,
+        "enrich": False,
+    },
+    # Dedicated worker: many grid points + vendor detail pages (requires API env SCRAPER_VENDOR_PAGE_ENRICH=1).
+    "Worker (vendor pages)": {
+        "high_volume": True,
+        "max_sample_points": 90,
+        "scroll_rounds": 8,
+        "scroll_wait_ms": 800,
+        "google_places_enrich": True,
+        "enrich": True,
+        "scrape_wall_clock_sec": 2400,
     },
 }
 _DEFAULT_SCRAPE_PROFILE = "Complete"
@@ -231,6 +247,14 @@ def init_state() -> None:
     st.session_state.setdefault("dual_map_next_slot", "A")
     st.session_state.setdefault("dual_last_click_sig", "")
     st.session_state.setdefault("runpin_last_click_sig", "")
+    st.session_state.setdefault("_last_successful_snapshot_pin", None)
+    st.session_state.setdefault("_last_successful_dual_snapshot", None)
+
+
+def _coords_tuple_close(a: tuple[float, ...] | None, b: tuple[float, ...] | None, tol: float = 1e-5) -> bool:
+    if not a or not b or len(a) != len(b):
+        return False
+    return all(abs(float(a[i]) - float(b[i])) <= tol for i in range(len(a)))
 
 
 def _bounds_for_radius(lat: float, lng: float, radius_km: float, pad: float = 1.15) -> tuple[list[float], list[float]]:
@@ -1115,7 +1139,12 @@ def main() -> None:
             help="When enabled, only vendors marked as newly launched are included.",
         )
         include_google_coverage = True
-        selected_profile_name = "Complete"
+        selected_profile_name = st.selectbox(
+            "Scrape profile",
+            options=list(_SCRAPE_PROFILES.keys()),
+            index=list(_SCRAPE_PROFILES.keys()).index("Complete"),
+            help="Use **Worker (vendor pages)** when the API runs on a dedicated VM with SCRAPER_VENDOR_PAGE_ENRICH=1 (Playwright per-vendor pages).",
+        )
         radius_pick = st.radio("2) Radius", options=[5, 10], horizontal=True, index=1)
         radius_km = float(radius_pick)
         target_area_label = st.text_input(
@@ -1175,7 +1204,7 @@ def main() -> None:
     st.session_state.setdefault(lat_internal_key, float(loc_ui["lat"]))
     st.session_state.setdefault(lng_internal_key, float(loc_ui["lng"]))
     source_now = str(loc_ui.get("source") or "")
-    if source_now in {"folium_click", "geocode", "city_preset", "init"}:
+    if source_now in {"folium_click", "geocode", "city_preset", "init", "manual_form"}:
         st.session_state[lat_internal_key] = float(loc_ui["lat"])
         st.session_state[lng_internal_key] = float(loc_ui["lng"])
     rp1, rp2 = st.columns(2)
@@ -1298,7 +1327,10 @@ def main() -> None:
     )
     st.caption(
         "Expected runtime is usually a few minutes, but can be longer on heavy areas. "
-        "Scrape wall-clock is controlled by the API service environment."
+        "Scrape wall-clock is controlled by the API service environment. "
+        "If the UI says **client read-timeout** on the first attempt, the API may be cold-starting "
+        "(first byte took longer than the enqueue HTTP timeout); a retry or higher "
+        "`SCRAPER_API_POST_TIMEOUT_SEC` on Streamlit fixes false positives."
     )
     pinned_count = "one"
     use_two_pinned = False
@@ -1380,10 +1412,13 @@ def main() -> None:
             "dedupe_by_vendor_url": _SCRAPE_DEDUPE_BY_VENDOR_URL,
             "high_volume": bool(profile_cfg["high_volume"]),
             "google_places_enrich": bool(profile_cfg["google_places_enrich"]),
-            "enrich": False,
+            "enrich": bool(profile_cfg.get("enrich", False)),
             "scrape_target_label": None,
             "city": None,
         }
+        _wall = profile_cfg.get("scrape_wall_clock_sec")
+        if _wall is not None:
+            base_payload["scrape_wall_clock_sec"] = int(_wall)
         with st.spinner("Dual-area scrape: running pin A, then pin B..."):
             dual_df, dual_errors = run_dual_area_scrape_via_api(
                 api_base_url=api_base_url,
@@ -1398,16 +1433,40 @@ def main() -> None:
         timer_box.success(f"Done in {elapsed // 60:02d}:{elapsed % 60:02d}")
         progress.progress(1.0)
         previous_success_df = st.session_state.get("last_successful_results_df", pd.DataFrame())
+        dual_snap_cur = (
+            float(st.session_state["dual_area_a_lat"]),
+            float(st.session_state["dual_area_a_lng"]),
+            float(st.session_state["dual_area_b_lat"]),
+            float(st.session_state["dual_area_b_lng"]),
+        )
+        prev_dual_snap = st.session_state.get("_last_successful_dual_snapshot")
+        dual_snap_ok = _coords_tuple_close(prev_dual_snap, dual_snap_cur)
         if dual_df is not None and not dual_df.empty:
             st.session_state["results_df"] = dual_df
             st.session_state["last_successful_results_df"] = dual_df
+            st.session_state["_last_successful_dual_snapshot"] = dual_snap_cur
             st.session_state["last_run_returned_zero"] = False
-        elif previous_success_df is not None and not previous_success_df.empty:
+        elif (
+            dual_snap_ok
+            and previous_success_df is not None
+            and not previous_success_df.empty
+        ):
             st.session_state["results_df"] = previous_success_df
             st.session_state["last_run_returned_zero"] = True
         else:
-            st.session_state["results_df"] = dual_df
+            st.session_state["results_df"] = dual_df if dual_df is not None else pd.DataFrame()
             st.session_state["last_run_returned_zero"] = True
+            if (
+                dual_df is not None
+                and dual_df.empty
+                and previous_success_df is not None
+                and not previous_success_df.empty
+                and not dual_snap_ok
+            ):
+                st.info(
+                    "Dual-area scrape returned 0 rows — **not** showing results from a previous A/B pin pair. "
+                    "Adjust pins and run again."
+                )
         st.session_state["google_coverage_df"] = pd.DataFrame()
         st.session_state["last_run_done"] = True
         st.session_state["results_fingerprint"] = current_fingerprint
@@ -1453,13 +1512,16 @@ def main() -> None:
                     "dedupe_by_vendor_url": _SCRAPE_DEDUPE_BY_VENDOR_URL,
                     "high_volume": bool(profile_cfg["high_volume"]),
                     "google_places_enrich": bool(profile_cfg["google_places_enrich"]),
-                    "enrich": False,
+                    "enrich": bool(profile_cfg.get("enrich", False)),
                     "scrape_target_label": target_area_label.strip() or None,
                     "pin_lat": float(loc_req["lat"]),
                     "pin_lng": float(loc_req["lng"]),
                     "client_asserted_pin_lat": float(loc_req["lat"]),
                     "client_asserted_pin_lng": float(loc_req["lng"]),
                 }
+                _wall_single = profile_cfg.get("scrape_wall_clock_sec")
+                if _wall_single is not None:
+                    payload["scrape_wall_clock_sec"] = int(_wall_single)
                 if is_city_mode:
                     payload["city"] = city_key
                 else:
@@ -1496,7 +1558,7 @@ def main() -> None:
                                 f"{api_base_url.rstrip('/')}/scrape",
                                 json=req_payload,
                                 headers=req_headers,
-                                timeout=min(float(_SCRAPE_CLIENT_TIMEOUT_SEC), 60.0),
+                                timeout=min(float(_SCRAPE_CLIENT_TIMEOUT_SEC), float(_SCRAPE_POST_TIMEOUT_SEC)),
                             )
                             if enqueue_resp.status_code >= 400:
                                 return int(enqueue_resp.status_code), {}
@@ -1570,7 +1632,7 @@ def main() -> None:
                             f"{api_base_url.rstrip('/')}/scrape",
                             json=emergency_payload,
                             headers=req_headers,
-                            timeout=min(float(_SCRAPE_CLIENT_TIMEOUT_SEC), 60.0),
+                            timeout=min(float(_SCRAPE_CLIENT_TIMEOUT_SEC), float(_SCRAPE_POST_TIMEOUT_SEC)),
                         )
                         if em_enqueue.status_code < 400:
                             em_enqueue_data = em_enqueue.json() if em_enqueue.content else {}
@@ -1631,16 +1693,35 @@ def main() -> None:
                     st.session_state["google_coverage_df"] = pd.DataFrame()
 
                 previous_success_df = st.session_state.get("last_successful_results_df", pd.DataFrame())
+                cur_pin = (float(loc_req["lat"]), float(loc_req["lng"]))
+                snap_pin = st.session_state.get("_last_successful_snapshot_pin")
+                pin_snap_ok = _coords_tuple_close(snap_pin, cur_pin)
                 if df is not None and not df.empty:
                     st.session_state["results_df"] = df
                     st.session_state["last_successful_results_df"] = df
+                    st.session_state["_last_successful_snapshot_pin"] = cur_pin
                     st.session_state["last_run_returned_zero"] = False
-                elif previous_success_df is not None and not previous_success_df.empty:
+                elif (
+                    pin_snap_ok
+                    and previous_success_df is not None
+                    and not previous_success_df.empty
+                ):
                     st.session_state["results_df"] = previous_success_df
                     st.session_state["last_run_returned_zero"] = True
                 else:
-                    st.session_state["results_df"] = df
+                    st.session_state["results_df"] = df if df is not None else pd.DataFrame()
                     st.session_state["last_run_returned_zero"] = True
+                    if (
+                        (df is None or df.empty)
+                        and previous_success_df is not None
+                        and not previous_success_df.empty
+                        and not pin_snap_ok
+                    ):
+                        st.info(
+                            "This scrape returned **0 Talabat rows** — the map pin differs from your last successful run, "
+                            "so the app will **not** show another location's table. "
+                            "Use Google coverage (if on) or fix the scrape, then try again."
+                        )
                 st.session_state["last_run_done"] = True
                 st.session_state["results_fingerprint"] = current_fingerprint
         stop_event.set()
@@ -1649,9 +1730,16 @@ def main() -> None:
 
     df = st.session_state.get("results_df", pd.DataFrame())
     if st.session_state.get("last_run_returned_zero", False):
-        st.warning(
-            "Latest scrape returned 0 rows. Showing your last successful results so the table stays available."
-        )
+        _zr = st.session_state.get("results_df", pd.DataFrame())
+        if _zr is not None and not _zr.empty:
+            st.warning(
+                "Latest scrape returned **0 Talabat rows** at this pin. The table below is still your **last successful** "
+                "scrape at the **same** coordinates (cached until a run returns data)."
+            )
+        else:
+            st.warning(
+                "Latest scrape returned **0 Talabat rows** for this pin. No cached table is shown (pin changed or no prior success)."
+            )
     if df is None or df.empty:
         gdf_fallback = st.session_state.get("google_coverage_df", pd.DataFrame())
         if isinstance(gdf_fallback, pd.DataFrame) and not gdf_fallback.empty:

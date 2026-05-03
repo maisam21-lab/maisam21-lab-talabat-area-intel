@@ -11,6 +11,7 @@ ENV/
 # Local env files
 .env
 .env.*
+env.worker.local
 
 # OS / editor
 .DS_Store

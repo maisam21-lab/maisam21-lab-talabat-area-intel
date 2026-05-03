@@ -173,6 +173,10 @@ NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _DEFAULT_NOMINATIM_UA = "TalabatAreaIntel/1.0 (+https://github.com/maisam21-lab/maisam21-lab-talabat-area-intel)"
 
 
+def _env_truthy(val: str | None) -> bool:
+    return (val or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
 def _nominatim_enabled() -> bool:
     return os.getenv("GEOCODE_FALLBACK_NOMINATIM", "1").strip().lower() not in ("0", "false", "no", "off")
 
@@ -255,6 +259,7 @@ def scrape_config(x_api_key: str | None = Header(default=None)) -> dict:
         "scraper_listing_page_pagination": os.getenv("SCRAPER_LISTING_PAGE_PAGINATION", "0").strip(),
         "scraper_listing_max_pages": int(os.getenv("SCRAPER_LISTING_MAX_PAGES", "25")),
         "listing_harvest_response_max_urls": int(os.getenv("LISTING_HARVEST_RESPONSE_MAX_URLS", "2500")),
+        "scraper_vendor_page_enrich": _env_truthy(os.getenv("SCRAPER_VENDOR_PAGE_ENRICH", "0")),
     }
 
 
