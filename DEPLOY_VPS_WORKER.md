@@ -162,19 +162,9 @@ You should see JSON including `"ok": true` and `"scraper_vendor_page_enrich": tr
 
 ---
 
-## Part D — HTTPS (optional, recommended later)
+## Part D — HTTPS (recommended for Streamlit Cloud)
 
-1. Point a DNS name (e.g. `api.yourdomain.com`) **A record** to the server IPv4.
-2. Install **Caddy** on the host and use `deploy/Caddyfile.example` as a template (replace `api.example.com`).
-3. Change `docker-compose.worker.yml` ports to bind **only localhost**:
-
-   ```yaml
-   ports:
-     - "127.0.0.1:8000:8000"
-   ```
-
-4. Recreate the container, then set Streamlit **`API_BASE_URL`** to `https://api.yourdomain.com`.
-5. Remove **8000** from the Hetzner firewall inbound rules; allow **443** from the world.
+Step-by-step (DNS, Caddy install, firewall **80/443**, bind Docker to **127.0.0.1:8000**): **[DEPLOY_HTTPS_CADDY.md](DEPLOY_HTTPS_CADDY.md)** · short template: `deploy/Caddyfile.example`.
 
 ---
 
