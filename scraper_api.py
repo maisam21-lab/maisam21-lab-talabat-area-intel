@@ -21,6 +21,9 @@ app = FastAPI(title="Talabat Area Scraper API", version="1.0.0")
 logger = logging.getLogger("talabat_area_intel.api")
 _JOB_RESULTS: dict[str, dict] = {}
 _JOB_LOCK = asyncio.Lock()
+# One scrape at a time by default: parallel Playwright jobs on a small VM cause OOM, zero rows, and “frozen” APIs.
+_SCRAPE_MAX_CONCURRENT_SCRAPES = max(1, int(os.getenv("SCRAPER_MAX_CONCURRENT_SCRAPES", "1")))
+_scrape_execution_semaphore = asyncio.Semaphore(_SCRAPE_MAX_CONCURRENT_SCRAPES)
 
 
 @app.middleware("http")
@@ -260,6 +263,7 @@ def scrape_config(x_api_key: str | None = Header(default=None)) -> dict:
         "scraper_listing_max_pages": int(os.getenv("SCRAPER_LISTING_MAX_PAGES", "25")),
         "listing_harvest_response_max_urls": int(os.getenv("LISTING_HARVEST_RESPONSE_MAX_URLS", "2500")),
         "scraper_vendor_page_enrich": _env_truthy(os.getenv("SCRAPER_VENDOR_PAGE_ENRICH", "0")),
+        "scraper_max_concurrent_scrapes": _SCRAPE_MAX_CONCURRENT_SCRAPES,
     }
 
 
@@ -463,38 +467,44 @@ async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None
         }
 
     async def _run_job() -> None:
-        async with _JOB_LOCK:
-            cur = _JOB_RESULTS.get(request_id) or {}
-            cur["status"] = "running"
-            _JOB_RESULTS[request_id] = cur
+        await _scrape_execution_semaphore.acquire()
+        submitted_at: float | None = None
         try:
-            result = await _execute_scrape(payload, request_id=request_id)
             async with _JOB_LOCK:
-                _JOB_RESULTS[request_id] = {
-                    "status": "complete",
-                    "request_id": request_id,
-                    "result": result,
-                    "submitted_at": cur.get("submitted_at"),
-                }
-        except HTTPException as exc:
-            async with _JOB_LOCK:
-                _JOB_RESULTS[request_id] = {
-                    "status": "failed",
-                    "request_id": request_id,
-                    "error": str(exc.detail),
-                    "status_code": int(exc.status_code),
-                    "submitted_at": cur.get("submitted_at"),
-                }
-        except Exception as exc:
-            logger.error("scrape_job_failed request_id=%s error=%s\n%s", request_id, exc, traceback.format_exc())
-            async with _JOB_LOCK:
-                _JOB_RESULTS[request_id] = {
-                    "status": "failed",
-                    "request_id": request_id,
-                    "error": f"Scrape failed: {exc}",
-                    "status_code": 500,
-                    "submitted_at": cur.get("submitted_at"),
-                }
+                cur = _JOB_RESULTS.get(request_id) or {}
+                submitted_at = cur.get("submitted_at")
+                cur["status"] = "running"
+                _JOB_RESULTS[request_id] = cur
+            try:
+                result = await _execute_scrape(payload, request_id=request_id)
+                async with _JOB_LOCK:
+                    _JOB_RESULTS[request_id] = {
+                        "status": "complete",
+                        "request_id": request_id,
+                        "result": result,
+                        "submitted_at": submitted_at,
+                    }
+            except HTTPException as exc:
+                async with _JOB_LOCK:
+                    _JOB_RESULTS[request_id] = {
+                        "status": "failed",
+                        "request_id": request_id,
+                        "error": str(exc.detail),
+                        "status_code": int(exc.status_code),
+                        "submitted_at": submitted_at,
+                    }
+            except Exception as exc:
+                logger.error("scrape_job_failed request_id=%s error=%s\n%s", request_id, exc, traceback.format_exc())
+                async with _JOB_LOCK:
+                    _JOB_RESULTS[request_id] = {
+                        "status": "failed",
+                        "request_id": request_id,
+                        "error": f"Scrape failed: {exc}",
+                        "status_code": 500,
+                        "submitted_at": submitted_at,
+                    }
+        finally:
+            _scrape_execution_semaphore.release()
 
     asyncio.create_task(_run_job())
     return {

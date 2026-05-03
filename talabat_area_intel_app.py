@@ -69,7 +69,7 @@ _SCRAPE_CLIENT_TIMEOUT_SEC = 1300
 _SCRAPE_POST_TIMEOUT_SEC = float(os.getenv("SCRAPER_API_POST_TIMEOUT_SEC", "600"))
 # Max **read** seconds waiting for the first POST /scrape response body (tiny JSON for async enqueue). If the path
 # stalls, fail fast and probe /result/{X-Request-ID}; raise cap (Secrets or env) for legacy sync /scrape.
-_SCRAPE_ENQUEUE_READ_CAP_SEC = float(os.getenv("SCRAPER_API_ENQUEUE_READ_CAP_SEC", "120"))
+_SCRAPE_ENQUEUE_READ_CAP_SEC = float(os.getenv("SCRAPER_API_ENQUEUE_READ_CAP_SEC", "240"))
 
 
 def _scrape_poll_budget_sec_for_payload(payload: dict) -> float:
@@ -1409,7 +1409,7 @@ def main() -> None:
             """
 - **Enqueue read-timeout** (Streamlit Cloud to a raw `http://` IP): prefer **`https://` `API_BASE_URL`** (e.g. Caddy), or raise **`SCRAPER_API_POST_TIMEOUT_SEC`** in Secrets (e.g. `900`).
 - **Long Worker jobs:** client poll budget follows **`scrape_wall_clock_sec`**; optional override **`SCRAPER_POLL_TOTAL_TIMEOUT_SEC`** (e.g. `3600`).
-- **POST `/scrape` returns quickly** (async enqueue): short read cap via env or Secrets **`SCRAPER_API_ENQUEUE_READ_CAP_SEC`** (default ~120s); increase only if you use a **legacy synchronous** `/scrape` that returns full `records` in one response.
+- **POST `/scrape` returns quickly** (async enqueue): read cap via env or Secrets **`SCRAPER_API_ENQUEUE_READ_CAP_SEC`** (default ~240s); increase only if you use a **legacy synchronous** `/scrape` that returns full `records` in one response.
 """
         )
     pinned_count = "one"
@@ -1702,10 +1702,23 @@ def main() -> None:
                             except Exception:
                                 return None
 
-                    scrape_result = _post_scrape(payload, "Primary scrape hit client read-timeout. Retrying with lighter settings...")
-                    if scrape_result is None or int(scrape_result[0]) >= 400:
-                        code = int(scrape_result[0]) if scrape_result is not None else 504
-                        # Hosted gateway timeouts are common; retry with progressively lighter payloads.
+                    scrape_result = _post_scrape(
+                        payload,
+                        "Primary /scrape hit connect or read timeout (checking whether the job was still enqueued)…",
+                    )
+                    # Do **not** treat client-side timeout (None) like HTTP 504: auto-retries enqueue extra jobs and
+                    # overload a single VM (multiple Playwright runs). Only retry on real 502/504 from the server.
+                    if scrape_result is None:
+                        raise RuntimeError(
+                            "POST /scrape did not return a response in time and no /result job could be recovered. "
+                            "This is usually network path (Streamlit Cloud → raw HTTP). Prefer **https://** "
+                            "`API_BASE_URL`, or raise **SCRAPER_API_ENQUEUE_READ_CAP_SEC** / **SCRAPER_API_POST_TIMEOUT_SEC** "
+                            "in Secrets. Wait for any in-flight scrape on the VM to finish, then try once — avoid "
+                            "double-clicking **Start Scraping**."
+                        )
+                    if int(scrape_result[0]) >= 400:
+                        code = int(scrape_result[0])
+                        # Hosted gateway timeouts: retry with progressively lighter payloads (same host, one job at a time).
                         if code in (502, 504):
                             fallback_payload = dict(payload)
                             fallback_payload["high_volume"] = False
@@ -1718,7 +1731,12 @@ def main() -> None:
                                 fallback_payload,
                                 "Lighter retry also hit read-timeout. Retrying once with ultra-light settings...",
                             )
-                            code = int(scrape_result[0]) if scrape_result is not None else 504
+                            if scrape_result is None:
+                                raise RuntimeError(
+                                    "Second /scrape attempt timed out client-side before a response. "
+                                    "Use HTTPS for API_BASE_URL or increase enqueue timeouts; avoid stacking scrapes on a small VM."
+                                )
+                            code = int(scrape_result[0])
                             if code in (502, 504):
                                 ultra_payload = dict(fallback_payload)
                                 ultra_payload["just_landed_only"] = False
@@ -1731,13 +1749,11 @@ def main() -> None:
                                     ultra_payload,
                                     "Ultra-light retry also hit read-timeout.",
                                 )
-                        if scrape_result is None:
-                            raise RuntimeError(
-                                "Client read-timeout after all retries: POST /scrape never returned a response in time "
-                                "and no matching /result job was found (or polling failed). Often fixed with HTTPS "
-                                "API_BASE_URL, higher SCRAPER_API_ENQUEUE_READ_CAP_SEC (legacy sync API), or "
-                                "SCRAPER_API_POST_TIMEOUT_SEC in Secrets. Check API host logs for dropped connections."
-                            )
+                                if scrape_result is None:
+                                    raise RuntimeError(
+                                        "Third /scrape attempt timed out client-side. Check API host load and network; "
+                                        "the VM runs at most one scrape at a time by default — wait for the prior job."
+                                    )
                         if int(scrape_result[0]) >= 400:
                             raise RuntimeError(f"HTTP {int(scrape_result[0])} from /scrape enqueue")
                     api_data = scrape_result[1] if scrape_result is not None else {}
