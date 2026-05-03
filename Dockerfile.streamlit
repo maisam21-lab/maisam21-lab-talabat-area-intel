@@ -1,0 +1,19 @@
+# Streamlit UI — same Python deps + Playwright as API image (per all-in-one VM spec).
+# Scraping still runs only in the `api` container; Playwright here keeps one image recipe.
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --upgrade pip && pip install -r requirements.txt \
+    && playwright install --with-deps chromium
+
+COPY . .
+
+EXPOSE 8501
+
+CMD ["streamlit", "run", "talabat_area_intel_app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"]

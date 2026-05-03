@@ -1,0 +1,78 @@
+# All-in-one Hetzner VM: FastAPI scraper + Streamlit + nginx (TLS).
+# Streamlit talks to the API on the Docker network (no Cloud→public-IP timeouts).
+#
+# First time on Ubuntu:
+#   bash setup.sh
+# Edit .env (SCRAPER_API_KEY), then:
+#   bash setup.sh
+#
+# URLs:
+#   https://<VM_IP>/           → Streamlit
+#   https://<VM_IP>/api/health → FastAPI (strip /api prefix upstream)
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    shm_size: "1gb"
+    environment:
+      SCRAPER_VENDOR_PAGE_ENRICH: "1"
+    env_file:
+      - .env
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=8).read()",
+        ]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 180s
+    networks:
+      - intel
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    restart: unless-stopped
+    environment:
+      API_BASE_URL: http://api:8000
+      STREAMLIT_SERVER_HEADLESS: "true"
+      STREAMLIT_SERVER_ENABLE_CORS: "false"
+      STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION: "false"
+    env_file:
+      - .env
+    expose:
+      - "8501"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - intel
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - streamlit
+      - api
+    networks:
+      - intel
+
+networks:
+  intel:
+    driver: bridge

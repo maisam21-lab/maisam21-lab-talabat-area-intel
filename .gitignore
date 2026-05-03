@@ -11,7 +11,11 @@ ENV/
 # Local env files
 .env
 .env.*
+!.env.example
 env.worker.local
+
+# TLS material generated on the VM by setup.sh (do not commit real keys)
+deploy/ssl/*.pem
 
 # OS / editor
 .DS_Store
