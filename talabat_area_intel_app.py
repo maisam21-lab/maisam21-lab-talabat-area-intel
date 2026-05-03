@@ -410,6 +410,46 @@ def _add_esri_basemaps(fmap: folium.Map) -> None:
     ).add_to(fmap)
 
 
+def _folium_click_latlng(folium_out: dict | None) -> tuple[float, float] | None:
+    """Parse streamlit-folium click payload (dict, list, or GeoJSON-like object)."""
+    out = dict(folium_out or {})
+    lc = out.get("last_clicked")
+    if lc is not None:
+        if isinstance(lc, dict) and "lat" in lc:
+            raw_lng = lc.get("lng")
+            if raw_lng is None:
+                raw_lng = lc.get("lon")
+            if raw_lng is not None:
+                try:
+                    return float(lc["lat"]), float(raw_lng)
+                except (TypeError, ValueError):
+                    pass
+        if isinstance(lc, (list, tuple)) and len(lc) >= 2:
+            try:
+                return float(lc[0]), float(lc[1])
+            except (TypeError, ValueError):
+                pass
+    ob = out.get("last_object_clicked")
+    if isinstance(ob, dict):
+        geom = ob.get("geometry")
+        if isinstance(geom, dict) and geom.get("type") == "Point":
+            coords = geom.get("coordinates")
+            if isinstance(coords, list) and len(coords) >= 2:
+                try:
+                    # GeoJSON Point: [lng, lat]
+                    return float(coords[1]), float(coords[0])
+                except (TypeError, ValueError):
+                    pass
+        if "lat" in ob:
+            raw_lng = ob.get("lng") if ob.get("lng") is not None else ob.get("lon")
+            if raw_lng is not None:
+                try:
+                    return float(ob["lat"]), float(raw_lng)
+                except (TypeError, ValueError):
+                    pass
+    return None
+
+
 def render_pin_map(
     radius_km: float,
     *,
@@ -445,6 +485,7 @@ def render_pin_map(
         fill_color="#2563EB",
         fill_opacity=0.14,
         tooltip=f"Scrape radius: {radius_km:g} km",
+        interactive=False,
     ).add_to(area)
 
     folium.Circle(
@@ -456,6 +497,7 @@ def render_pin_map(
         fill_color="#1D4ED8",
         fill_opacity=0.35,
         tooltip="Pin precision",
+        interactive=False,
     ).add_to(area)
 
     safe_label = html.escape(label)
@@ -471,6 +513,7 @@ def render_pin_map(
         tooltip=f"Pin · {radius_km:g} km search",
         popup=folium.Popup(popup_html, max_width=280),
         icon=folium.Icon(color="blue"),
+        interactive=False,
     ).add_to(area)
 
     if dual_points:
@@ -517,18 +560,19 @@ def render_pin_map(
     if basemap == "google":
         st.caption(
             "**Google** basemaps (Map Tiles API). Use layer control (top-right) to switch roadmap / satellite. "
-            "Click map to move pin."
+            "Click the **map background** (street/satellite) to move the pin."
         )
     else:
         st.caption(
             "**Satellite** is photos only (no street text). For English road names use **Street map**, "
-            "or keep **Place names overlay** on. Layer control: top-right. Click map to move pin."
+            "or keep **Place names overlay** on. Layer control: top-right. "
+            "Click the **map background** to move the pin."
         )
     out = st_folium(
         fmap,
         height=520,
         use_container_width=True,
-        returned_objects=["last_clicked", "center"],
+        returned_objects=["last_clicked", "last_object_clicked", "center"],
         key="talabat_pin_map",
     )
     out = dict(out or {})
@@ -1219,8 +1263,8 @@ def main() -> None:
     _pin_widget_scope = str(city_key) if is_city_mode else "custom_pin_mode"
     st.subheader("Run pin (single source for scraping)")
     st.caption(
-        "Lat/lng here, map clicks, and **Start Scraping** all use the same `scrape_location` session object. "
-        "The API echoes pins and radius counts in **Resolved scrape parameters** after each run."
+        "Use the **map** (click background) or **lat/lng** below — both update the same `scrape_location` sent to the API. "
+        "**Start Scraping** is in the sidebar."
     )
     loc_ui = get_scrape_location()
     lat_internal_key = f"_run_pin_lat__{_pin_widget_scope}"
@@ -1236,32 +1280,6 @@ def main() -> None:
     if source_now in {"folium_click", "geocode", "city_preset", "init"}:
         st.session_state.pop(f"run_pin_lat_input__{_pin_widget_scope}", None)
         st.session_state.pop(f"run_pin_lng_input__{_pin_widget_scope}", None)
-    rp1, rp2 = st.columns(2)
-    with rp1:
-        run_lat = st.number_input(
-            "Run pin latitude",
-            value=float(st.session_state[lat_internal_key]),
-            format="%.6f",
-            step=0.0001,
-            key=f"run_pin_lat_input__{_pin_widget_scope}",
-        )
-    with rp2:
-        run_lng = st.number_input(
-            "Run pin longitude",
-            value=float(st.session_state[lng_internal_key]),
-            format="%.6f",
-            step=0.0001,
-            key=f"run_pin_lng_input__{_pin_widget_scope}",
-        )
-    st.session_state[lat_internal_key] = float(run_lat)
-    st.session_state[lng_internal_key] = float(run_lng)
-    set_scrape_location(
-        float(run_lat),
-        float(run_lng),
-        str(loc_ui.get("label") or "Run pin"),
-        "manual_form",
-    )
-    sync_legacy_pin_mirror()
 
     preview_two_pinned = False
     dual_points_for_map: list[dict[str, float | str]] | None = None
@@ -1281,18 +1299,8 @@ def main() -> None:
             },
         ]
 
-    pin_done = str(get_scrape_location().get("source") or "") not in ("init", "")
-    step1_cls = "step-card done" if pin_done else "step-card active"
-    step2_cls = "step-card active" if pin_done else "step-card"
-    step3_cls = "step-card"
-    cstep1, cstep2, cstep3 = st.columns(3)
-    with cstep1:
-        st.markdown(f"<div class='{step1_cls}'><b>Step 1</b><br>Drop a pin (search or click map)</div>", unsafe_allow_html=True)
-    with cstep2:
-        st.markdown(f"<div class='{step2_cls}'><b>Step 2</b><br>Set radius &amp; label</div>", unsafe_allow_html=True)
-    with cstep3:
-        st.markdown(f"<div class='{step3_cls}'><b>Step 3</b><br>Download Excel</div>", unsafe_allow_html=True)
-
+    # Map + click handling **before** number_input: lat/lng widgets were calling set_scrape_location(manual_form)
+    # every run and overwriting the pin *before* last_clicked was applied, so clicks appeared to do nothing.
     st.subheader("Interactive search map")
     folium_out = render_pin_map(
         radius_km,
@@ -1302,10 +1310,9 @@ def main() -> None:
         dual_points=dual_points_for_map,
     )
     store_folium_payload(folium_out)
-    if folium_out.get("last_clicked"):
-        lc = folium_out["last_clicked"]
-        click_lat = float(lc["lat"])
-        click_lng = float(lc["lng"])
+    click_ll = _folium_click_latlng(folium_out)
+    if click_ll is not None:
+        click_lat, click_lng = click_ll
         click_sig = f"{click_lat:.6f},{click_lng:.6f}"
         if preview_two_pinned:
             if click_sig != str(st.session_state.get("dual_last_click_sig") or ""):
@@ -1333,6 +1340,46 @@ def main() -> None:
                 sync_legacy_pin_mirror()
                 st.toast(f"Pin → {click_lat:.5f}, {click_lng:.5f}", icon="📍")
                 st.rerun()
+
+    pin_done = str(get_scrape_location().get("source") or "") not in ("init", "")
+    step1_cls = "step-card done" if pin_done else "step-card active"
+    step2_cls = "step-card active" if pin_done else "step-card"
+    step3_cls = "step-card"
+    cstep1, cstep2, cstep3 = st.columns(3)
+    with cstep1:
+        st.markdown(f"<div class='{step1_cls}'><b>Step 1</b><br>Drop a pin (search or click map)</div>", unsafe_allow_html=True)
+    with cstep2:
+        st.markdown(f"<div class='{step2_cls}'><b>Step 2</b><br>Set radius &amp; label</div>", unsafe_allow_html=True)
+    with cstep3:
+        st.markdown(f"<div class='{step3_cls}'><b>Step 3</b><br>Download Excel</div>", unsafe_allow_html=True)
+
+    rp1, rp2 = st.columns(2)
+    with rp1:
+        run_lat = st.number_input(
+            "Run pin latitude",
+            value=float(st.session_state[lat_internal_key]),
+            format="%.6f",
+            step=0.0001,
+            key=f"run_pin_lat_input__{_pin_widget_scope}",
+        )
+    with rp2:
+        run_lng = st.number_input(
+            "Run pin longitude",
+            value=float(st.session_state[lng_internal_key]),
+            format="%.6f",
+            step=0.0001,
+            key=f"run_pin_lng_input__{_pin_widget_scope}",
+        )
+    st.session_state[lat_internal_key] = float(run_lat)
+    st.session_state[lng_internal_key] = float(run_lng)
+    set_scrape_location(
+        float(run_lat),
+        float(run_lng),
+        str(get_scrape_location().get("label") or "Run pin"),
+        "manual_form",
+    )
+    sync_legacy_pin_mirror()
+
     loc_after_map = get_scrape_location()
     mismatch, mismatch_msg = folium_center_vs_location_mismatch(loc_after_map)
     if mismatch and mismatch_msg:
