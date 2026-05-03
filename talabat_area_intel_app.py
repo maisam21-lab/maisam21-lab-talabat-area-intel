@@ -1113,6 +1113,17 @@ def main() -> None:
         is_city_mode = False
         city_key = "dubai"
 
+        selected_profile_name = st.selectbox(
+            "Scrape profile",
+            options=list(_SCRAPE_PROFILES.keys()),
+            index=list(_SCRAPE_PROFILES.keys()).index("Complete"),
+            help=(
+                "**Worker (vendor pages)** = sends enrich=true for vendor detail pages; use when the API host has "
+                "SCRAPER_VENDOR_PAGE_ENRICH=1 (e.g. Hetzner worker)."
+            ),
+        )
+        st.caption(f"API: `{api_base_url}` · Profiles: {', '.join(_SCRAPE_PROFILES.keys())}")
+
         st.markdown("**1) Location**")
         city_key = st.selectbox(
             "City preset",
@@ -1139,12 +1150,6 @@ def main() -> None:
             help="When enabled, only vendors marked as newly launched are included.",
         )
         include_google_coverage = True
-        selected_profile_name = st.selectbox(
-            "Scrape profile",
-            options=list(_SCRAPE_PROFILES.keys()),
-            index=list(_SCRAPE_PROFILES.keys()).index("Complete"),
-            help="Use **Worker (vendor pages)** when the API runs on a dedicated VM with SCRAPER_VENDOR_PAGE_ENRICH=1 (Playwright per-vendor pages).",
-        )
         radius_pick = st.radio("2) Radius", options=[5, 10], horizontal=True, index=1)
         radius_km = float(radius_pick)
         target_area_label = st.text_input(
