@@ -14,8 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 if [[ "${EUID}" -eq 0 ]]; then
-  echo "Run as a normal user with sudo (not as root). Docker post-install adds your user to the docker group."
-  exit 1
+  echo "Note: running as root (OK on a VPS). Prefer a sudo user on shared machines."
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
