@@ -1276,8 +1276,8 @@ def main() -> None:
     _pin_widget_scope = str(city_key) if is_city_mode else "custom_pin_mode"
     st.subheader("Run pin (single source for scraping)")
     st.caption(
-        "Use the **map** (click background) or **lat/lng** below — both update the same `scrape_location` sent to the API. "
-        "**Start Scraping** is in the sidebar."
+        "Use the **map** (click background), the **Use map center as pin** button if clicks do not register, or **lat/lng** "
+        "below — all update the same `scrape_location` sent to the API. **Start Scraping** is in the sidebar."
     )
     loc_ui = get_scrape_location()
     lat_internal_key = f"_run_pin_lat__{_pin_widget_scope}"
@@ -1285,12 +1285,12 @@ def main() -> None:
     st.session_state.setdefault(lat_internal_key, float(loc_ui["lat"]))
     st.session_state.setdefault(lng_internal_key, float(loc_ui["lng"]))
     source_now = str(loc_ui.get("source") or "")
-    if source_now in {"folium_click", "geocode", "city_preset", "init", "manual_form"}:
+    if source_now in {"folium_click", "map_center_button", "geocode", "city_preset", "init", "manual_form"}:
         st.session_state[lat_internal_key] = float(loc_ui["lat"])
         st.session_state[lng_internal_key] = float(loc_ui["lng"])
     # ``st.number_input`` keeps its own session_state per ``key=``; after a map click / geocode / preset the
     # authoritative pin moves but the widgets would still return stale coords and overwrite the pin below.
-    if source_now in {"folium_click", "geocode", "city_preset", "init"}:
+    if source_now in {"folium_click", "geocode", "city_preset", "init", "map_center_button"}:
         st.session_state.pop(f"run_pin_lat_input__{_pin_widget_scope}", None)
         st.session_state.pop(f"run_pin_lng_input__{_pin_widget_scope}", None)
 
@@ -1323,6 +1323,19 @@ def main() -> None:
         dual_points=dual_points_for_map,
     )
     store_folium_payload(folium_out)
+    # Folium click payloads are flaky behind some reverse proxies; viewport center is updated on pan/zoom reliably.
+    cctr = folium_out.get("center")
+    if isinstance(cctr, dict):
+        try:
+            clat = cctr.get("lat")
+            clng = cctr.get("lng") if cctr.get("lng") is not None else cctr.get("lon")
+            if clat is not None and clng is not None:
+                st.session_state["_folium_last_center"] = (
+                    float(str(clat).strip()),
+                    float(str(clng).strip()),
+                )
+        except (TypeError, ValueError):
+            pass
     click_ll = _folium_click_latlng(folium_out)
     if click_ll is not None:
         click_lat, click_lng = click_ll
@@ -1353,6 +1366,23 @@ def main() -> None:
                 sync_legacy_pin_mirror()
                 st.toast(f"Pin → {click_lat:.5f}, {click_lng:.5f}", icon="📍")
                 st.rerun()
+
+    if st.button(
+        "Use map center as pin",
+        key="pin_from_map_center_btn",
+        help="Pan/zoom until the area you want is in the middle of the map, then click here. "
+        "Use this if clicking the map does not move the pin (some browsers or HTTPS proxies block Folium clicks).",
+    ):
+        ctr = st.session_state.get("_folium_last_center")
+        if isinstance(ctr, tuple) and len(ctr) == 2:
+            plat, plng = float(ctr[0]), float(ctr[1])
+            st.session_state["runpin_last_click_sig"] = ""
+            set_scrape_location(plat, plng, "Run pin (map center)", "map_center_button")
+            sync_legacy_pin_mirror()
+            st.toast(f"Pin set to map center → {plat:.5f}, {plng:.5f}", icon="🎯")
+            st.rerun()
+        else:
+            st.warning("Pan or zoom the map once, then try again (the app could not read the map center yet).")
 
     pin_done = str(get_scrape_location().get("source") or "") not in ("init", "")
     step1_cls = "step-card done" if pin_done else "step-card active"
