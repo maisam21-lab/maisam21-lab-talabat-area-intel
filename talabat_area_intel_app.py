@@ -67,6 +67,9 @@ _SCRAPE_CLIENT_TIMEOUT_SEC = 1300
 # POST /scrape only enqueues ({request_id, queued}); polling uses /result. Use (connect, read) timeouts because
 # Streamlit Cloud → raw ``http://`` IP can stall on **connect** (read-only bump does not help).
 _SCRAPE_POST_TIMEOUT_SEC = float(os.getenv("SCRAPER_API_POST_TIMEOUT_SEC", "600"))
+# Max **read** seconds waiting for the first POST /scrape response body (tiny JSON for async enqueue). If the path
+# stalls, fail fast and probe /result/{X-Request-ID}; raise cap (Secrets or env) for legacy sync /scrape.
+_SCRAPE_ENQUEUE_READ_CAP_SEC = float(os.getenv("SCRAPER_API_ENQUEUE_READ_CAP_SEC", "120"))
 
 
 def _scrape_poll_budget_sec_for_payload(payload: dict) -> float:
@@ -1357,7 +1360,8 @@ def main() -> None:
         "If you see **client read-timeout** on enqueue, Streamlit Cloud may be slow to open TCP to a raw http IP — "
         'in Secrets add SCRAPER_API_POST_TIMEOUT_SEC = "900", or put HTTPS (Caddy) in front of the API and use '
         "https in API_BASE_URL. For long Worker runs, poll time follows `scrape_wall_clock_sec`; override with "
-        'SCRAPER_POLL_TOTAL_TIMEOUT_SEC = "3600" if needed.'
+        'SCRAPER_POLL_TOTAL_TIMEOUT_SEC = "3600" if needed. POST /scrape enqueue read is capped separately '
+        "(env `SCRAPER_API_ENQUEUE_READ_CAP_SEC`, default 120s; Secrets same key); raise it only for legacy sync /scrape."
     )
     pinned_count = "one"
     use_two_pinned = False
@@ -1559,9 +1563,7 @@ def main() -> None:
                 _poll_budget_sec = _scrape_poll_budget_sec_for_payload(payload)
                 try:
                     fallback_notes: list[str] = []
-                    request_id = uuid.uuid4().hex
                     req_headers = dict(headers)
-                    req_headers["X-Request-ID"] = request_id
                     def _poll_result(request_id_to_poll: str, total_timeout_sec: float = _SCRAPE_CLIENT_TIMEOUT_SEC) -> dict:
                         deadline = time.time() + float(total_timeout_sec)
                         while time.time() < deadline:
@@ -1593,13 +1595,28 @@ def main() -> None:
                     _read_t = _enqueue_read_timeout_sec()
                     _connect_t = min(60.0, _read_t)
 
+                    def _post_enqueue_read_sec(max_read: float) -> float:
+                        cap = float(_SCRAPE_ENQUEUE_READ_CAP_SEC)
+                        try:
+                            raw = str(st.secrets.get("SCRAPER_API_ENQUEUE_READ_CAP_SEC", "")).strip()
+                            if raw:
+                                cap = max(30.0, float(raw))
+                        except Exception:
+                            pass
+                        return max(45.0, min(float(max_read), cap))
+
+                    _enqueue_read = _post_enqueue_read_sec(_read_t)
+
                     def _post_scrape(req_payload: dict, timeout_msg: str) -> tuple[int, dict] | None:
+                        attempt_rid = uuid.uuid4().hex
+                        post_headers = dict(req_headers)
+                        post_headers["X-Request-ID"] = attempt_rid
                         try:
                             enqueue_resp = requests.post(
                                 f"{api_base_url.rstrip('/')}/scrape",
                                 json=req_payload,
-                                headers=req_headers,
-                                timeout=(_connect_t, _read_t),
+                                headers=post_headers,
+                                timeout=(_connect_t, _enqueue_read),
                             )
                             if enqueue_resp.status_code >= 400:
                                 return int(enqueue_resp.status_code), {}
@@ -1610,15 +1627,31 @@ def main() -> None:
                             rid = str(
                                 enqueue_data.get("request_id")
                                 or enqueue_resp.headers.get("X-Request-ID")
-                                or request_id
+                                or attempt_rid
                             ).strip()
                             if not rid:
                                 raise RuntimeError("Missing request_id from /scrape enqueue response")
                             result_data = _poll_result(rid, total_timeout_sec=_poll_budget_sec)
                             return 200, result_data
-                        except requests.exceptions.ReadTimeout:
+                        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout):
                             status_box.warning(timeout_msg)
-                            return None
+                            # POST body may never arrive on slow paths, but the API often already enqueued using X-Request-ID.
+                            try:
+                                probe = requests.get(
+                                    f"{api_base_url.rstrip('/')}/result/{attempt_rid}",
+                                    headers=req_headers,
+                                    timeout=25,
+                                )
+                            except requests.exceptions.RequestException:
+                                return None
+                            if probe.status_code == 404:
+                                return None
+                            if probe.status_code >= 400:
+                                return None
+                            try:
+                                return (200, _poll_result(attempt_rid, total_timeout_sec=_poll_budget_sec))
+                            except Exception:
+                                return None
 
                     scrape_result = _post_scrape(payload, "Primary scrape hit client read-timeout. Retrying with lighter settings...")
                     if scrape_result is None or int(scrape_result[0]) >= 400:
@@ -1651,12 +1684,15 @@ def main() -> None:
                                 )
                         if scrape_result is None:
                             raise RuntimeError(
-                                "Client read-timeout after all retries. Backend is overloaded or blocked by host limits."
+                                "Client read-timeout after all retries: POST /scrape never returned a response in time "
+                                "and no matching /result job was found (or polling failed). Often fixed with HTTPS "
+                                "API_BASE_URL, higher SCRAPER_API_ENQUEUE_READ_CAP_SEC (legacy sync API), or "
+                                "SCRAPER_API_POST_TIMEOUT_SEC in Secrets. Check API host logs for dropped connections."
                             )
                         if int(scrape_result[0]) >= 400:
                             raise RuntimeError(f"HTTP {int(scrape_result[0])} from /scrape enqueue")
                     api_data = scrape_result[1] if scrape_result is not None else {}
-                    api_request_id = str(api_data.get("request_id") or request_id)
+                    api_request_id = str(api_data.get("request_id") or "")
                     df = pd.DataFrame(api_data.get("records", []))
                     df = ensure_just_landed_columns(df)
                     if df.empty:
@@ -1669,24 +1705,46 @@ def main() -> None:
                         emergency_payload["max_sample_points"] = 1
                         emergency_payload["scroll_rounds"] = 4
                         emergency_payload["scroll_wait_ms"] = min(int(payload["scroll_wait_ms"]), 700)
-                        em_enqueue = requests.post(
-                            f"{api_base_url.rstrip('/')}/scrape",
-                            json=emergency_payload,
-                            headers=req_headers,
-                            timeout=(_connect_t, _read_t),
-                        )
-                        if em_enqueue.status_code < 400:
-                            em_enqueue_data = em_enqueue.json() if em_enqueue.content else {}
+                        em_rid = uuid.uuid4().hex
+                        em_headers = dict(req_headers)
+                        em_headers["X-Request-ID"] = em_rid
+                        em_data: dict = {}
+                        em_resp: requests.Response | None = None
+                        try:
+                            em_resp = requests.post(
+                                f"{api_base_url.rstrip('/')}/scrape",
+                                json=emergency_payload,
+                                headers=em_headers,
+                                timeout=(_connect_t, _enqueue_read),
+                            )
+                        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout):
+                            try:
+                                probe_em = requests.get(
+                                    f"{api_base_url.rstrip('/')}/result/{em_rid}",
+                                    headers=req_headers,
+                                    timeout=25,
+                                )
+                            except requests.exceptions.RequestException:
+                                probe_em = None
+                            if (
+                                probe_em is not None
+                                and probe_em.status_code != 404
+                                and probe_em.status_code < 400
+                            ):
+                                em_data = _poll_result(em_rid, total_timeout_sec=_poll_budget_sec)
+                        if em_resp is not None and em_resp.status_code < 400:
+                            em_enqueue_data = em_resp.json() if em_resp.content else {}
                             # Backward compatibility: older API versions return final scrape payload directly.
                             if isinstance(em_enqueue_data, dict) and "records" in em_enqueue_data:
                                 em_data = em_enqueue_data
                             else:
-                                em_rid = str(
+                                em_rid2 = str(
                                     em_enqueue_data.get("request_id")
-                                    or em_enqueue.headers.get("X-Request-ID")
-                                    or api_request_id
+                                    or em_resp.headers.get("X-Request-ID")
+                                    or em_rid
                                 ).strip()
-                                em_data = _poll_result(em_rid, total_timeout_sec=_poll_budget_sec)
+                                em_data = _poll_result(em_rid2, total_timeout_sec=_poll_budget_sec)
+                        if em_data:
                             em_df = pd.DataFrame(em_data.get("records", []))
                             em_df = ensure_just_landed_columns(em_df)
                             if not em_df.empty:
