@@ -63,9 +63,9 @@ _SCRAPE_DEDUPE_BY_VENDOR_URL = False
 _SCRAPE_HIGH_VOLUME = True
 _SCRAPE_MAX_SAMPLE_POINTS = 6
 _SCRAPE_CLIENT_TIMEOUT_SEC = 1300
-# POST /scrape only enqueues ({request_id, queued}); polling uses /result. A 60s cap here caused false
-# ``ReadTimeout`` during Render cold start / slow TLS from Streamlit Cloud → API.
-_SCRAPE_POST_TIMEOUT_SEC = float(os.getenv("SCRAPER_API_POST_TIMEOUT_SEC", "180"))
+# POST /scrape only enqueues ({request_id, queued}); polling uses /result. Use (connect, read) timeouts because
+# Streamlit Cloud → raw ``http://`` IP can stall on **connect** (read-only bump does not help).
+_SCRAPE_POST_TIMEOUT_SEC = float(os.getenv("SCRAPER_API_POST_TIMEOUT_SEC", "600"))
 
 _SCRAPE_PROFILES: dict[str, dict] = {
     # Quick baseline in constrained hosting.
@@ -1333,9 +1333,9 @@ def main() -> None:
     st.caption(
         "Expected runtime is usually a few minutes, but can be longer on heavy areas. "
         "Scrape wall-clock is controlled by the API service environment. "
-        "If the UI says **client read-timeout** on the first attempt, the API may be cold-starting "
-        "(first byte took longer than the enqueue HTTP timeout); a retry or higher "
-        "`SCRAPER_API_POST_TIMEOUT_SEC` on Streamlit fixes false positives."
+        "If you see **client read-timeout** on enqueue, Streamlit Cloud may be slow to open TCP to a raw http IP — "
+        'in Secrets add SCRAPER_API_POST_TIMEOUT_SEC = "900", or put HTTPS (Caddy) in front of the API and use '
+        "https in API_BASE_URL."
     )
     pinned_count = "one"
     use_two_pinned = False
@@ -1557,13 +1557,25 @@ def main() -> None:
                             time.sleep(10)
                         raise RuntimeError("Remote scrape job timed out while waiting for completion.")
 
+                    def _enqueue_read_timeout_sec() -> float:
+                        try:
+                            raw = str(st.secrets.get("SCRAPER_API_POST_TIMEOUT_SEC", "")).strip()
+                            if raw:
+                                return max(120.0, min(float(raw), float(_SCRAPE_CLIENT_TIMEOUT_SEC)))
+                        except Exception:
+                            pass
+                        return max(120.0, min(float(_SCRAPE_POST_TIMEOUT_SEC), float(_SCRAPE_CLIENT_TIMEOUT_SEC)))
+
+                    _read_t = _enqueue_read_timeout_sec()
+                    _connect_t = min(60.0, _read_t)
+
                     def _post_scrape(req_payload: dict, timeout_msg: str) -> tuple[int, dict] | None:
                         try:
                             enqueue_resp = requests.post(
                                 f"{api_base_url.rstrip('/')}/scrape",
                                 json=req_payload,
                                 headers=req_headers,
-                                timeout=min(float(_SCRAPE_CLIENT_TIMEOUT_SEC), float(_SCRAPE_POST_TIMEOUT_SEC)),
+                                timeout=(_connect_t, _read_t),
                             )
                             if enqueue_resp.status_code >= 400:
                                 return int(enqueue_resp.status_code), {}
@@ -1637,7 +1649,7 @@ def main() -> None:
                             f"{api_base_url.rstrip('/')}/scrape",
                             json=emergency_payload,
                             headers=req_headers,
-                            timeout=min(float(_SCRAPE_CLIENT_TIMEOUT_SEC), float(_SCRAPE_POST_TIMEOUT_SEC)),
+                            timeout=(_connect_t, _read_t),
                         )
                         if em_enqueue.status_code < 400:
                             em_enqueue_data = em_enqueue.json() if em_enqueue.content else {}

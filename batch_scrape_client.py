@@ -7,7 +7,7 @@ import pandas as pd
 import requests
 import time
 
-_POST_TIMEOUT_CAP = float(os.getenv("SCRAPER_API_POST_TIMEOUT_SEC", "180"))
+_POST_TIMEOUT_CAP = float(os.getenv("SCRAPER_API_POST_TIMEOUT_SEC", "600"))
 
 
 def _poll_result(
