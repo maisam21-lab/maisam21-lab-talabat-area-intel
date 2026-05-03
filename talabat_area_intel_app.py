@@ -1355,14 +1355,16 @@ def main() -> None:
         f"Target label: `{target_area_label.strip() or '—'}`"
     )
     st.caption(
-        "Expected runtime is usually a few minutes, but can be longer on heavy areas. "
-        "Scrape wall-clock is controlled by the API service environment. "
-        "If you see **client read-timeout** on enqueue, Streamlit Cloud may be slow to open TCP to a raw http IP — "
-        'in Secrets add SCRAPER_API_POST_TIMEOUT_SEC = "900", or put HTTPS (Caddy) in front of the API and use '
-        "https in API_BASE_URL. For long Worker runs, poll time follows `scrape_wall_clock_sec`; override with "
-        'SCRAPER_POLL_TOTAL_TIMEOUT_SEC = "3600" if needed. POST /scrape enqueue read is capped separately '
-        "(env `SCRAPER_API_ENQUEUE_READ_CAP_SEC`, default 120s; Secrets same key); raise it only for legacy sync /scrape."
+        "Runs usually take a few minutes; large radius, **Complete** profile, or API wall-clock limits can add more time."
     )
+    with st.expander("Timeouts, Streamlit → API, and optional Secrets", expanded=False):
+        st.markdown(
+            """
+- **Enqueue read-timeout** (Streamlit Cloud to a raw `http://` IP): prefer **`https://` `API_BASE_URL`** (e.g. Caddy), or raise **`SCRAPER_API_POST_TIMEOUT_SEC`** in Secrets (e.g. `900`).
+- **Long Worker jobs:** client poll budget follows **`scrape_wall_clock_sec`**; optional override **`SCRAPER_POLL_TOTAL_TIMEOUT_SEC`** (e.g. `3600`).
+- **POST `/scrape` returns quickly** (async enqueue): short read cap via env or Secrets **`SCRAPER_API_ENQUEUE_READ_CAP_SEC`** (default ~120s); increase only if you use a **legacy synchronous** `/scrape` that returns full `records` in one response.
+"""
+        )
     pinned_count = "one"
     use_two_pinned = False
     run_two_pins = False
@@ -1862,7 +1864,16 @@ def main() -> None:
                 "If it still returns zero rows, check the API host logs (e.g. VPS: `docker compose … logs` for the `/scrape` request)."
             )
         else:
-            st.info("No results yet. Set pin and click Start Scraping.")
+            loc_empty = get_scrape_location()
+            pin_ready = str(loc_empty.get("source") or "").strip() not in ("", "init")
+            if pin_ready:
+                st.info(
+                    "Pin is set. Click **Start Scraping** (sidebar or **Run** above) to load restaurants for this pin."
+                )
+            else:
+                st.info(
+                    "Move the pin on the map, set lat/lng, or use **Search address**, then click **Start Scraping**."
+                )
         return
 
     view_df, dropped_cols = compact_output_df(df)
