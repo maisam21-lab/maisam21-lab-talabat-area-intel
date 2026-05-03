@@ -1228,6 +1228,11 @@ def main() -> None:
     if source_now in {"folium_click", "geocode", "city_preset", "init", "manual_form"}:
         st.session_state[lat_internal_key] = float(loc_ui["lat"])
         st.session_state[lng_internal_key] = float(loc_ui["lng"])
+    # ``st.number_input`` keeps its own session_state per ``key=``; after a map click / geocode / preset the
+    # authoritative pin moves but the widgets would still return stale coords and overwrite the pin below.
+    if source_now in {"folium_click", "geocode", "city_preset", "init"}:
+        st.session_state.pop(f"run_pin_lat_input__{_pin_widget_scope}", None)
+        st.session_state.pop(f"run_pin_lng_input__{_pin_widget_scope}", None)
     rp1, rp2 = st.columns(2)
     with rp1:
         run_lat = st.number_input(
