@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import html
 import io
+import json
 import math
 import os
+from urllib.parse import quote, quote_plus
 import threading
 import time
 import uuid
@@ -38,7 +40,7 @@ try:
 except ImportError:
     # Deployment-safe fallback when an older module version is present.
     from batch_scrape_client import run_batch_scrape_via_api as run_dual_area_scrape_via_api
-from geo_utils import haversine_series_km_from_pin
+from geo_utils import haversine_km, haversine_series_km_from_pin
 from google_map_tiles import (
     ensure_google_map_tile_sessions,
     google_2d_tile_url_template,
@@ -285,6 +287,19 @@ def _bounds_for_radius(lat: float, lng: float, radius_km: float, pad: float = 1.
     return [lat - d_lat, lng - d_lng], [lat + d_lat, lng + d_lng]
 
 
+def _default_zoom_for_radius_km(radius_km: float) -> int:
+    """
+    Stable Leaflet zoom for the search radius without ``fit_bounds``.
+
+    Using ``fit_bounds`` together with ``st_folium(center=..., zoom=...)`` makes Leaflet and Streamlit fight
+    every rerun → visible zoom in/out oscillation.
+    """
+    r = float(radius_km)
+    if r <= 5.5:
+        return 13
+    return 12
+
+
 def _add_supply_overlay_feature_group(fmap: folium.Map, supply_df: pd.DataFrame | None) -> None:
     supply = normalize_supply_overlay_df(supply_df)
     if supply is None or supply.empty:
@@ -345,6 +360,61 @@ def _get_google_maps_api_key_for_basemap() -> str:
     except Exception:
         pass
     return (os.getenv("GOOGLE_MAPS_API_KEY") or "").strip()
+
+
+def _render_google_maps_reference_panel(radius_km: float) -> None:
+    """
+    Google Maps as an **add-on** (embed + external links). Does not replace Folium: pin/scrape stay on the Search map.
+    """
+    loc = get_scrape_location()
+    try:
+        lat = float(loc["lat"])
+        lng = float(loc["lng"])
+    except (TypeError, ValueError, KeyError):
+        return
+    z = max(3, min(21, int(st.session_state.get("_pin_map_zoom_ui", 12))))
+    key = _get_google_maps_api_key_for_basemap()
+    embed_off = (os.getenv("STREAMLIT_GOOGLE_MAPS_EMBED", "1").strip().lower() in ("0", "false", "no", "off"))
+
+    q_enc = quote_plus(f"{lat},{lng}")
+    maps_open_url = f"https://www.google.com/maps/search/?api=1&query={q_enc}"
+    directions_url = f"https://www.google.com/maps/dir/?api=1&destination={lat},{lng}"
+
+    with st.expander("Google Maps (reference — same pin; does not replace the Search map)", expanded=False):
+        st.caption(
+            f"The **Interactive search map** above sets the Talabat scrape pin. This block is **Google Maps** only "
+            f"for context (roads, labels, satellite). Radius context: **{radius_km:g} km**."
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            st.link_button("Open in Google Maps", maps_open_url, use_container_width=True)
+        with c2:
+            st.link_button("Directions to pin", directions_url, use_container_width=True)
+
+        if key and not embed_off:
+            mt = st.radio(
+                "Embedded preview type",
+                options=["roadmap", "satellite"],
+                horizontal=True,
+                index=0,
+                key="google_embed_maptype_ref",
+            )
+            mt_param = "satellite" if mt == "satellite" else "roadmap"
+            embed_src = (
+                "https://www.google.com/maps/embed/v1/view?"
+                f"key={quote(key, safe='')}&center={lat},{lng}&zoom={z}&maptype={mt_param}"
+            )
+            components.iframe(embed_src, height=420)
+            st.caption(
+                "Embedded via **Maps Embed API** (enable it for this key in Google Cloud). "
+                "Restrict the key by HTTP referrer to your Streamlit URL."
+            )
+        elif not key:
+            st.info(
+                "Optional embedded preview: set **GOOGLE_MAPS_API_KEY** (same as Map Tiles) and enable **Maps Embed API**."
+            )
+        else:
+            st.caption("Embedded preview is off (`STREAMLIT_GOOGLE_MAPS_EMBED=0`).")
 
 
 def _configure_map_basemaps(fmap: folium.Map) -> str:
@@ -450,6 +520,86 @@ def _folium_click_latlng(folium_out: dict | None) -> tuple[float, float] | None:
     return None
 
 
+def _folium_interaction_blob(folium_out: dict | None) -> str | None:
+    """Stable fingerprint for Folium interaction payloads (reruns replay the same JSON)."""
+    out = dict(folium_out or {})
+    payload: dict[str, object] = {}
+    if out.get("last_clicked") is not None:
+        payload["last_clicked"] = out["last_clicked"]
+    if out.get("last_object_clicked") is not None:
+        payload["last_object_clicked"] = out["last_object_clicked"]
+    if not payload:
+        return None
+    try:
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        return None
+
+
+def _heal_run_pin_widgets_if_stale_default(widget_scope: str) -> None:
+    """
+    ``st.number_input`` keys keep their own session_state. If the user moved the pin via map/geocode but the
+    widgets were never reset (e.g. never popped), they can still read the initial Dubai defaults — then the
+    mandatory ``set_scrape_location`` after the widgets overwrites the real pin (often when clicking
+    **Start Scraping**).
+    """
+    loc = get_scrape_location()
+    lat_k = f"run_pin_lat_input__{widget_scope}"
+    lng_k = f"run_pin_lng_input__{widget_scope}"
+    try:
+        w_lat = float(st.session_state.get(lat_k, loc["lat"]))
+        w_lng = float(st.session_state.get(lng_k, loc["lng"]))
+    except (TypeError, ValueError):
+        st.session_state[lat_k] = float(loc["lat"])
+        st.session_state[lng_k] = float(loc["lng"])
+        return
+    p_lat, p_lng = float(loc["lat"]), float(loc["lng"])
+    # Widget still essentially on the app default, but authoritative pin is elsewhere.
+    d_w_def = haversine_km(w_lat, w_lng, float(DEFAULT_PIN[0]), float(DEFAULT_PIN[1]))
+    if d_w_def < 0.02 and haversine_km(w_lat, w_lng, p_lat, p_lng) > 0.05:
+        st.session_state[lat_k] = p_lat
+        st.session_state[lng_k] = p_lng
+
+
+def _coalesce_run_pin_inputs_vs_authoritative(
+    w_lat: float,
+    w_lng: float,
+    auth: dict,
+) -> tuple[float, float]:
+    """
+    Second line of defence after ``_heal_*``: number_input can still return the template default while
+    ``scrape_location`` already reflects a map/geocode pin — ``set_scrape_location(..., manual_form)`` would
+    then clobber the real pin right before **Start Scraping**.
+    """
+    a_lat, a_lng = float(auth["lat"]), float(auth["lng"])
+    d_w_tpl = haversine_km(w_lat, w_lng, float(DEFAULT_PIN[0]), float(DEFAULT_PIN[1]))
+    if d_w_tpl >= 0.025:
+        return w_lat, w_lng
+    if haversine_km(w_lat, w_lng, a_lat, a_lng) <= 0.08:
+        return w_lat, w_lng
+    # User may legitimately be placing the pin in the same neighbourhood as the template centre.
+    if haversine_km(a_lat, a_lng, float(DEFAULT_PIN[0]), float(DEFAULT_PIN[1])) <= 0.6:
+        return w_lat, w_lng
+    return a_lat, a_lng
+
+
+def _folium_click_looks_like_phantom_default(
+    click_lat: float,
+    click_lng: float,
+    cur_lat: float,
+    cur_lng: float,
+) -> bool:
+    """
+    On reruns (e.g. sidebar widgets), Folium sometimes emits a synthetic last_clicked on the hardcoded
+    default centre. Only reject when the click is *very* close to that exact default point (~60 m) so we
+    do not block legitimate clicks elsewhere in Dubai.
+    """
+    d_cur_def = haversine_km(cur_lat, cur_lng, float(DEFAULT_PIN[0]), float(DEFAULT_PIN[1]))
+    d_click_def = haversine_km(click_lat, click_lng, float(DEFAULT_PIN[0]), float(DEFAULT_PIN[1]))
+    d_cur_click = haversine_km(cur_lat, cur_lng, click_lat, click_lng)
+    return d_cur_def > 3.0 and d_click_def < 0.06 and d_cur_click > 2.0
+
+
 def render_pin_map(
     radius_km: float,
     *,
@@ -464,10 +614,16 @@ def render_pin_map(
     lng = float(loc["lng"])
     label = str(loc.get("label") or "Search pin")
 
+    _zoom_anchor = f"{lat:.7f}|{lng:.7f}|{float(radius_km):g}"
+    if st.session_state.get("_pin_map_zoom_anchor") != _zoom_anchor:
+        st.session_state["_pin_map_zoom_anchor"] = _zoom_anchor
+        st.session_state["_pin_map_zoom_ui"] = _default_zoom_for_radius_km(radius_km)
+    _map_zoom = max(3, min(19, int(st.session_state.get("_pin_map_zoom_ui", _default_zoom_for_radius_km(radius_km)))))
+
     fmap = folium.Map(
         location=[lat, lng],
         tiles=None,
-        zoom_start=12,
+        zoom_start=_map_zoom,
         zoom_control=True,
         control_scale=True,
     )
@@ -555,40 +711,36 @@ def render_pin_map(
     ).add_to(fmap)
     folium.LayerControl(position="topright", collapsed=False).add_to(fmap)
 
-    sw, ne = _bounds_for_radius(lat, lng, radius_km)
-    fmap.fit_bounds([sw, ne], padding=(24, 24), max_zoom=16)
+    # NEVER include ``center`` in ``returned_objects`` by default — if the viewport center is watched,
+    # **every pan/zoom** triggers a full Streamlit rerun and fights ``st_folium(center=..., zoom=...)`` → zoom pulse loop.
+    # We only add ``center`` for a single run when the user asks to copy viewport → pin (see main).
+    _one_shot_center = bool(st.session_state.pop("_folium_capture_viewport_next", False))
+    ro: list[str] = ["last_clicked", "last_object_clicked"]
+    if _one_shot_center:
+        ro.append("center")
+    st.session_state["_folium_after_viewport_capture"] = _one_shot_center
 
+    _nonce = int(st.session_state.get("_folium_remount_nonce", 0))
     if basemap == "google":
         st.caption(
-            "**Google** basemaps (Map Tiles API). Use layer control (top-right) to switch roadmap / satellite. "
-            "Click the **map background** (street/satellite) to move the pin."
+            "**Move pin:** click the **map background** (not the blue marker). Layers: top-right. "
+            "**Pan/zoom** should stay stable — we no longer stream viewport ``center`` every frame."
         )
     else:
         st.caption(
-            "**Satellite** is photos only (no street text). For English road names use **Street map**, "
-            "or keep **Place names overlay** on. Layer control: top-right. "
-            "Click the **map background** to move the pin."
+            "**Move pin:** click the **map background**. Street map for labels; satellite + place names for imagery."
         )
-    # ``returned_objects=None`` returns full interaction dict — some streamlit-folium / tile setups
-    # omit ``last_clicked`` when the list is too narrow, which makes map clicks look dead.
-    _map_zoom = int(st.session_state.get("_pin_map_zoom_ui", 12))
-    _map_zoom = max(3, min(19, _map_zoom))
+
     out = st_folium(
         fmap,
-        height=520,
+        height=620,
         use_container_width=True,
-        returned_objects=None,
+        returned_objects=ro,
         center=(lat, lng),
         zoom=_map_zoom,
-        key="talabat_pin_map",
+        key=f"talabat_pin_map_{_nonce}",
     )
     out = dict(out or {})
-    z = out.get("zoom")
-    if z is not None:
-        try:
-            st.session_state["_pin_map_zoom_ui"] = max(3, min(19, int(z)))
-        except (TypeError, ValueError):
-            pass
     return out
 
 
@@ -1058,6 +1210,10 @@ def compact_output_df(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         "restaurant_url",
         "legal_name",
         "contact_phone",
+        "vendor_email",
+        "vendor_website",
+        "vendor_social",
+        "tax_or_license_hint",
         "just_landed",
         "just_landed_date",
         "rating",
@@ -1126,11 +1282,19 @@ def build_excel_export_df(df: pd.DataFrame) -> pd.DataFrame:
         else:
             out["area_label"] = ""
     out["scrape_date"] = datetime.utcnow().strftime("%Y-%m-%d")
+    # Legal + contact first (vendor page / Places enrichment); identity URLs next.
     export_cols = [
         "restaurant_name",
         "brand_display_name",
         "legal_name",
         "contact_phone",
+        "vendor_email",
+        "vendor_website",
+        "vendor_social",
+        "tax_or_license_hint",
+        "restaurant_url",
+        "brand_id",
+        "branch_sku",
         "cuisines",
         "orders_week_estimate",
         "platform",
@@ -1150,17 +1314,90 @@ def build_excel_export_df(df: pd.DataFrame) -> pd.DataFrame:
         columns={
             "restaurant_name": "restaurant",
             "brand_display_name": "brand",
+            "legal_name": "legal_entity_name",
             "contact_phone": "phone",
+            "vendor_email": "email",
+            "vendor_website": "website",
+            "vendor_social": "social_links",
+            "tax_or_license_hint": "tax_or_license",
             "cuisines": "cuisine",
             "distance_km_from_pin": "distance_from_pin_km",
+            "restaurant_url": "listing_url",
         }
     )
 
 
-def dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
+def _apply_area_intel_excel_formatting(ws, df: pd.DataFrame) -> None:
+    """Header styling, freeze pane, filters, widths, and sensible number formats."""
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    if ws.max_row < 1 or not len(df.columns):
+        return
+    header_fill = PatternFill(start_color="FFEFF6FF", end_color="FFEFF6FF", fill_type="solid")
+    bold = Font(bold=True, color="FF1E3A8A")
+    for col_idx in range(1, len(df.columns) + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = bold
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = "A2"
+    last_col = get_column_letter(len(df.columns))
+    ws.auto_filter.ref = f"A1:{last_col}{ws.max_row}"
+
+    lower_names = [str(c).lower() for c in df.columns]
+    fmt_for_col: dict[int, str] = {}
+    for idx, name in enumerate(lower_names, start=1):
+        if name in ("lat", "lng"):
+            fmt_for_col[idx] = "0.000000"
+        elif "distance" in name and "km" in name:
+            fmt_for_col[idx] = "0.00"
+        elif "orders" in name or "estimate" in name:
+            fmt_for_col[idx] = "0"
+
+    for col_idx in range(1, len(df.columns) + 1):
+        letter = get_column_letter(col_idx)
+        hdr = str(df.columns[col_idx - 1])
+        max_len = min(max(len(hdr), 12), 80)
+        sample_rows = min(ws.max_row, 600)
+        for row in range(2, sample_rows + 1):
+            val = ws.cell(row=row, column=col_idx).value
+            if val is not None and str(val).strip() != "":
+                max_len = min(max(max_len, len(str(val))), 80)
+        ws.column_dimensions[letter].width = min(max(max_len + 1.5, 11), 52)
+        if col_idx in fmt_for_col:
+            fc = fmt_for_col[col_idx]
+            for row in range(2, ws.max_row + 1):
+                c = ws.cell(row=row, column=col_idx)
+                if c.value is not None and c.value != "":
+                    try:
+                        if isinstance(c.value, (int, float)) or str(c.value).strip() != "":
+                            c.number_format = fc
+                    except Exception:
+                        pass
+
+
+def dataframe_to_excel_bytes(df: pd.DataFrame, *, summary: dict[str, str] | None = None) -> bytes:
     bio = io.BytesIO()
     with pd.ExcelWriter(bio, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Area Intel")
+        ws_data = writer.book["Area Intel"]
+        _apply_area_intel_excel_formatting(ws_data, df)
+        if summary:
+            from openpyxl.styles import Alignment, Font
+
+            meta_ws = writer.book.create_sheet("Run summary", 0)
+            meta_ws["A1"], meta_ws["B1"] = "Field", "Value"
+            meta_ws["A1"].font = Font(bold=True)
+            meta_ws["B1"].font = Font(bold=True)
+            row = 2
+            for k, v in summary.items():
+                meta_ws.cell(row=row, column=1, value=k)
+                meta_ws.cell(row=row, column=2, value=v)
+                meta_ws.cell(row=row, column=2).alignment = Alignment(wrap_text=True, vertical="top")
+                row += 1
+            meta_ws.column_dimensions["A"].width = 28
+            meta_ws.column_dimensions["B"].width = 72
     return bio.getvalue()
 
 
@@ -1197,6 +1434,7 @@ def main() -> None:
                 "**Worker (vendor pages)** = sends enrich=true for vendor detail pages; use when the API host has "
                 "SCRAPER_VENDOR_PAGE_ENRICH=1 (e.g. Hetzner worker)."
             ),
+            key="sidebar_scrape_profile",
         )
         st.caption(f"API: `{api_base_url}` · Profiles: {', '.join(_SCRAPE_PROFILES.keys())}")
 
@@ -1234,42 +1472,63 @@ def main() -> None:
             help="Stored as area_label in exports.",
         )
 
-        geocode_query = st.text_input("Address search (UAE)", value="")
-        geocode_btn = st.button("Set pin from search", width="stretch")
+        geocode_query = st.text_input(
+            "Address search (UAE)",
+            value="",
+            help="Enter a place name or street (e.g. Dubai Marina). The API rejects an empty search.",
+        )
+        _geocode_has_query = bool((geocode_query or "").strip())
+        geocode_btn = st.button(
+            "Set pin from search",
+            width="stretch",
+            disabled=not _geocode_has_query,
+            help=("Type an address above first.") if not _geocode_has_query else None,
+        )
 
         if geocode_btn:
-            try:
-                g_response = requests.post(
-                    f"{api_base_url.rstrip('/')}/geocode",
-                    json={"query": geocode_query},
-                    headers=headers,
-                    timeout=30,
-                )
-                g_response.raise_for_status()
-                payload = g_response.json()
-                result = payload.get("result")
-                if payload.get("ok") and result:
-                    set_scrape_location(
-                        float(result["lat"]),
-                        float(result["lng"]),
-                        str(result.get("formatted_address") or geocode_query).strip(),
-                        "geocode",
+            q = (geocode_query or "").strip()
+            if not q:
+                st.warning("Enter an address or area in **Address search (UAE)** before clicking **Set pin from search**.")
+            else:
+                try:
+                    g_response = requests.post(
+                        f"{api_base_url.rstrip('/')}/geocode",
+                        json={"query": q},
+                        headers=headers,
+                        timeout=30,
                     )
-                    sync_legacy_pin_mirror()
-                    provider = payload.get("provider", "unknown")
-                    st.session_state["last_geocode_provider"] = str(provider)
-                    st.session_state["last_geocode_label"] = str(get_scrape_location().get("label") or "")
-                    st.success(f"Pin set from search ({provider}): {get_scrape_location()['label']}")
-                    if payload.get("note"):
-                        st.info(str(payload["note"]))
-                else:
-                    hint = payload.get("hint")
-                    if hint:
-                        st.warning(hint)
+                    if not g_response.ok:
+                        try:
+                            body = g_response.json()
+                            msg = body.get("error") or body.get("detail") or g_response.reason
+                        except Exception:
+                            msg = g_response.text or g_response.reason
+                        st.error(f"Geocode failed ({g_response.status_code}): {msg}")
                     else:
-                        st.warning(f"No geocoding result. {payload.get('error', 'no details')}")
-            except Exception as exc:
-                st.error(f"Geocode failed via backend: {exc}")
+                        payload = g_response.json()
+                        result = payload.get("result")
+                        if payload.get("ok") and result:
+                            set_scrape_location(
+                                float(result["lat"]),
+                                float(result["lng"]),
+                                str(result.get("formatted_address") or q).strip(),
+                                "geocode",
+                            )
+                            sync_legacy_pin_mirror()
+                            provider = payload.get("provider", "unknown")
+                            st.session_state["last_geocode_provider"] = str(provider)
+                            st.session_state["last_geocode_label"] = str(get_scrape_location().get("label") or "")
+                            st.success(f"Pin set from search ({provider}): {get_scrape_location()['label']}")
+                            if payload.get("note"):
+                                st.info(str(payload["note"]))
+                        else:
+                            hint = payload.get("hint")
+                            if hint:
+                                st.warning(hint)
+                            else:
+                                st.warning(f"No geocoding result. {payload.get('error', 'no details')}")
+                except requests.RequestException as exc:
+                    st.error(f"Could not reach geocode API ({api_base_url}): {exc}")
         st.warning("Coastline tip: keep the pin slightly inland to avoid sparse ocean-side sampling.")
         run_single = st.button("Start Scraping", type="primary", width="stretch")
 
@@ -1285,9 +1544,9 @@ def main() -> None:
     st.session_state.setdefault(lat_internal_key, float(loc_ui["lat"]))
     st.session_state.setdefault(lng_internal_key, float(loc_ui["lng"]))
     source_now = str(loc_ui.get("source") or "")
-    if source_now in {"folium_click", "map_center_button", "geocode", "city_preset", "init", "manual_form"}:
-        st.session_state[lat_internal_key] = float(loc_ui["lat"])
-        st.session_state[lng_internal_key] = float(loc_ui["lng"])
+    # Always mirror authoritative ``scrape_location`` into staging keys (covers legacy_migrated and future sources).
+    st.session_state[lat_internal_key] = float(loc_ui["lat"])
+    st.session_state[lng_internal_key] = float(loc_ui["lng"])
     # ``st.number_input`` keeps its own session_state per ``key=``; after a map click / geocode / preset the
     # authoritative pin moves but the widgets would still return stale coords and overwrite the pin below.
     if source_now in {"folium_click", "geocode", "city_preset", "init", "map_center_button"}:
@@ -1315,6 +1574,22 @@ def main() -> None:
     # Map + click handling **before** number_input: lat/lng widgets were calling set_scrape_location(manual_form)
     # every run and overwriting the pin *before* last_clicked was applied, so clicks appeared to do nothing.
     st.subheader("Interactive search map")
+    rh1, rh2 = st.columns([1, 3])
+    with rh1:
+        if st.button(
+            "Recenter on pin",
+            key="folium_recenter_btn",
+            help="Snap the map view back to your run pin (after panning away). Does not change the pin coordinates.",
+        ):
+            st.session_state["_folium_remount_nonce"] = int(
+                st.session_state.get("_folium_remount_nonce", 0)
+            ) + 1
+            st.rerun()
+    with rh2:
+        st.caption(
+            "Click the **map background** to move the scrape pin. After you pan/zoom, the map **stays there** until "
+            "you change the pin, radius, or press **Recenter on pin**."
+        )
     folium_out = render_pin_map(
         radius_km,
         lock_pin=False,
@@ -1323,20 +1598,53 @@ def main() -> None:
         dual_points=dual_points_for_map,
     )
     store_folium_payload(folium_out)
-    # Folium click payloads are flaky behind some reverse proxies; viewport center is updated on pan/zoom reliably.
+    # ``center`` is only returned on one-shot "copy viewport" runs (see render_pin_map); avoid feeding rerun loops.
     cctr = folium_out.get("center")
-    if isinstance(cctr, dict):
-        try:
-            clat = cctr.get("lat")
-            clng = cctr.get("lng") if cctr.get("lng") is not None else cctr.get("lon")
-            if clat is not None and clng is not None:
-                st.session_state["_folium_last_center"] = (
-                    float(str(clat).strip()),
-                    float(str(clng).strip()),
-                )
-        except (TypeError, ValueError):
-            pass
+
+    if st.session_state.pop("_folium_after_viewport_capture", False):
+        ctr_tpl = None
+        if isinstance(cctr, dict):
+            try:
+                clat = cctr.get("lat")
+                clng = cctr.get("lng") if cctr.get("lng") is not None else cctr.get("lon")
+                if clat is not None and clng is not None:
+                    ctr_tpl = (float(str(clat).strip()), float(str(clng).strip()))
+            except (TypeError, ValueError):
+                ctr_tpl = None
+        if ctr_tpl is not None:
+            plat, plng = ctr_tpl
+            st.session_state["runpin_last_click_sig"] = ""
+            oblob = _folium_interaction_blob(folium_out)
+            if oblob is not None:
+                st.session_state["_folium_processed_click_blob"] = oblob
+            set_scrape_location(plat, plng, "Run pin (map center)", "map_center_button")
+            sync_legacy_pin_mirror()
+            st.toast(f"Pin set to map center → {plat:.5f}, {plng:.5f}", icon="🎯")
+            st.rerun()
+        else:
+            st.warning(
+                "Could not read the map center. Pan or zoom once, then click **Use map center as pin** again."
+            )
+
+    interaction_blob = _folium_interaction_blob(folium_out)
     click_ll = _folium_click_latlng(folium_out)
+    # Do not dedupe using "same blob as end of last run": Folium often lags one rerun, so the previous
+    # snapshot matches the real click and legitimate clicks were dropped. ``_folium_processed_click_blob``
+    # is enough to suppress stale replays of the *same* event.
+    if (
+        interaction_blob is not None
+        and interaction_blob == st.session_state.get("_folium_processed_click_blob")
+    ):
+        # streamlit-folium often resends the same last_clicked on pan/zoom reruns; do not re-apply it.
+        click_ll = None
+    if click_ll is not None:
+        c_lat, c_lng = click_ll
+        if _folium_click_looks_like_phantom_default(
+            c_lat, c_lng, float(loc_ui["lat"]), float(loc_ui["lng"])
+        ):
+            click_ll = None
+            if interaction_blob is not None:
+                st.session_state["_folium_processed_click_blob"] = interaction_blob
     if click_ll is not None:
         click_lat, click_lng = click_ll
         click_sig = f"{click_lat:.6f},{click_lng:.6f}"
@@ -1354,6 +1662,8 @@ def main() -> None:
                     st.session_state["dual_area_b_lng"] = click_lng
                     st.session_state["dual_map_next_slot"] = "A"
                 st.session_state["dual_last_click_sig"] = click_sig
+                if interaction_blob is not None:
+                    st.session_state["_folium_processed_click_blob"] = interaction_blob
                 # Keep the main run pin synced with the latest map click.
                 set_scrape_location(click_lat, click_lng, "Custom pin (map)", "folium_click")
                 sync_legacy_pin_mirror()
@@ -1362,6 +1672,8 @@ def main() -> None:
         else:
             if click_sig != str(st.session_state.get("runpin_last_click_sig") or ""):
                 st.session_state["runpin_last_click_sig"] = click_sig
+                if interaction_blob is not None:
+                    st.session_state["_folium_processed_click_blob"] = interaction_blob
                 set_scrape_location(click_lat, click_lng, "Custom pin (map)", "folium_click")
                 sync_legacy_pin_mirror()
                 st.toast(f"Pin → {click_lat:.5f}, {click_lng:.5f}", icon="📍")
@@ -1370,19 +1682,17 @@ def main() -> None:
     if st.button(
         "Use map center as pin",
         key="pin_from_map_center_btn",
-        help="Pan/zoom until the area you want is in the middle of the map, then click here. "
-        "Use this if clicking the map does not move the pin (some browsers or HTTPS proxies block Folium clicks).",
+        help="Pan/zoom until the area you want is in the middle of the map, then click here **once**. "
+        "The next load reads the viewport center (two-step by design — avoids zoom jitter). "
+        "Also use if map clicks do not move the pin.",
     ):
-        ctr = st.session_state.get("_folium_last_center")
-        if isinstance(ctr, tuple) and len(ctr) == 2:
-            plat, plng = float(ctr[0]), float(ctr[1])
-            st.session_state["runpin_last_click_sig"] = ""
-            set_scrape_location(plat, plng, "Run pin (map center)", "map_center_button")
-            sync_legacy_pin_mirror()
-            st.toast(f"Pin set to map center → {plat:.5f}, {plng:.5f}", icon="🎯")
-            st.rerun()
-        else:
-            st.warning("Pan or zoom the map once, then try again (the app could not read the map center yet).")
+        st.session_state["_folium_capture_viewport_next"] = True
+        st.rerun()
+
+    _render_google_maps_reference_panel(radius_km)
+
+    _heal_run_pin_widgets_if_stale_default(_pin_widget_scope)
+    _auth_pin_before_num_inputs = get_scrape_location()
 
     pin_done = str(get_scrape_location().get("source") or "") not in ("init", "")
     step1_cls = "step-card done" if pin_done else "step-card active"
@@ -1413,14 +1723,20 @@ def main() -> None:
             step=0.0001,
             key=f"run_pin_lng_input__{_pin_widget_scope}",
         )
-    st.session_state[lat_internal_key] = float(run_lat)
-    st.session_state[lng_internal_key] = float(run_lng)
+    _rw_lat = float(run_lat)
+    _rw_lng = float(run_lng)
+    _fin_lat, _fin_lng = _coalesce_run_pin_inputs_vs_authoritative(_rw_lat, _rw_lng, _auth_pin_before_num_inputs)
+    if abs(_fin_lat - _rw_lat) > 1e-9 or abs(_fin_lng - _rw_lng) > 1e-9:
+        st.session_state[f"run_pin_lat_input__{_pin_widget_scope}"] = _fin_lat
+        st.session_state[f"run_pin_lng_input__{_pin_widget_scope}"] = _fin_lng
+    st.session_state[lat_internal_key] = _fin_lat
+    st.session_state[lng_internal_key] = _fin_lng
     # Typing new lat/lng must reset map dedupe so the next click (even near the same coords) applies.
-    if abs(float(run_lat) - float(loc_ui["lat"])) > 1e-9 or abs(float(run_lng) - float(loc_ui["lng"])) > 1e-9:
+    if abs(_fin_lat - float(loc_ui["lat"])) > 1e-9 or abs(_fin_lng - float(loc_ui["lng"])) > 1e-9:
         st.session_state["runpin_last_click_sig"] = ""
     set_scrape_location(
-        float(run_lat),
-        float(run_lng),
+        _fin_lat,
+        _fin_lng,
         str(get_scrape_location().get("label") or "Run pin"),
         "manual_form",
     )
@@ -2060,14 +2376,33 @@ def main() -> None:
             )
         st.dataframe(view_df, width="stretch", height=460)
         excel_df = build_excel_export_df(view_df)
-        excel_bytes = dataframe_to_excel_bytes(excel_df)
+        loc_x = get_scrape_location()
+        excel_summary = {
+            "Generated (UTC)": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            "Run pin (lat · lng)": f'{float(loc_x["lat"]):.6f}, {float(loc_x["lng"]):.6f}',
+            "Radius (km)": str(radius_km),
+            "Scrape profile": selected_profile_name,
+            "Rows in export": str(len(excel_df)),
+            "Area / target label": target_area_label.strip() or "—",
+            "Pin label": str(loc_x.get("label") or "—")[:200],
+        }
+        rid_x = meta.get("request_id")
+        if rid_x:
+            excel_summary["API request_id"] = str(rid_x)
+        eff_lat = meta.get("effective_scrape_pin_lat")
+        eff_lng = meta.get("effective_scrape_pin_lng")
+        if eff_lat is not None and eff_lng is not None:
+            excel_summary["Effective scrape pin (API)"] = f"{float(eff_lat):.6f}, {float(eff_lng):.6f}"
+        excel_bytes = dataframe_to_excel_bytes(excel_df, summary=excel_summary)
+        _excel_fn = f"area_intel_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.xlsx"
         c1, c2, c3 = st.columns([2, 1, 1])
         c1.download_button(
             "Download Excel",
             data=excel_bytes,
-            file_name="area_intel_results.xlsx",
+            file_name=_excel_fn,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             width="stretch",
+            help="Spreadsheet includes a **Run summary** sheet plus formatted **Area Intel** data (URLs, filters).",
         )
         c2.download_button(
             "CSV",
