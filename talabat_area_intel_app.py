@@ -597,7 +597,27 @@ def _folium_click_looks_like_phantom_default(
     d_cur_def = haversine_km(cur_lat, cur_lng, float(DEFAULT_PIN[0]), float(DEFAULT_PIN[1]))
     d_click_def = haversine_km(click_lat, click_lng, float(DEFAULT_PIN[0]), float(DEFAULT_PIN[1]))
     d_cur_click = haversine_km(cur_lat, cur_lng, click_lat, click_lng)
-    return d_cur_def > 3.0 and d_click_def < 0.06 and d_cur_click > 2.0
+    # Reject synthetic ``last_clicked`` replays at the template default while the real pin is elsewhere.
+    return d_cur_def > 1.0 and d_click_def < 0.08 and d_cur_click > 1.0
+
+
+def _folium_should_push_stf_view(lat: float, lng: float, radius_km: float, remount_nonce: int) -> bool:
+    """
+    Only pass ``center`` / ``zoom`` into ``st_folium`` when the pin/radius changed or the map remounted.
+    Sending them on **every** Streamlit rerun makes the iframe resync Leaflet to Python props on each run,
+    which fights user pan/zoom and looks like zoom pulsing / sometimes snaps back to the scripted view.
+    """
+    sig = f"{lat:.7f}|{lng:.7f}|{float(radius_km):g}"
+    prev_nonce = st.session_state.get("_folium_stf_push_nonce")
+    prev_sig = str(st.session_state.get("_folium_stf_push_sig") or "")
+    if prev_nonce is None or int(prev_nonce) != int(remount_nonce):
+        st.session_state["_folium_stf_push_nonce"] = int(remount_nonce)
+        st.session_state["_folium_stf_push_sig"] = sig
+        return True
+    if prev_sig != sig:
+        st.session_state["_folium_stf_push_sig"] = sig
+        return True
+    return False
 
 
 def render_pin_map(
@@ -715,31 +735,35 @@ def render_pin_map(
     # **every pan/zoom** triggers a full Streamlit rerun and fights ``st_folium(center=..., zoom=...)`` → zoom pulse loop.
     # We only add ``center`` for a single run when the user asks to copy viewport → pin (see main).
     _one_shot_center = bool(st.session_state.pop("_folium_capture_viewport_next", False))
-    ro: list[str] = ["last_clicked", "last_object_clicked"]
+    # ``last_object_clicked`` can fire on layer UI / overlays and cause extra reruns; map background uses ``last_clicked``.
+    ro: list[str] = ["last_clicked"]
     if _one_shot_center:
         ro.append("center")
     st.session_state["_folium_after_viewport_capture"] = _one_shot_center
 
     _nonce = int(st.session_state.get("_folium_remount_nonce", 0))
+    _push_stf = _folium_should_push_stf_view(lat, lng, radius_km, _nonce)
     if basemap == "google":
         st.caption(
             "**Move pin:** click the **map background** (not the blue marker). Layers: top-right. "
-            "**Pan/zoom** should stay stable — we no longer stream viewport ``center`` every frame."
+            "**Pan/zoom** stay put across sidebar updates; the map view jumps only when your **pin or radius** "
+            "changes or you press **Recenter on pin**."
         )
     else:
         st.caption(
             "**Move pin:** click the **map background**. Street map for labels; satellite + place names for imagery."
         )
 
-    out = st_folium(
-        fmap,
-        height=620,
-        use_container_width=True,
-        returned_objects=ro,
-        center=(lat, lng),
-        zoom=_map_zoom,
-        key=f"talabat_pin_map_{_nonce}",
-    )
+    _kw: dict = {
+        "height": 620,
+        "use_container_width": True,
+        "returned_objects": ro,
+        "key": f"talabat_pin_map_{_nonce}",
+    }
+    if _push_stf:
+        _kw["center"] = (lat, lng)
+        _kw["zoom"] = _map_zoom
+    out = st_folium(fmap, **_kw)
     out = dict(out or {})
     return out
 
@@ -1639,8 +1663,9 @@ def main() -> None:
         click_ll = None
     if click_ll is not None:
         c_lat, c_lng = click_ll
+        _cur_pin = get_scrape_location()
         if _folium_click_looks_like_phantom_default(
-            c_lat, c_lng, float(loc_ui["lat"]), float(loc_ui["lng"])
+            c_lat, c_lng, float(_cur_pin["lat"]), float(_cur_pin["lng"])
         ):
             click_ll = None
             if interaction_blob is not None:
