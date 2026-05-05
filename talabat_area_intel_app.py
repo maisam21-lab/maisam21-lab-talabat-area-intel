@@ -1664,6 +1664,12 @@ def main() -> None:
 
     interaction_blob = _folium_interaction_blob(folium_out)
     click_ll = _folium_click_latlng(folium_out)
+    # If the user pressed Start Scraping this run, do not let stale Folium click payloads
+    # preempt the scrape with another st.rerun() (common source of "pin jumps back" UX).
+    if run_single:
+        click_ll = None
+        if interaction_blob is not None:
+            st.session_state["_folium_processed_click_blob"] = interaction_blob
     # Do not dedupe using "same blob as end of last run": Folium often lags one rerun, so the previous
     # snapshot matches the real click and legitimate clicks were dropped. ``_folium_processed_click_blob``
     # is enough to suppress stale replays of the *same* event.
