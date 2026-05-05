@@ -1476,7 +1476,7 @@ def main() -> None:
     _pin_widget_scope = str(city_key) if is_city_mode else "custom_pin_mode"
     st.subheader("Run pin (single source for scraping)")
     st.caption(
-        "Use the **map** (click background) or **lat/lng** below — both update the same `scrape_location` "
+        "Use **Address search** or **lat/lng** below to update the same `scrape_location` "
         "sent to the API. **Start Scraping** is in the sidebar."
     )
     loc_ui = get_scrape_location()
@@ -1512,8 +1512,8 @@ def main() -> None:
             },
         ]
 
-    st.subheader("Interactive search map")
-    st.caption("Search + Run pin lat/lng are the reliable pin setters. If browser blocks map click wiring, use those controls.")
+    st.subheader("Search map preview")
+    st.caption("Pin updates are driven by **Address search** and **Run pin** lat/lng + **Apply typed pin**.")
     if "pin_lat" in st.query_params and "pin_lng" in st.query_params:
         try:
             b_lat = float(str(st.query_params.get("pin_lat", "")).strip())
@@ -1588,21 +1588,14 @@ def main() -> None:
         )
         sync_legacy_pin_mirror()
 
-    # Render preview AFTER pin finalization so it is always wired to effective scrape_location.
+    # Render preview AFTER pin finalization so it always reflects effective scrape_location.
     _map_loc = get_scrape_location()
-    _gm_key = _get_google_maps_api_key_for_basemap()
     _z = max(3, min(21, int(st.session_state.get("_pin_map_zoom_ui", _default_zoom_for_radius_km(radius_km)))))
-    if _gm_key:
-        components.html(
-            render_google_maps_pin(float(_map_loc["lat"]), float(_map_loc["lng"]), _gm_key, float(radius_km)),
-            height=440,
-        )
-    else:
-        _gmap_url = f"https://www.google.com/maps?q={float(_map_loc['lat']):.6f},{float(_map_loc['lng']):.6f}&z={_z}&output=embed"
-        st.markdown(
-            f'<iframe src="{_gmap_url}" width="100%" height="420" style="border:0;border-radius:10px;" loading="lazy"></iframe>',
-            unsafe_allow_html=True,
-        )
+    _gmap_url = f"https://www.google.com/maps?q={float(_map_loc['lat']):.6f},{float(_map_loc['lng']):.6f}&z={_z}&output=embed"
+    st.markdown(
+        f'<iframe src="{_gmap_url}" width="100%" height="420" style="border:0;border-radius:10px;" loading="lazy"></iframe>',
+        unsafe_allow_html=True,
+    )
     _render_google_maps_reference_panel(radius_km)
 
     st.subheader("Run")
