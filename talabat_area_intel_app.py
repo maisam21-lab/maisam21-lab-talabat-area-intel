@@ -421,6 +421,22 @@ def render_google_maps_pin(lat: float, lng: float, api_key: str, radius_km: floa
     return f"""
 <div id="gm-pin-map" style="height:420px;border:0;border-radius:10px;"></div>
 <script>
+  function _setBridgeValue(lat, lng) {
+    try {
+      const doc = window.parent.document;
+      const next = lat.toFixed(6) + "," + lng.toFixed(6);
+      const bridge = doc.querySelector('input[aria-label="map_pin_bridge"]');
+      if (!bridge) return false;
+      const setter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, 'value').set;
+      setter.call(bridge, next);
+      bridge.dispatchEvent(new Event('input', { bubbles: true }));
+      bridge.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   function _setUrlPin(lat, lng) {{
     const url = new URL(window.parent.location.href);
     const nextLat = lat.toFixed(6);
@@ -431,6 +447,11 @@ def render_google_maps_pin(lat: float, lng: float, api_key: str, radius_km: floa
     url.searchParams.set('_pin_ts', String(Date.now()));
     window.parent.location.href = url.toString();
   }}
+
+  function _publishPin(lat, lng) {
+    _setBridgeValue(lat, lng);
+    _setUrlPin(lat, lng);
+  }
 
   function initGmPinMap() {{
     const center = {{ lat: {float(lat):.8f}, lng: {float(lng):.8f} }};
@@ -449,11 +470,11 @@ def render_google_maps_pin(lat: float, lng: float, api_key: str, radius_km: floa
     map.addListener('click', (e) => {{
       marker.setPosition(e.latLng);
       circle.setCenter(e.latLng);
-      _setUrlPin(e.latLng.lat(), e.latLng.lng());
+      _publishPin(e.latLng.lat(), e.latLng.lng());
     }});
     marker.addListener('dragend', (e) => {{
       circle.setCenter(e.latLng);
-      _setUrlPin(e.latLng.lat(), e.latLng.lng());
+      _publishPin(e.latLng.lat(), e.latLng.lng());
     }});
   }}
 </script>
@@ -1476,7 +1497,7 @@ def main() -> None:
     _pin_widget_scope = str(city_key) if is_city_mode else "custom_pin_mode"
     st.subheader("Run pin (single source for scraping)")
     st.caption(
-        "Use **Address search** or **lat/lng** below to update the same `scrape_location` "
+        "Use the **map** (click/drag marker), **Address search**, or **lat/lng** below to update the same `scrape_location` "
         "sent to the API. **Start Scraping** is in the sidebar."
     )
     loc_ui = get_scrape_location()
@@ -1512,8 +1533,28 @@ def main() -> None:
             },
         ]
 
-    st.subheader("Search map preview")
-    st.caption("Pin updates are driven by **Address search** and **Run pin** lat/lng + **Apply typed pin**.")
+    st.subheader("Interactive search map")
+    st.caption("Click or drag the marker to update the app pin lat/lng.")
+    loc_bridge = get_scrape_location()
+    bridge_default = f"{float(loc_bridge['lat']):.6f},{float(loc_bridge['lng']):.6f}"
+    st.text_input(
+        "map_pin_bridge",
+        value=bridge_default,
+        key="map_pin_bridge",
+        label_visibility="collapsed",
+    )
+    bridge_raw = str(st.session_state.get("map_pin_bridge") or "").strip()
+    if bridge_raw and "," in bridge_raw:
+        try:
+            br_lat_s, br_lng_s = [x.strip() for x in bridge_raw.split(",", 1)]
+            br_lat = float(br_lat_s)
+            br_lng = float(br_lng_s)
+            cur2 = get_scrape_location()
+            if abs(br_lat - float(cur2["lat"])) > 1e-5 or abs(br_lng - float(cur2["lng"])) > 1e-5:
+                set_scrape_location(br_lat, br_lng, "Map pin", "map_click")
+                sync_legacy_pin_mirror()
+        except Exception:
+            pass
     if "pin_lat" in st.query_params and "pin_lng" in st.query_params:
         try:
             b_lat = float(str(st.query_params.get("pin_lat", "")).strip())
@@ -1588,14 +1629,21 @@ def main() -> None:
         )
         sync_legacy_pin_mirror()
 
-    # Render preview AFTER pin finalization so it always reflects effective scrape_location.
+    # Render map AFTER pin finalization so it is wired to effective scrape_location.
     _map_loc = get_scrape_location()
     _z = max(3, min(21, int(st.session_state.get("_pin_map_zoom_ui", _default_zoom_for_radius_km(radius_km)))))
-    _gmap_url = f"https://www.google.com/maps?q={float(_map_loc['lat']):.6f},{float(_map_loc['lng']):.6f}&z={_z}&output=embed"
-    st.markdown(
-        f'<iframe src="{_gmap_url}" width="100%" height="420" style="border:0;border-radius:10px;" loading="lazy"></iframe>',
-        unsafe_allow_html=True,
-    )
+    _gm_key = _get_google_maps_api_key_for_basemap()
+    if _gm_key:
+        components.html(
+            render_google_maps_pin(float(_map_loc["lat"]), float(_map_loc["lng"]), _gm_key, float(radius_km)),
+            height=440,
+        )
+    else:
+        _gmap_url = f"https://www.google.com/maps?q={float(_map_loc['lat']):.6f},{float(_map_loc['lng']):.6f}&z={_z}&output=embed"
+        st.markdown(
+            f'<iframe src="{_gmap_url}" width="100%" height="420" style="border:0;border-radius:10px;" loading="lazy"></iframe>',
+            unsafe_allow_html=True,
+        )
     _render_google_maps_reference_panel(radius_km)
 
     st.subheader("Run")
