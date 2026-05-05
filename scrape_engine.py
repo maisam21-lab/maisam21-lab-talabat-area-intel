@@ -1915,6 +1915,91 @@ def add_rating_and_order_rate_proxies(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def add_legal_contact_provenance(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add explainable legal/contact metadata for filtering and exports.
+
+    Columns:
+    - ``legal_name_candidate``: best available legal/trade name candidate
+    - ``legal_name_source``: where legal name likely came from
+    - ``contact_source``: where contact details likely came from
+    - ``source_url``: best page URL for manual verification
+    - ``last_verified_at``: UTC stamp for this scrape record
+    - ``confidence_score``: 0.00..1.00 confidence proxy
+    """
+    if df.empty:
+        return df
+
+    out = df.copy()
+    if "legal_name_candidate" not in out.columns:
+        out["legal_name_candidate"] = ""
+    if "legal_name_source" not in out.columns:
+        out["legal_name_source"] = ""
+    if "contact_source" not in out.columns:
+        out["contact_source"] = ""
+    if "source_url" not in out.columns:
+        out["source_url"] = ""
+    if "last_verified_at" not in out.columns:
+        out["last_verified_at"] = ""
+    if "confidence_score" not in out.columns:
+        out["confidence_score"] = 0.0
+
+    # Prefer the explicit legal_name, then Google business name, then listing name.
+    legal = out.get("legal_name", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str).str.strip()
+    gname = out.get("google_maps_name", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str).str.strip()
+    rname = out.get("restaurant_name", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str).str.strip()
+    out["legal_name_candidate"] = legal.where(legal.str.len() > 0, gname.where(gname.str.len() > 0, rname))
+
+    has_legal = legal.str.len() > 0
+    has_gname = gname.str.len() > 0
+    has_tax_hint = (
+        out.get("tax_or_license_hint", pd.Series([""] * len(out), index=out.index))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.len()
+        > 0
+    )
+    out.loc[has_legal, "legal_name_source"] = "vendor_page_or_talabat"
+    out.loc[(~has_legal) & has_gname, "legal_name_source"] = "google_places"
+    out.loc[(~has_legal) & (~has_gname), "legal_name_source"] = "listing_name_fallback"
+    out.loc[has_tax_hint & (~has_legal), "legal_name_source"] = "tax_or_license_hint"
+
+    phone = out.get("contact_phone", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str).str.strip()
+    email = out.get("vendor_email", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str).str.strip()
+    website = out.get("vendor_website", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str).str.strip()
+    gwebsite = out.get("google_business_website", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str).str.strip()
+    has_phone = phone.str.len() > 0
+    has_email = email.str.len() > 0
+    has_web = website.str.len() > 0
+    has_gweb = gwebsite.str.len() > 0
+
+    out.loc[:, "contact_source"] = "none"
+    out.loc[has_phone | has_email | has_web, "contact_source"] = "vendor_page_or_talabat"
+    out.loc[(~(has_phone | has_email | has_web)) & (has_gweb | has_gname), "contact_source"] = "google_places"
+
+    # Prefer first-party website URL; otherwise Google Maps link; otherwise Talabat listing URL.
+    maps_url = out.get("google_maps_link", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str).str.strip()
+    rurl = out.get("restaurant_url", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str).str.strip()
+    out["source_url"] = website.where(has_web, gwebsite.where(has_gweb, maps_url.where(maps_url.str.len() > 0, rurl)))
+
+    # Reuse scrape timestamp where available; fallback to now UTC.
+    scrape_ts = out.get("scrape_ts_utc", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str).str.strip()
+    now_utc = datetime.now(timezone.utc).isoformat()
+    out["last_verified_at"] = scrape_ts.where(scrape_ts.str.len() > 0, now_utc)
+
+    # Lightweight confidence scoring for operational filtering.
+    score = pd.Series(0.25, index=out.index, dtype=float)
+    score += has_legal.astype(float) * 0.25
+    score += has_tax_hint.astype(float) * 0.15
+    score += has_phone.astype(float) * 0.15
+    score += has_email.astype(float) * 0.10
+    score += has_web.astype(float) * 0.05
+    score += (has_gname | has_gweb).astype(float) * 0.10
+    out["confidence_score"] = score.clip(0.0, 1.0).round(2)
+    return out
+
+
 def _listing_seed_hub_urls(grid_high_volume: bool) -> list[str]:
     """
     Hub URLs used only for HTTP + Playwright listing seeds.
@@ -3038,4 +3123,5 @@ async def run_area_scrape(
         # Listing scrape rarely yields status=="live"; treat "live" as "not closed".
         df = df[df["status"] != "closed"].copy()
     df = add_rating_and_order_rate_proxies(df)
+    df = add_legal_contact_provenance(df)
     return df.reset_index(drop=True)
