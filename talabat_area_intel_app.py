@@ -5,6 +5,7 @@ import io
 import json
 import math
 import os
+from pathlib import Path
 from urllib.parse import quote, quote_plus
 import threading
 import time
@@ -480,6 +481,20 @@ def render_google_maps_pin(lat: float, lng: float, api_key: str, radius_km: floa
 </script>
 <script async defer src="https://maps.googleapis.com/maps/api/js?key={safe_key}&callback=initGmPinMap"></script>
 """
+
+
+def _google_pin_component(lat: float, lng: float, api_key: str, radius_km: float):
+    comp = components.declare_component(
+        "google_pin_picker",
+        path=str(Path(__file__).resolve().parent / "components" / "google_pin_picker"),
+    )
+    return comp(
+        lat=float(lat),
+        lng=float(lng),
+        api_key=str(api_key or ""),
+        radius_km=float(radius_km),
+        default=None,
+    )
 
 
 def _configure_map_basemaps(fmap: folium.Map) -> str:
@@ -1634,10 +1649,22 @@ def main() -> None:
     _z = max(3, min(21, int(st.session_state.get("_pin_map_zoom_ui", _default_zoom_for_radius_km(radius_km)))))
     _gm_key = _get_google_maps_api_key_for_basemap()
     if _gm_key:
-        components.html(
-            render_google_maps_pin(float(_map_loc["lat"]), float(_map_loc["lng"]), _gm_key, float(radius_km)),
-            height=440,
+        map_pick = _google_pin_component(
+            float(_map_loc["lat"]),
+            float(_map_loc["lng"]),
+            _gm_key,
+            float(radius_km),
         )
+        if isinstance(map_pick, dict):
+            try:
+                p_lat = float(map_pick.get("lat"))
+                p_lng = float(map_pick.get("lng"))
+                cur_pick = get_scrape_location()
+                if abs(p_lat - float(cur_pick["lat"])) > 1e-5 or abs(p_lng - float(cur_pick["lng"])) > 1e-5:
+                    set_scrape_location(p_lat, p_lng, "Map pin", "map_click")
+                    sync_legacy_pin_mirror()
+            except Exception:
+                pass
     else:
         _gmap_url = f"https://www.google.com/maps?q={float(_map_loc['lat']):.6f},{float(_map_loc['lng']):.6f}&z={_z}&output=embed"
         st.markdown(

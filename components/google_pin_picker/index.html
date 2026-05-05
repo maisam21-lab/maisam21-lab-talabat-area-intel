@@ -1,0 +1,105 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="https://unpkg.com/streamlit-component-lib@1.4.0/dist/index.js"></script>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #map { height: 420px; width: 100%; border-radius: 10px; overflow: hidden; }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <script>
+      let map = null;
+      let marker = null;
+      let circle = null;
+      let currentKey = "";
+
+      function publish(lat, lng) {
+        Streamlit.setComponentValue({
+          lat: Number(lat.toFixed(6)),
+          lng: Number(lng.toFixed(6)),
+          ts: Date.now()
+        });
+      }
+
+      function ensureGoogleMaps(apiKey, callback) {
+        if (window.google && window.google.maps) {
+          callback();
+          return;
+        }
+        window.__initGmPicker = callback;
+        const s = document.createElement("script");
+        s.src = "https://maps.googleapis.com/maps/api/js?key=" + encodeURIComponent(apiKey) + "&callback=__initGmPicker";
+        s.async = true;
+        s.defer = true;
+        document.head.appendChild(s);
+      }
+
+      function draw(args) {
+        const lat = Number(args.lat);
+        const lng = Number(args.lng);
+        const radiusM = Math.max(100, Number(args.radius_km || 5) * 1000);
+        const apiKey = String(args.api_key || "");
+        const key = [lat.toFixed(6), lng.toFixed(6), radiusM.toFixed(1)].join("|");
+        if (!apiKey) return;
+
+        ensureGoogleMaps(apiKey, () => {
+          const center = { lat, lng };
+          if (!map) {
+            map = new google.maps.Map(document.getElementById("map"), {
+              center,
+              zoom: 13,
+              mapTypeId: "roadmap",
+              gestureHandling: "greedy"
+            });
+            marker = new google.maps.Marker({
+              map,
+              position: center,
+              draggable: true,
+              icon: "http://maps.google.com/mapfiles/ms/icons/blue-dot.png"
+            });
+            circle = new google.maps.Circle({
+              map,
+              center,
+              radius: radiusM,
+              strokeColor: "#1D4ED8",
+              strokeOpacity: 0.95,
+              strokeWeight: 2,
+              fillColor: "#2563EB",
+              fillOpacity: 0.12
+            });
+            map.addListener("click", (e) => {
+              marker.setPosition(e.latLng);
+              circle.setCenter(e.latLng);
+              publish(e.latLng.lat(), e.latLng.lng());
+            });
+            marker.addListener("dragend", (e) => {
+              circle.setCenter(e.latLng);
+              publish(e.latLng.lat(), e.latLng.lng());
+            });
+          }
+
+          if (currentKey !== key) {
+            map.setCenter(center);
+            marker.setPosition(center);
+            circle.setCenter(center);
+            circle.setRadius(radiusM);
+            currentKey = key;
+          }
+          Streamlit.setFrameHeight(430);
+        });
+      }
+
+      function onRender(event) {
+        draw(event.detail.args || {});
+      }
+
+      Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, onRender);
+      Streamlit.setComponentReady();
+      Streamlit.setFrameHeight(430);
+    </script>
+  </body>
+</html>
