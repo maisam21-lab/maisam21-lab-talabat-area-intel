@@ -1407,6 +1407,24 @@ def main() -> None:
             key="sidebar_scrape_profile",
         )
         st.caption(f"API: `{api_base_url}` · Profiles: {', '.join(_SCRAPE_PROFILES.keys())}")
+        try:
+            _cfg_resp = requests.get(
+                f"{api_base_url.rstrip('/')}/health/scrape-config",
+                headers=headers,
+                timeout=8,
+            )
+            if _cfg_resp.ok:
+                _cfg = _cfg_resp.json()
+                _pag = str(_cfg.get("scraper_listing_page_pagination", "")).strip() or "0"
+                _maxp = int(_cfg.get("scraper_listing_max_pages", 0) or 0)
+                _dmax = int(_cfg.get("restaurant_detail_enrich_max_default", 0) or 0)
+                st.caption(
+                    f"Runtime flags: Pagination=`{_pag}` · Max pages=`{_maxp}` · Detail enrich max=`{_dmax}`"
+                )
+            else:
+                st.caption("Runtime flags: unavailable (health/scrape-config not reachable).")
+        except Exception:
+            st.caption("Runtime flags: unavailable (health/scrape-config not reachable).")
 
         st.markdown("**1) Location**")
         city_key = st.selectbox(
