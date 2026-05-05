@@ -873,6 +873,10 @@ async def extract_restaurants(
                 min_order = t
             if not rating and re.search(r"\b\d\.\d\b", t):
                 rating = t
+            if not rating:
+                r_lbl = _rating_label_to_numeric(t)
+                if r_lbl:
+                    rating = r_lbl
 
         if " - " in name:
             p1, p2 = name.split(" - ", 1)
@@ -988,6 +992,27 @@ def _best_rating_string(cands: list[str]) -> str:
         return ""
     out = f"{best:.2f}".rstrip("0").rstrip(".")
     return out
+
+
+def _rating_label_to_numeric(text: str) -> str:
+    """
+    Talabat sometimes exposes qualitative ratings (e.g. "Very good") instead of numeric stars.
+    Convert common labels to a stable numeric proxy so rating is not dropped as blank.
+    """
+    s = (text or "").strip().lower()
+    if not s:
+        return ""
+    if re.search(r"\bexcellent\b", s):
+        return "4.7"
+    if re.search(r"\bvery\s+good\b", s):
+        return "4.2"
+    if re.search(r"\bgood\b", s):
+        return "3.7"
+    if re.search(r"\baverage\b", s):
+        return "3.1"
+    if re.search(r"\bpoor\b", s):
+        return "2.6"
+    return ""
 
 
 def _digits_only(s: str) -> str:
@@ -2401,6 +2426,8 @@ def _map_api_item_to_record(
         cuisines = ", ".join(names[:5])
 
     rating = str(item.get("rating") or item.get("avgRating") or "").strip()
+    if rating and not re.search(r"\d", rating):
+        rating = _rating_label_to_numeric(rating) or ""
     reviews = str(item.get("reviewsCount") or item.get("ratingsCount") or "").strip()
     url = str(item.get("url") or "").strip()
     if not url and rid:
