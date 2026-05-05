@@ -1647,10 +1647,12 @@ def main() -> None:
 
     interaction_blob = _folium_interaction_blob(folium_out)
     click_ll = _folium_click_latlng(folium_out)
+    _just_reran_key = "_just_reran_for_pin"
     # If the user pressed Start Scraping this run, do not let stale Folium click payloads
     # preempt the scrape with another st.rerun() (common source of "pin jumps back" UX).
     if run_single:
         click_ll = None
+        st.session_state[_just_reran_key] = False
         if interaction_blob is not None:
             st.session_state["_folium_processed_click_blob"] = interaction_blob
     # Do not dedupe using "same blob as end of last run": Folium often lags one rerun, so the previous
@@ -1680,7 +1682,10 @@ def main() -> None:
         click_lat, click_lng = click_ll
         click_sig = f"{click_lat:.6f},{click_lng:.6f}"
         if preview_two_pinned:
-            if click_sig != str(st.session_state.get("dual_last_click_sig") or ""):
+            if (
+                click_sig != str(st.session_state.get("dual_last_click_sig") or "")
+                and not bool(st.session_state.get(_just_reran_key, False))
+            ):
                 slot = str(st.session_state.get("dual_map_next_slot") or "A").upper()
                 if slot not in ("A", "B"):
                     slot = "A"
@@ -1698,17 +1703,28 @@ def main() -> None:
                 # Keep the main run pin synced with the latest map click.
                 set_scrape_location(click_lat, click_lng, "Custom pin (map)", "folium_click")
                 sync_legacy_pin_mirror()
+                st.session_state[_just_reran_key] = True
                 st.toast(f"Area {slot} pin → {click_lat:.5f}, {click_lng:.5f}", icon="📌")
                 st.rerun()
+            else:
+                st.session_state[_just_reran_key] = False
         else:
-            if click_sig != str(st.session_state.get("runpin_last_click_sig") or ""):
+            if (
+                click_sig != str(st.session_state.get("runpin_last_click_sig") or "")
+                and not bool(st.session_state.get(_just_reran_key, False))
+            ):
                 st.session_state["runpin_last_click_sig"] = click_sig
                 if interaction_blob is not None:
                     st.session_state["_folium_processed_click_blob"] = interaction_blob
                 set_scrape_location(click_lat, click_lng, "Custom pin (map)", "folium_click")
                 sync_legacy_pin_mirror()
+                st.session_state[_just_reran_key] = True
                 st.toast(f"Pin → {click_lat:.5f}, {click_lng:.5f}", icon="📍")
                 st.rerun()
+            else:
+                st.session_state[_just_reran_key] = False
+    else:
+        st.session_state[_just_reran_key] = False
 
     if st.button(
         "Use map center as pin",
