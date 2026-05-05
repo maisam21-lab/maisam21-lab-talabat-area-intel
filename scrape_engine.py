@@ -1584,7 +1584,11 @@ async def enrich_vendor_detail_pages(
         if d.get("talabat_branch_id"):
             row.talabat_branch_id = str(d["talabat_branch_id"])
         if d.get("cuisines"):
-            row.cuisines = str(d["cuisines"])
+            # Vendor-page parsers can pick noisy cross-brand cuisine blobs on listing-heavy pages.
+            # Keep existing listing cuisine when present; only backfill when empty.
+            cur_c = str(row.cuisines or "").strip()
+            if not cur_c:
+                row.cuisines = str(d["cuisines"])
         if d.get("rating"):
             row.rating = str(d["rating"])
         if d.get("reviews_count"):
@@ -1912,6 +1916,33 @@ def add_rating_and_order_rate_proxies(df: pd.DataFrame) -> pd.DataFrame:
     per_day = (total_orders / active_days).where(total_orders.notna())
     out["estimated_orders_per_day"] = per_day.round(2)
     out["estimated_orders_per_week"] = (per_day * 7.0).round(1)
+    return out
+
+
+def normalize_brand_identity(df: pd.DataFrame) -> pd.DataFrame:
+    """Backfill missing brand fields from restaurant names to avoid undercounted unique-brand metrics."""
+    if df.empty:
+        return df
+    out = df.copy()
+    if "restaurant_name" not in out.columns:
+        return out
+    if "brand_display_name" not in out.columns:
+        out["brand_display_name"] = ""
+    if "brand_id" not in out.columns:
+        out["brand_id"] = ""
+
+    rname = out["restaurant_name"].fillna("").astype(str).str.strip()
+    bdisp = out["brand_display_name"].fillna("").astype(str).str.strip()
+    missing = bdisp == ""
+    if bool(missing.any()):
+        out.loc[missing, "brand_display_name"] = rname.loc[missing]
+
+    # Recompute brand ids where missing after display-name backfill.
+    bid = out["brand_id"].fillna("").astype(str).str.strip()
+    bdisp2 = out["brand_display_name"].fillna("").astype(str).str.strip()
+    miss_id = bid == ""
+    if bool(miss_id.any()):
+        out.loc[miss_id, "brand_id"] = bdisp2.loc[miss_id].map(make_brand_id)
     return out
 
 
@@ -3122,6 +3153,7 @@ async def run_area_scrape(
     elif status_filter == "live":
         # Listing scrape rarely yields status=="live"; treat "live" as "not closed".
         df = df[df["status"] != "closed"].copy()
+    df = normalize_brand_identity(df)
     df = add_rating_and_order_rate_proxies(df)
     df = add_legal_contact_provenance(df)
     return df.reset_index(drop=True)
