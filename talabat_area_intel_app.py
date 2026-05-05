@@ -1439,27 +1439,8 @@ def main() -> None:
             },
         ]
 
-    # Simple, reliable pin workflow: address search + coordinates, with Google Maps visual preview only.
     st.subheader("Interactive search map")
-    st.caption("Map is visual reference only. Set pin via Address Search or Run pin latitude/longitude.")
-    _map_loc = get_scrape_location()
-    _gm_key = _get_google_maps_api_key_for_basemap()
-    _z = max(3, min(21, int(st.session_state.get("_pin_map_zoom_ui", _default_zoom_for_radius_km(radius_km)))))
-    if _gm_key:
-        _gmap_url = f"https://www.google.com/maps/embed/v1/view?key={quote(_gm_key, safe='')}&center={float(_map_loc['lat']):.6f},{float(_map_loc['lng']):.6f}&zoom={_z}&maptype=roadmap"
-    else:
-        _gmap_url = f"https://www.google.com/maps?q={float(_map_loc['lat']):.6f},{float(_map_loc['lng']):.6f}&z={_z}&output=embed"
-    st.markdown(
-        f'<iframe src="{_gmap_url}" width="100%" height="420" style="border:0;border-radius:10px;" loading="lazy"></iframe>',
-        unsafe_allow_html=True,
-    )
-    if st.button("Use map center as pin", key="use_map_center_preview_btn"):
-        _loc_now = get_scrape_location()
-        set_scrape_location(float(_loc_now["lat"]), float(_loc_now["lng"]), "Map center", "map_center_button")
-        sync_legacy_pin_mirror()
-        st.toast("Pin set from current map center preview.", icon="🎯")
-
-    _render_google_maps_reference_panel(radius_km)
+    st.caption("Map preview is wired to the current Run pin coordinates below.")
 
     _heal_run_pin_widgets_if_stale_default(_pin_widget_scope)
     _auth_pin_before_num_inputs = get_scrape_location()
@@ -1512,6 +1493,20 @@ def main() -> None:
             "manual_form",
         )
         sync_legacy_pin_mirror()
+
+    # Render preview AFTER pin finalization so it is always wired to effective scrape_location.
+    _map_loc = get_scrape_location()
+    _gm_key = _get_google_maps_api_key_for_basemap()
+    _z = max(3, min(21, int(st.session_state.get("_pin_map_zoom_ui", _default_zoom_for_radius_km(radius_km)))))
+    if _gm_key:
+        _gmap_url = f"https://www.google.com/maps/embed/v1/view?key={quote(_gm_key, safe='')}&center={float(_map_loc['lat']):.6f},{float(_map_loc['lng']):.6f}&zoom={_z}&maptype=roadmap"
+    else:
+        _gmap_url = f"https://www.google.com/maps?q={float(_map_loc['lat']):.6f},{float(_map_loc['lng']):.6f}&z={_z}&output=embed"
+    st.markdown(
+        f'<iframe src="{_gmap_url}" width="100%" height="420" style="border:0;border-radius:10px;" loading="lazy"></iframe>',
+        unsafe_allow_html=True,
+    )
+    _render_google_maps_reference_panel(radius_km)
 
     st.subheader("Run")
     loc_run = get_scrape_location()
