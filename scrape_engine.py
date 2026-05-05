@@ -2091,6 +2091,67 @@ def add_legal_contact_provenance(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def add_business_required_mapping(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build final business-facing required fields:
+    cuisine, rating, orders, legal name, and contact (including outside Talabat).
+    """
+    if df.empty:
+        return df
+    out = df.copy()
+
+    cuisine = out.get("cuisines", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str).str.strip()
+    rating_eff = pd.to_numeric(out.get("rating_effective"), errors="coerce")
+    rating_t = pd.to_numeric(out.get("rating"), errors="coerce")
+    rating_g = pd.to_numeric(out.get("google_rating"), errors="coerce")
+    rating_final = rating_eff.fillna(rating_t).fillna(rating_g)
+
+    orders_week = pd.to_numeric(out.get("estimated_orders_per_week"), errors="coerce")
+    orders_raw = pd.to_numeric(out.get("estimated_orders"), errors="coerce")
+    orders_final = orders_week.fillna(orders_raw)
+
+    legal_final = out.get("legal_name_candidate", out.get("legal_name", pd.Series([""] * len(out), index=out.index)))
+    legal_final = legal_final.fillna("").astype(str).str.strip()
+
+    phone = out.get("contact_phone", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str).str.strip()
+    email = out.get("vendor_email", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str).str.strip()
+    web = out.get("vendor_website", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str).str.strip()
+    gweb = out.get("google_business_website", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str).str.strip()
+    maps = out.get("google_maps_link", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str).str.strip()
+
+    contact_final = pd.Series([""] * len(out), index=out.index, dtype=str)
+    contact_final = contact_final.mask(phone != "", phone)
+    contact_final = contact_final.mask((contact_final == "") & (email != ""), email)
+    contact_final = contact_final.mask((contact_final == "") & (web != ""), web)
+    contact_final = contact_final.mask((contact_final == "") & (gweb != ""), gweb)
+    contact_final = contact_final.mask((contact_final == "") & (maps != ""), maps)
+
+    contact_source_final = pd.Series(["none"] * len(out), index=out.index, dtype=str)
+    contact_source_final = contact_source_final.mask(phone != "", "talabat_or_vendor_phone")
+    contact_source_final = contact_source_final.mask((phone == "") & (email != ""), "vendor_email")
+    contact_source_final = contact_source_final.mask((phone == "") & (email == "") & (web != ""), "vendor_website")
+    contact_source_final = contact_source_final.mask((phone == "") & (email == "") & (web == "") & (gweb != ""), "google_business")
+    contact_source_final = contact_source_final.mask((phone == "") & (email == "") & (web == "") & (gweb == "") & (maps != ""), "google_maps")
+
+    out["cuisine_final"] = cuisine
+    out["rating_final"] = rating_final.round(2)
+    out["orders_final"] = orders_final.round(1)
+    out["legal_name_final"] = legal_final
+    out["contact_final"] = contact_final
+    out["contact_source_final"] = contact_source_final
+    out["outside_talabat_contact_mapped"] = contact_source_final.isin(
+        ["vendor_email", "vendor_website", "google_business", "google_maps"]
+    ).map({True: "yes", False: "no"})
+    out["required_fields_ready"] = (
+        (out["cuisine_final"].astype(str).str.strip() != "")
+        & out["rating_final"].notna()
+        & out["orders_final"].notna()
+        & (out["legal_name_final"].astype(str).str.strip() != "")
+        & (out["contact_final"].astype(str).str.strip() != "")
+    ).map({True: "yes", False: "no"})
+    return out
+
+
 def _listing_seed_hub_urls(grid_high_volume: bool) -> list[str]:
     """
     Hub URLs used only for HTTP + Playwright listing seeds.
@@ -3225,4 +3286,5 @@ async def run_area_scrape(
     df = normalize_brand_identity(df)
     df = add_rating_and_order_rate_proxies(df)
     df = add_legal_contact_provenance(df)
+    df = add_business_required_mapping(df)
     return df.reset_index(drop=True)
