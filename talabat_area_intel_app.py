@@ -27,11 +27,9 @@ from outbound_prioritization import (
 from pin_validation import parse_scrape_pin_or_raise_value_error
 from streamlit_location import (
     ensure_scrape_location,
-    folium_center_vs_location_mismatch,
     get_scrape_location,
     seed_city_preset_if_changed,
     set_scrape_location,
-    store_folium_payload,
     sync_legacy_pin_mirror,
 )
 try:
@@ -292,9 +290,6 @@ def _bounds_for_radius(lat: float, lng: float, radius_km: float, pad: float = 1.
 def _default_zoom_for_radius_km(radius_km: float) -> int:
     """
     Stable Leaflet zoom for the search radius without ``fit_bounds``.
-
-    Using ``fit_bounds`` together with ``st_folium(center=..., zoom=...)`` makes Leaflet and Streamlit fight
-    every rerun → visible zoom in/out oscillation.
     """
     r = float(radius_km)
     if r <= 5.5:
@@ -419,66 +414,6 @@ def _render_google_maps_reference_panel(radius_km: float) -> None:
             st.caption("Embedded preview is off (`STREAMLIT_GOOGLE_MAPS_EMBED=0`).")
 
 
-def render_google_maps_pin(lat: float, lng: float, api_key: str, radius_km: float) -> str:
-    """Interactive Google Maps map with draggable pin + click-to-move."""
-    safe_key = quote(str(api_key or "").strip(), safe="")
-    radius_m = max(100.0, float(radius_km) * 1000.0)
-    return f"""
-<div id="gm-pin-map" style="height:620px;border:1px solid #e5e7eb;border-radius:10px;"></div>
-<div style="font-size:12px;color:#4b5563;margin-top:6px;">Click map or drag marker to move pin.</div>
-<script>
-  function updatePin(lat, lng) {{
-    const inputs = window.parent.document.querySelectorAll('input[type="text"]');
-    for (let inp of inputs) {{
-      if (/^\\d+\\.\\d+,\\d+\\.\\d+$/.test((inp.value || '').trim())) {{
-        const nativeSetter = Object.getOwnPropertyDescriptor(
-          window.HTMLInputElement.prototype, 'value'
-        ).set;
-        nativeSetter.call(inp, lat.toFixed(6) + ',' + lng.toFixed(6));
-        inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
-        break;
-      }}
-    }}
-  }}
-  function initGmPinMap() {{
-    const start = {{ lat: {float(lat):.8f}, lng: {float(lng):.8f} }};
-    const map = new google.maps.Map(document.getElementById('gm-pin-map'), {{
-      zoom: 13,
-      center: start,
-      mapTypeId: 'roadmap',
-      gestureHandling: 'greedy'
-    }});
-    const marker = new google.maps.Marker({{
-      position: start,
-      map: map,
-      draggable: true,
-      icon: 'http://maps.google.com/mapfiles/ms/icons/blue-dot.png'
-    }});
-    const circle = new google.maps.Circle({{
-      strokeColor: '#1D4ED8',
-      strokeOpacity: 0.95,
-      strokeWeight: 2,
-      fillColor: '#2563EB',
-      fillOpacity: 0.12,
-      map: map,
-      center: start,
-      radius: {radius_m:.2f}
-    }});
-    map.addListener('click', (e) => {{
-      marker.setPosition(e.latLng);
-      circle.setCenter(e.latLng);
-      updatePin(e.latLng.lat(), e.latLng.lng());
-    }});
-    marker.addListener('dragend', (e) => {{
-      circle.setCenter(e.latLng);
-      updatePin(e.latLng.lat(), e.latLng.lng());
-    }});
-  }}
-</script>
-<script async defer src="https://maps.googleapis.com/maps/api/js?key={safe_key}&callback=initGmPinMap"></script>
-"""
-
-
 def _configure_map_basemaps(fmap: folium.Map) -> str:
     """
     Add basemap tile layers: **Google** (Map Tiles API) when ``GOOGLE_MAPS_API_KEY`` is set
@@ -542,62 +477,6 @@ def _add_esri_basemaps(fmap: folium.Map) -> None:
     ).add_to(fmap)
 
 
-def _folium_click_latlng(folium_out: dict | None) -> tuple[float, float] | None:
-    """Parse streamlit-folium click payload (dict, list, or GeoJSON-like object)."""
-    out = dict(folium_out or {})
-    lc = out.get("last_clicked")
-    if lc is not None:
-        if isinstance(lc, dict) and "lat" in lc:
-            raw_lng = lc.get("lng")
-            if raw_lng is None:
-                raw_lng = lc.get("lon")
-            if raw_lng is not None:
-                try:
-                    return float(str(lc["lat"]).strip()), float(str(raw_lng).strip())
-                except (TypeError, ValueError):
-                    pass
-        if isinstance(lc, (list, tuple)) and len(lc) >= 2:
-            try:
-                return float(str(lc[0]).strip()), float(str(lc[1]).strip())
-            except (TypeError, ValueError):
-                pass
-    ob = out.get("last_object_clicked")
-    if isinstance(ob, dict):
-        geom = ob.get("geometry")
-        if isinstance(geom, dict) and geom.get("type") == "Point":
-            coords = geom.get("coordinates")
-            if isinstance(coords, list) and len(coords) >= 2:
-                try:
-                    # GeoJSON Point: [lng, lat]
-                    return float(coords[1]), float(coords[0])
-                except (TypeError, ValueError):
-                    pass
-        if "lat" in ob:
-            raw_lng = ob.get("lng") if ob.get("lng") is not None else ob.get("lon")
-            if raw_lng is not None:
-                try:
-                    return float(ob["lat"]), float(raw_lng)
-                except (TypeError, ValueError):
-                    pass
-    return None
-
-
-def _folium_interaction_blob(folium_out: dict | None) -> str | None:
-    """Stable fingerprint for Folium interaction payloads (reruns replay the same JSON)."""
-    out = dict(folium_out or {})
-    payload: dict[str, object] = {}
-    if out.get("last_clicked") is not None:
-        payload["last_clicked"] = out["last_clicked"]
-    if out.get("last_object_clicked") is not None:
-        payload["last_object_clicked"] = out["last_object_clicked"]
-    if not payload:
-        return None
-    try:
-        return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-    except (TypeError, ValueError):
-        return None
-
-
 def _heal_run_pin_widgets_if_stale_default(widget_scope: str) -> None:
     """
     ``st.number_input`` keys keep their own session_state. If the user moved the pin via map/geocode but the
@@ -643,24 +522,6 @@ def _coalesce_run_pin_inputs_vs_authoritative(
     if haversine_km(a_lat, a_lng, float(DEFAULT_PIN[0]), float(DEFAULT_PIN[1])) <= 0.6:
         return w_lat, w_lng
     return a_lat, a_lng
-
-
-def _folium_click_looks_like_phantom_default(
-    click_lat: float,
-    click_lng: float,
-    cur_lat: float,
-    cur_lng: float,
-) -> bool:
-    """
-    On reruns (e.g. sidebar widgets), Folium sometimes emits a synthetic last_clicked on the hardcoded
-    default centre. Only reject when the click is *very* close to that exact default point (~60 m) so we
-    do not block legitimate clicks elsewhere in Dubai.
-    """
-    d_cur_def = haversine_km(cur_lat, cur_lng, float(DEFAULT_PIN[0]), float(DEFAULT_PIN[1]))
-    d_click_def = haversine_km(click_lat, click_lng, float(DEFAULT_PIN[0]), float(DEFAULT_PIN[1]))
-    d_cur_click = haversine_km(cur_lat, cur_lng, click_lat, click_lng)
-    # Reject synthetic ``last_clicked`` replays at the template default while the real pin is elsewhere.
-    return d_cur_def > 1.0 and d_click_def < 0.08 and d_cur_click > 1.0
 
 
 def render_heatmap(
@@ -806,8 +667,7 @@ def render_heatmap(
                 else "**Heat** = **platform listing density** from this scrape (single aggregator)."
             )
         )
-    # st_folium can render a blank iframe inside ``st.tabs`` on some Streamlit Cloud builds; full HTML
-    # via ``components.html`` matches Folium's notebook/static path and reliably loads Leaflet + plugins.
+    # Full HTML via ``components.html`` matches Folium's notebook/static path and reliably loads Leaflet + plugins.
     fig = folium.Figure().add_child(fmap)
     components.html(fig.render(), height=535, width=None, scrolling=False)
 
@@ -1579,46 +1439,25 @@ def main() -> None:
             },
         ]
 
-    # Interactive Google Maps pin selector (replaces st_folium click loop).
+    # Simple, reliable pin workflow: address search + coordinates, with Google Maps visual preview only.
     st.subheader("Interactive search map")
-    st.caption("Click anywhere on the map or drag the marker to update the run pin.")
-    _cur_for_bridge = get_scrape_location()
-    if "pin_coord_bridge" not in st.session_state:
-        st.session_state["pin_coord_bridge"] = f'{float(_cur_for_bridge["lat"]):.6f},{float(_cur_for_bridge["lng"]):.6f}'
-    coord_bridge = st.text_input(
-        "pin_coords",
-        value=str(st.session_state.get("pin_coord_bridge") or ""),
-        key="pin_coord_bridge",
-        label_visibility="collapsed",
-    )
-    if coord_bridge and "," in coord_bridge:
-        try:
-            parts = coord_bridge.split(",")
-            bridge_lat = float(str(parts[0]).strip())
-            bridge_lng = float(str(parts[1]).strip())
-            current = get_scrape_location()
-            if (
-                abs(bridge_lat - float(current["lat"])) > 1e-5
-                or abs(bridge_lng - float(current["lng"])) > 1e-5
-            ):
-                set_scrape_location(bridge_lat, bridge_lng, "Map pin", "map_click")
-                sync_legacy_pin_mirror()
-        except Exception:
-            pass
+    st.caption("Map is visual reference only. Set pin via Address Search or Run pin latitude/longitude.")
     _map_loc = get_scrape_location()
     _gm_key = _get_google_maps_api_key_for_basemap()
+    _z = max(3, min(21, int(st.session_state.get("_pin_map_zoom_ui", _default_zoom_for_radius_km(radius_km)))))
     if _gm_key:
-        components.html(
-            render_google_maps_pin(
-                float(_map_loc["lat"]),
-                float(_map_loc["lng"]),
-                _gm_key,
-                float(radius_km),
-            ),
-            height=650,
-        )
+        _gmap_url = f"https://www.google.com/maps/embed/v1/view?key={quote(_gm_key, safe='')}&center={float(_map_loc['lat']):.6f},{float(_map_loc['lng']):.6f}&zoom={_z}&maptype=roadmap"
     else:
-        st.warning("`GOOGLE_MAPS_API_KEY` is missing in Streamlit secrets/env. Map pin uses lat/lng fields below.")
+        _gmap_url = f"https://www.google.com/maps?q={float(_map_loc['lat']):.6f},{float(_map_loc['lng']):.6f}&z={_z}&output=embed"
+    st.markdown(
+        f'<iframe src="{_gmap_url}" width="100%" height="420" style="border:0;border-radius:10px;" loading="lazy"></iframe>',
+        unsafe_allow_html=True,
+    )
+    if st.button("Use map center as pin", key="use_map_center_preview_btn"):
+        _loc_now = get_scrape_location()
+        set_scrape_location(float(_loc_now["lat"]), float(_loc_now["lng"]), "Map center", "map_center_button")
+        sync_legacy_pin_mirror()
+        st.toast("Pin set from current map center preview.", icon="🎯")
 
     _render_google_maps_reference_panel(radius_km)
 
@@ -1673,11 +1512,6 @@ def main() -> None:
             "manual_form",
         )
         sync_legacy_pin_mirror()
-
-    loc_after_map = get_scrape_location()
-    mismatch, mismatch_msg = folium_center_vs_location_mismatch(loc_after_map)
-    if mismatch and mismatch_msg:
-        st.warning(mismatch_msg)
 
     st.subheader("Run")
     loc_run = get_scrape_location()
