@@ -1762,16 +1762,17 @@ def main() -> None:
         st.session_state[f"run_pin_lng_input__{_pin_widget_scope}"] = _fin_lng
     st.session_state[lat_internal_key] = _fin_lat
     st.session_state[lng_internal_key] = _fin_lng
+    current_loc = get_scrape_location()
     # Typing new lat/lng must reset map dedupe so the next click (even near the same coords) applies.
-    if abs(_fin_lat - float(loc_ui["lat"])) > 1e-9 or abs(_fin_lng - float(loc_ui["lng"])) > 1e-9:
+    if abs(_fin_lat - float(current_loc["lat"])) > 1e-5 or abs(_fin_lng - float(current_loc["lng"])) > 1e-5:
         st.session_state["runpin_last_click_sig"] = ""
-    set_scrape_location(
-        _fin_lat,
-        _fin_lng,
-        str(get_scrape_location().get("label") or "Run pin"),
-        "manual_form",
-    )
-    sync_legacy_pin_mirror()
+        set_scrape_location(
+            _fin_lat,
+            _fin_lng,
+            str(current_loc.get("label") or "Run pin"),
+            "manual_form",
+        )
+        sync_legacy_pin_mirror()
 
     loc_after_map = get_scrape_location()
     mismatch, mismatch_msg = folium_center_vs_location_mismatch(loc_after_map)
