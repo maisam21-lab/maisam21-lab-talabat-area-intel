@@ -235,8 +235,11 @@ button[kind="secondary"] {
 
 def init_state() -> None:
     # Hard-reset deprecated widget-bound keys that caused StreamlitAPIException in older builds.
-    st.session_state.pop("run_pin_lat__custom_pin_mode", None)
-    st.session_state.pop("run_pin_lng__custom_pin_mode", None)
+    # Do this only once per browser session; popping on every rerun can clobber active pin widgets.
+    if not st.session_state.get("_init_done"):
+        st.session_state.pop("run_pin_lat__custom_pin_mode", None)
+        st.session_state.pop("run_pin_lng__custom_pin_mode", None)
+        st.session_state["_init_done"] = True
     ensure_scrape_location(
         default_lat=float(DEFAULT_PIN[0]),
         default_lng=float(DEFAULT_PIN[1]),
