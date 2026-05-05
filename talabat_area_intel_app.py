@@ -428,10 +428,17 @@ def render_google_maps_pin(lat: float, lng: float, api_key: str, radius_km: floa
 <div style="font-size:12px;color:#4b5563;margin-top:6px;">Click map or drag marker to move pin.</div>
 <script>
   function updatePin(lat, lng) {{
-    const url = new URL(window.parent.location.href);
-    url.searchParams.set('pin_lat', lat.toFixed(6));
-    url.searchParams.set('pin_lng', lng.toFixed(6));
-    window.parent.history.replaceState({{}}, '', url);
+    const inputs = window.parent.document.querySelectorAll('input[type="text"]');
+    for (let inp of inputs) {{
+      if (/^\\d+\\.\\d+,\\d+\\.\\d+$/.test((inp.value || '').trim())) {{
+        const nativeSetter = Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype, 'value'
+        ).set;
+        nativeSetter.call(inp, lat.toFixed(6) + ',' + lng.toFixed(6));
+        inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+        break;
+      }}
+    }}
   }}
   function initGmPinMap() {{
     const start = {{ lat: {float(lat):.8f}, lng: {float(lng):.8f} }};
@@ -1575,20 +1582,29 @@ def main() -> None:
     # Interactive Google Maps pin selector (replaces st_folium click loop).
     st.subheader("Interactive search map")
     st.caption("Click anywhere on the map or drag the marker to update the run pin.")
-    try:
-        qp = st.query_params
-        if "pin_lat" in qp and "pin_lng" in qp:
-            qp_lat = float(str(qp.get("pin_lat") or "").strip())
-            qp_lng = float(str(qp.get("pin_lng") or "").strip())
+    _cur_for_bridge = get_scrape_location()
+    if "pin_coord_bridge" not in st.session_state:
+        st.session_state["pin_coord_bridge"] = f'{float(_cur_for_bridge["lat"]):.6f},{float(_cur_for_bridge["lng"]):.6f}'
+    coord_bridge = st.text_input(
+        "pin_coords",
+        value=str(st.session_state.get("pin_coord_bridge") or ""),
+        key="pin_coord_bridge",
+        label_visibility="collapsed",
+    )
+    if coord_bridge and "," in coord_bridge:
+        try:
+            parts = coord_bridge.split(",")
+            bridge_lat = float(str(parts[0]).strip())
+            bridge_lng = float(str(parts[1]).strip())
             current = get_scrape_location()
             if (
-                abs(qp_lat - float(current["lat"])) > 1e-5
-                or abs(qp_lng - float(current["lng"])) > 1e-5
+                abs(bridge_lat - float(current["lat"])) > 1e-5
+                or abs(bridge_lng - float(current["lng"])) > 1e-5
             ):
-                set_scrape_location(qp_lat, qp_lng, "Map pin", "map_click")
+                set_scrape_location(bridge_lat, bridge_lng, "Map pin", "map_click")
                 sync_legacy_pin_mirror()
-    except Exception:
-        pass
+        except Exception:
+            pass
     _map_loc = get_scrape_location()
     _gm_key = _get_google_maps_api_key_for_basemap()
     if _gm_key:
