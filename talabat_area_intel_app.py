@@ -15,8 +15,8 @@ import folium
 import pandas as pd
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from folium.plugins import Fullscreen, HeatMap, MousePosition
-from streamlit_folium import st_folium
 
 from outbound_prioritization import (
     MODEL_HELP,
@@ -419,6 +419,59 @@ def _render_google_maps_reference_panel(radius_km: float) -> None:
             st.caption("Embedded preview is off (`STREAMLIT_GOOGLE_MAPS_EMBED=0`).")
 
 
+def render_google_maps_pin(lat: float, lng: float, api_key: str, radius_km: float) -> str:
+    """Interactive Google Maps map with draggable pin + click-to-move."""
+    safe_key = quote(str(api_key or "").strip(), safe="")
+    radius_m = max(100.0, float(radius_km) * 1000.0)
+    return f"""
+<div id="gm-pin-map" style="height:620px;border:1px solid #e5e7eb;border-radius:10px;"></div>
+<div style="font-size:12px;color:#4b5563;margin-top:6px;">Click map or drag marker to move pin.</div>
+<script>
+  function updatePin(lat, lng) {{
+    const url = new URL(window.parent.location.href);
+    url.searchParams.set('pin_lat', lat.toFixed(6));
+    url.searchParams.set('pin_lng', lng.toFixed(6));
+    window.parent.history.replaceState({{}}, '', url);
+  }}
+  function initGmPinMap() {{
+    const start = {{ lat: {float(lat):.8f}, lng: {float(lng):.8f} }};
+    const map = new google.maps.Map(document.getElementById('gm-pin-map'), {{
+      zoom: 13,
+      center: start,
+      mapTypeId: 'roadmap',
+      gestureHandling: 'greedy'
+    }});
+    const marker = new google.maps.Marker({{
+      position: start,
+      map: map,
+      draggable: true,
+      icon: 'http://maps.google.com/mapfiles/ms/icons/blue-dot.png'
+    }});
+    const circle = new google.maps.Circle({{
+      strokeColor: '#1D4ED8',
+      strokeOpacity: 0.95,
+      strokeWeight: 2,
+      fillColor: '#2563EB',
+      fillOpacity: 0.12,
+      map: map,
+      center: start,
+      radius: {radius_m:.2f}
+    }});
+    map.addListener('click', (e) => {{
+      marker.setPosition(e.latLng);
+      circle.setCenter(e.latLng);
+      updatePin(e.latLng.lat(), e.latLng.lng());
+    }});
+    marker.addListener('dragend', (e) => {{
+      circle.setCenter(e.latLng);
+      updatePin(e.latLng.lat(), e.latLng.lng());
+    }});
+  }}
+</script>
+<script async defer src="https://maps.googleapis.com/maps/api/js?key={safe_key}&callback=initGmPinMap"></script>
+"""
+
+
 def _configure_map_basemaps(fmap: folium.Map) -> str:
     """
     Add basemap tile layers: **Google** (Map Tiles API) when ``GOOGLE_MAPS_API_KEY`` is set
@@ -601,153 +654,6 @@ def _folium_click_looks_like_phantom_default(
     d_cur_click = haversine_km(cur_lat, cur_lng, click_lat, click_lng)
     # Reject synthetic ``last_clicked`` replays at the template default while the real pin is elsewhere.
     return d_cur_def > 1.0 and d_click_def < 0.08 and d_cur_click > 1.0
-
-
-def render_pin_map(
-    radius_km: float,
-    *,
-    lock_pin: bool = False,
-    supply_df: pd.DataFrame | None = None,
-    google_coverage_df: pd.DataFrame | None = None,
-    dual_points: list[dict[str, float | str]] | None = None,
-) -> dict:
-    """Render Folium pin + radius; map clicks update ``scrape_location`` only (single source of truth)."""
-    loc = get_scrape_location()
-    lat = float(loc["lat"])
-    lng = float(loc["lng"])
-    label = str(loc.get("label") or "Search pin")
-
-    _zoom_anchor = f"{lat:.7f}|{lng:.7f}|{float(radius_km):g}"
-    if st.session_state.get("_pin_map_zoom_anchor") != _zoom_anchor:
-        st.session_state["_pin_map_zoom_anchor"] = _zoom_anchor
-        st.session_state["_pin_map_zoom_ui"] = _default_zoom_for_radius_km(radius_km)
-    _map_zoom = max(3, min(19, int(st.session_state.get("_pin_map_zoom_ui", _default_zoom_for_radius_km(radius_km)))))
-
-    fmap = folium.Map(
-        location=[lat, lng],
-        tiles=None,
-        zoom_start=_map_zoom,
-        zoom_control=True,
-        control_scale=True,
-    )
-
-    basemap = _configure_map_basemaps(fmap)
-
-    # Non-interactive group so clicks reach the basemap (Leaflet passes events to the map).
-    area = folium.FeatureGroup(name="Search area", interactive=False).add_to(fmap)
-
-    folium.Circle(
-        location=[lat, lng],
-        radius=radius_km * 1000.0,
-        color="#1D4ED8",
-        weight=3,
-        fill=True,
-        fill_color="#2563EB",
-        fill_opacity=0.14,
-        tooltip=f"Scrape radius: {radius_km:g} km",
-        interactive=False,
-    ).add_to(area)
-
-    folium.Circle(
-        location=[lat, lng],
-        radius=min(180.0, max(40.0, radius_km * 35.0)),
-        color="#1E40AF",
-        weight=2,
-        fill=True,
-        fill_color="#1D4ED8",
-        fill_opacity=0.35,
-        tooltip="Pin precision",
-        interactive=False,
-    ).add_to(area)
-
-    safe_label = html.escape(label)
-    popup_html = (
-        f"<div style='min-width:200px;font-size:13px'>"
-        f"<b style='color:#1e3a8a'>{safe_label}</b><br>"
-        f"<span style='color:#444'>{lat:.6f}, {lng:.6f}</span><br>"
-        f"<span style='color:#64748b'>Radius: <b>{radius_km:g} km</b></span>"
-        f"</div>"
-    )
-    folium.Marker(
-        location=[lat, lng],
-        tooltip=f"Pin · {radius_km:g} km search",
-        popup=folium.Popup(popup_html, max_width=280),
-        icon=folium.Icon(color="blue"),
-        interactive=False,
-    ).add_to(area)
-
-    if dual_points:
-        dual_fg = folium.FeatureGroup(name="Dual-area pins")
-        color_map = {"A": "#DC2626", "B": "#7C3AED"}
-        for p in dual_points:
-            try:
-                dla = float(p["lat"])
-                dln = float(p["lng"])
-            except (TypeError, ValueError, KeyError):
-                continue
-            slot = str(p.get("slot") or "").upper().strip()[:1] or "?"
-            fill = color_map.get(slot, "#334155")
-            label_txt = html.escape(str(p.get("label") or f"Area {slot}")[:120])
-            folium.CircleMarker(
-                location=[dla, dln],
-                radius=7,
-                color=fill,
-                weight=2,
-                fill=True,
-                fill_color=fill,
-                fill_opacity=0.9,
-                tooltip=f"Area {slot}: {dla:.5f}, {dln:.5f}",
-                popup=folium.Popup(f"<b>Area {slot}</b><br>{label_txt}<br>{dla:.6f}, {dln:.6f}", max_width=260),
-            ).add_to(dual_fg)
-        dual_fg.add_to(fmap)
-
-    _add_supply_overlay_feature_group(fmap, supply_df)
-    _add_google_coverage_feature_group(fmap, google_coverage_df)
-
-    Fullscreen(position="topright", title="Fullscreen", title_cancel="Exit Full Screen").add_to(fmap)
-    # num_digits only — lat_formatter/lng_formatter expect JS functions and can blank the map if misused.
-    MousePosition(
-        position="bottomleft",
-        separator=" · ",
-        prefix="Cursor: ",
-        num_digits=5,
-    ).add_to(fmap)
-    folium.LayerControl(position="topright", collapsed=False).add_to(fmap)
-
-    # NEVER include ``center`` in ``returned_objects`` by default — if the viewport center is watched,
-    # **every pan/zoom** triggers a full Streamlit rerun and fights ``st_folium(center=..., zoom=...)`` → zoom pulse loop.
-    # We only add ``center`` for a single run when the user asks to copy viewport → pin (see main).
-    _one_shot_center = bool(st.session_state.pop("_folium_capture_viewport_next", False))
-    # ``last_object_clicked`` can fire on layer UI / overlays and cause extra reruns; map background uses ``last_clicked``.
-    ro: list[str] = ["last_clicked"]
-    if _one_shot_center:
-        ro.append("center")
-    st.session_state["_folium_after_viewport_capture"] = _one_shot_center
-
-    _nonce = int(st.session_state.get("_folium_remount_nonce", 0))
-    _sig = f"{lat:.6f}_{lng:.6f}_{float(radius_km):g}"
-    if basemap == "google":
-        st.caption(
-            "**Move pin:** click the **map background** (not the blue marker). Layers: top-right. "
-            "**Pan/zoom** stay put across sidebar updates; the map view jumps only when your **pin or radius** "
-            "changes or you press **Recenter on pin**."
-        )
-    else:
-        st.caption(
-            "**Move pin:** click the **map background**. Street map for labels; satellite + place names for imagery."
-        )
-
-    # Hard stop to zoom thrash: do not stream ``center``/``zoom`` props via st_folium.
-    # Instead, remount when pin/radius signature changes (or manual recenter increments nonce).
-    out = st_folium(
-        fmap,
-        height=620,
-        use_container_width=True,
-        returned_objects=ro,
-        key=f"talabat_pin_map_{_sig}_{_nonce}",
-    )
-    out = dict(out or {})
-    return out
 
 
 def render_heatmap(
@@ -1666,53 +1572,37 @@ def main() -> None:
             },
         ]
 
-    # Map + click handling **before** number_input: lat/lng widgets were calling set_scrape_location(manual_form)
-    # every run and overwriting the pin *before* last_clicked was applied, so clicks appeared to do nothing.
+    # Interactive Google Maps pin selector (replaces st_folium click loop).
     st.subheader("Interactive search map")
-    rh1, rh2 = st.columns([1, 3])
-    with rh1:
-        if st.button(
-            "Recenter on pin",
-            key="folium_recenter_btn",
-            help="Snap the map view back to your run pin (after panning away). Does not change the pin coordinates.",
-        ):
-            st.session_state["_folium_remount_nonce"] = int(
-                st.session_state.get("_folium_remount_nonce", 0)
-            ) + 1
-            st.rerun()
-    with rh2:
-        st.caption(
-            "Click the **map background** to move the scrape pin. After you pan/zoom, the map **stays there** until "
-            "you change the pin, radius, or press **Recenter on pin**."
+    st.caption("Click anywhere on the map or drag the marker to update the run pin.")
+    try:
+        qp = st.query_params
+        if "pin_lat" in qp and "pin_lng" in qp:
+            qp_lat = float(str(qp.get("pin_lat") or "").strip())
+            qp_lng = float(str(qp.get("pin_lng") or "").strip())
+            current = get_scrape_location()
+            if (
+                abs(qp_lat - float(current["lat"])) > 1e-5
+                or abs(qp_lng - float(current["lng"])) > 1e-5
+            ):
+                set_scrape_location(qp_lat, qp_lng, "Map pin", "map_click")
+                sync_legacy_pin_mirror()
+    except Exception:
+        pass
+    _map_loc = get_scrape_location()
+    _gm_key = _get_google_maps_api_key_for_basemap()
+    if _gm_key:
+        components.html(
+            render_google_maps_pin(
+                float(_map_loc["lat"]),
+                float(_map_loc["lng"]),
+                _gm_key,
+                float(radius_km),
+            ),
+            height=650,
         )
-    folium_out = render_pin_map(
-        radius_km,
-        lock_pin=False,
-        supply_df=st.session_state.get("supply_overlay_df"),
-        google_coverage_df=st.session_state.get("google_coverage_df"),
-        dual_points=dual_points_for_map,
-    )
-    store_folium_payload(folium_out)
-    click_ll = _folium_click_latlng(folium_out)
-    if run_single:
-        click_ll = None
-    if click_ll is not None:
-        c_lat, c_lng = click_ll
-        cur = get_scrape_location()
-        # Ignore synthetic no-op / default replay clicks.
-        if (
-            haversine_km(c_lat, c_lng, float(cur["lat"]), float(cur["lng"])) < 0.08
-            or _folium_click_looks_like_phantom_default(c_lat, c_lng, float(cur["lat"]), float(cur["lng"]))
-        ):
-            click_ll = None
-    if click_ll is not None:
-        click_lat, click_lng = click_ll
-        click_sig = f"{click_lat:.6f},{click_lng:.6f}"
-        if click_sig != str(st.session_state.get("runpin_last_click_sig") or ""):
-            st.session_state["runpin_last_click_sig"] = click_sig
-            set_scrape_location(click_lat, click_lng, "Custom pin (map)", "folium_click")
-            sync_legacy_pin_mirror()
-            st.toast(f"Pin → {click_lat:.5f}, {click_lng:.5f}", icon="📍")
+    else:
+        st.warning("`GOOGLE_MAPS_API_KEY` is missing in Streamlit secrets/env. Map pin uses lat/lng fields below.")
 
     _render_google_maps_reference_panel(radius_km)
 

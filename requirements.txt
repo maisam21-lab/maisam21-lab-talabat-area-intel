@@ -4,7 +4,6 @@ pandas
 openpyxl
 numpy
 folium
-streamlit-folium
 fastapi
 uvicorn
 requests
