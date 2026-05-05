@@ -859,6 +859,7 @@ async def extract_restaurants(
         blob = " ".join((await card.inner_text()).split())
         jl, jld = parse_just_landed_from_text(blob)
         status = classify_status(blob)
+        legal_name = _extract_legal_name_from_blob(blob)
 
         tokens = [t.strip() for t in blob.split("•")]
         for t in tokens:
@@ -905,7 +906,7 @@ async def extract_restaurants(
                     brand_display_name=(bd or "")[:200],
                     talabat_listing_slug=tslug,
                     restaurant_name=name,
-                    legal_name="",
+                    legal_name=legal_name,
                     branch_name=branch_name,
                     restaurant_url=url,
                     talabat_restaurant_id="",
@@ -1012,6 +1013,40 @@ def _rating_label_to_numeric(text: str) -> str:
         return "3.1"
     if re.search(r"\bpoor\b", s):
         return "2.6"
+    return ""
+
+
+def _extract_legal_name_from_blob(blob: str) -> str:
+    """
+    Extract legal-name value from flattened listing/card text.
+    Supports labels like:
+    - "Legal name <value>"
+    - "الاسم القانوني <value>"
+    """
+    raw = " ".join((blob or "").split())
+    if not raw:
+        return ""
+    patterns = [
+        r"(?:legal\s*name)\s*[:\-]?\s*([^\|\u2022]{2,180})",
+        r"(?:الاسم\s*القانوني)\s*[:\-]?\s*([^\|\u2022]{2,180})",
+    ]
+    stop_words = {
+        "delivery", "minimum", "pre-order", "preorder", "payment", "rating", "cuisines", "restaurant area",
+        "وقت", "توصيل", "الدفع", "الحد", "طلب",
+    }
+    for pat in patterns:
+        m = re.search(pat, raw, re.I)
+        if not m:
+            continue
+        cand = m.group(1).strip()
+        # Trim if the capture accidentally runs into the next field label.
+        for sw in stop_words:
+            idx = cand.lower().find(sw.lower())
+            if idx > 0:
+                cand = cand[:idx].strip(" -:|")
+        cand = cand.strip(" -:|")
+        if len(cand) >= 2:
+            return cand[:200]
     return ""
 
 
@@ -2428,6 +2463,13 @@ def _map_api_item_to_record(
     rating = str(item.get("rating") or item.get("avgRating") or "").strip()
     if rating and not re.search(r"\d", rating):
         rating = _rating_label_to_numeric(rating) or ""
+    legal_name = str(
+        item.get("legalName")
+        or item.get("legal_name")
+        or item.get("merchantLegalName")
+        or item.get("merchant_legal_name")
+        or ""
+    ).strip()[:200]
     reviews = str(item.get("reviewsCount") or item.get("ratingsCount") or "").strip()
     url = str(item.get("url") or "").strip()
     if not url and rid:
@@ -2456,7 +2498,7 @@ def _map_api_item_to_record(
         brand_display_name=(bd or "")[:200],
         talabat_listing_slug=talabat_listing_slug_from_url(url),
         restaurant_name=restaurant_name,
-        legal_name="",
+        legal_name=legal_name,
         branch_name="",
         restaurant_url=url,
         talabat_restaurant_id=rid,
