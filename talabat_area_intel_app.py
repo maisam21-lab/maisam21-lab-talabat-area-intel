@@ -421,18 +421,15 @@ def render_google_maps_pin(lat: float, lng: float, api_key: str, radius_km: floa
     return f"""
 <div id="gm-pin-map" style="height:420px;border:0;border-radius:10px;"></div>
 <script>
-  function _setBridgeValue(lat, lng) {{
-    const doc = window.parent.document;
-    const byAria = doc.querySelector('input[aria-label="map_pin_bridge"]');
-    const bridge = byAria || Array.from(doc.querySelectorAll('input[type="text"]')).find(
-      (inp) => /^-?\\d+\\.\\d+,-?\\d+\\.\\d+$/.test((inp.value || '').trim())
-    );
-    if (!bridge) return;
-    const next = lat.toFixed(6) + "," + lng.toFixed(6);
-    if ((bridge.value || '').trim() === next) return;
-    const setter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, 'value').set;
-    setter.call(bridge, next);
-    bridge.dispatchEvent(new Event('input', {{ bubbles: true }}));
+  function _setUrlPin(lat, lng) {{
+    const url = new URL(window.parent.location.href);
+    const nextLat = lat.toFixed(6);
+    const nextLng = lng.toFixed(6);
+    if ((url.searchParams.get('pin_lat') || '') === nextLat && (url.searchParams.get('pin_lng') || '') === nextLng) return;
+    url.searchParams.set('pin_lat', nextLat);
+    url.searchParams.set('pin_lng', nextLng);
+    url.searchParams.set('_pin_ts', String(Date.now()));
+    window.parent.location.href = url.toString();
   }}
 
   function initGmPinMap() {{
@@ -452,11 +449,11 @@ def render_google_maps_pin(lat: float, lng: float, api_key: str, radius_km: floa
     map.addListener('click', (e) => {{
       marker.setPosition(e.latLng);
       circle.setCenter(e.latLng);
-      _setBridgeValue(e.latLng.lat(), e.latLng.lng());
+      _setUrlPin(e.latLng.lat(), e.latLng.lng());
     }});
     marker.addListener('dragend', (e) => {{
       circle.setCenter(e.latLng);
-      _setBridgeValue(e.latLng.lat(), e.latLng.lng());
+      _setUrlPin(e.latLng.lat(), e.latLng.lng());
     }});
   }}
 </script>
@@ -1510,19 +1507,10 @@ def main() -> None:
 
     st.subheader("Interactive search map")
     st.caption("Click/drag on map updates the app pin.")
-    if "map_pin_bridge" not in st.session_state:
-        st.session_state["map_pin_bridge"] = f'{float(loc_ui["lat"]):.6f},{float(loc_ui["lng"]):.6f}'
-    bridge_val = st.text_input(
-        "map_pin_bridge",
-        value=str(st.session_state.get("map_pin_bridge") or ""),
-        key="map_pin_bridge",
-        label_visibility="collapsed",
-    )
-    if bridge_val and "," in bridge_val:
+    if "pin_lat" in st.query_params and "pin_lng" in st.query_params:
         try:
-            b_lat_s, b_lng_s = [x.strip() for x in str(bridge_val).split(",", 1)]
-            b_lat = float(b_lat_s)
-            b_lng = float(b_lng_s)
+            b_lat = float(str(st.query_params.get("pin_lat", "")).strip())
+            b_lng = float(str(st.query_params.get("pin_lng", "")).strip())
             cur = get_scrape_location()
             if abs(b_lat - float(cur["lat"])) > 1e-5 or abs(b_lng - float(cur["lng"])) > 1e-5:
                 set_scrape_location(b_lat, b_lng, "Map pin", "map_click")
