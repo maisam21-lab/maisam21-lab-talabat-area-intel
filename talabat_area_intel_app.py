@@ -414,6 +414,56 @@ def _render_google_maps_reference_panel(radius_km: float) -> None:
             st.caption("Embedded preview is off (`STREAMLIT_GOOGLE_MAPS_EMBED=0`).")
 
 
+def render_google_maps_pin(lat: float, lng: float, api_key: str, radius_km: float) -> str:
+    """Interactive Google map: click/drag marker updates Streamlit bridge input."""
+    safe_key = quote(str(api_key or "").strip(), safe="")
+    radius_m = max(100.0, float(radius_km) * 1000.0)
+    return f"""
+<div id="gm-pin-map" style="height:420px;border:0;border-radius:10px;"></div>
+<script>
+  function _setBridgeValue(lat, lng) {{
+    const doc = window.parent.document;
+    const byAria = doc.querySelector('input[aria-label="map_pin_bridge"]');
+    const bridge = byAria || Array.from(doc.querySelectorAll('input[type="text"]')).find(
+      (inp) => /^-?\\d+\\.\\d+,-?\\d+\\.\\d+$/.test((inp.value || '').trim())
+    );
+    if (!bridge) return;
+    const next = lat.toFixed(6) + "," + lng.toFixed(6);
+    if ((bridge.value || '').trim() === next) return;
+    const setter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, 'value').set;
+    setter.call(bridge, next);
+    bridge.dispatchEvent(new Event('input', {{ bubbles: true }}));
+  }}
+
+  function initGmPinMap() {{
+    const center = {{ lat: {float(lat):.8f}, lng: {float(lng):.8f} }};
+    const map = new google.maps.Map(document.getElementById('gm-pin-map'), {{
+      center: center, zoom: 13, mapTypeId: 'roadmap', gestureHandling: 'greedy'
+    }});
+    const marker = new google.maps.Marker({{
+      position: center, map: map, draggable: true,
+      icon: 'http://maps.google.com/mapfiles/ms/icons/blue-dot.png'
+    }});
+    const circle = new google.maps.Circle({{
+      map: map, center: center, radius: {radius_m:.1f},
+      strokeColor: '#1D4ED8', strokeOpacity: 0.95, strokeWeight: 2,
+      fillColor: '#2563EB', fillOpacity: 0.12
+    }});
+    map.addListener('click', (e) => {{
+      marker.setPosition(e.latLng);
+      circle.setCenter(e.latLng);
+      _setBridgeValue(e.latLng.lat(), e.latLng.lng());
+    }});
+    marker.addListener('dragend', (e) => {{
+      circle.setCenter(e.latLng);
+      _setBridgeValue(e.latLng.lat(), e.latLng.lng());
+    }});
+  }}
+</script>
+<script async defer src="https://maps.googleapis.com/maps/api/js?key={safe_key}&callback=initGmPinMap"></script>
+"""
+
+
 def _configure_map_basemaps(fmap: folium.Map) -> str:
     """
     Add basemap tile layers: **Google** (Map Tiles API) when ``GOOGLE_MAPS_API_KEY`` is set
@@ -1436,7 +1486,7 @@ def main() -> None:
     st.session_state[lng_internal_key] = float(loc_ui["lng"])
     # ``st.number_input`` keeps its own session_state per ``key=``; after a map click / geocode / preset the
     # authoritative pin moves but the widgets would still return stale coords and overwrite the pin below.
-    if source_now in {"folium_click", "geocode", "city_preset", "init", "map_center_button"}:
+    if source_now in {"folium_click", "geocode", "city_preset", "init", "map_center_button", "map_click"}:
         st.session_state.pop(f"run_pin_lat_input__{_pin_widget_scope}", None)
         st.session_state.pop(f"run_pin_lng_input__{_pin_widget_scope}", None)
 
@@ -1459,7 +1509,26 @@ def main() -> None:
         ]
 
     st.subheader("Interactive search map")
-    st.caption("Map preview is wired to the current Run pin coordinates below.")
+    st.caption("Click/drag on map updates the app pin.")
+    if "map_pin_bridge" not in st.session_state:
+        st.session_state["map_pin_bridge"] = f'{float(loc_ui["lat"]):.6f},{float(loc_ui["lng"]):.6f}'
+    bridge_val = st.text_input(
+        "map_pin_bridge",
+        value=str(st.session_state.get("map_pin_bridge") or ""),
+        key="map_pin_bridge",
+        label_visibility="collapsed",
+    )
+    if bridge_val and "," in bridge_val:
+        try:
+            b_lat_s, b_lng_s = [x.strip() for x in str(bridge_val).split(",", 1)]
+            b_lat = float(b_lat_s)
+            b_lng = float(b_lng_s)
+            cur = get_scrape_location()
+            if abs(b_lat - float(cur["lat"])) > 1e-5 or abs(b_lng - float(cur["lng"])) > 1e-5:
+                set_scrape_location(b_lat, b_lng, "Map pin", "map_click")
+                sync_legacy_pin_mirror()
+        except Exception:
+            pass
 
     _heal_run_pin_widgets_if_stale_default(_pin_widget_scope)
     _auth_pin_before_num_inputs = get_scrape_location()
@@ -1518,13 +1587,16 @@ def main() -> None:
     _gm_key = _get_google_maps_api_key_for_basemap()
     _z = max(3, min(21, int(st.session_state.get("_pin_map_zoom_ui", _default_zoom_for_radius_km(radius_km)))))
     if _gm_key:
-        _gmap_url = f"https://www.google.com/maps/embed/v1/view?key={quote(_gm_key, safe='')}&center={float(_map_loc['lat']):.6f},{float(_map_loc['lng']):.6f}&zoom={_z}&maptype=roadmap"
+        components.html(
+            render_google_maps_pin(float(_map_loc["lat"]), float(_map_loc["lng"]), _gm_key, float(radius_km)),
+            height=440,
+        )
     else:
         _gmap_url = f"https://www.google.com/maps?q={float(_map_loc['lat']):.6f},{float(_map_loc['lng']):.6f}&z={_z}&output=embed"
-    st.markdown(
-        f'<iframe src="{_gmap_url}" width="100%" height="420" style="border:0;border-radius:10px;" loading="lazy"></iframe>',
-        unsafe_allow_html=True,
-    )
+        st.markdown(
+            f'<iframe src="{_gmap_url}" width="100%" height="420" style="border:0;border-radius:10px;" loading="lazy"></iframe>',
+            unsafe_allow_html=True,
+        )
     _render_google_maps_reference_panel(radius_km)
 
     st.subheader("Run")
