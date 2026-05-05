@@ -601,25 +601,6 @@ def _folium_click_looks_like_phantom_default(
     return d_cur_def > 1.0 and d_click_def < 0.08 and d_cur_click > 1.0
 
 
-def _folium_should_push_stf_view(lat: float, lng: float, radius_km: float, remount_nonce: int) -> bool:
-    """
-    Only pass ``center`` / ``zoom`` into ``st_folium`` when the pin/radius changed or the map remounted.
-    Sending them on **every** Streamlit rerun makes the iframe resync Leaflet to Python props on each run,
-    which fights user pan/zoom and looks like zoom pulsing / sometimes snaps back to the scripted view.
-    """
-    sig = f"{lat:.7f}|{lng:.7f}|{float(radius_km):g}"
-    prev_nonce = st.session_state.get("_folium_stf_push_nonce")
-    prev_sig = str(st.session_state.get("_folium_stf_push_sig") or "")
-    if prev_nonce is None or int(prev_nonce) != int(remount_nonce):
-        st.session_state["_folium_stf_push_nonce"] = int(remount_nonce)
-        st.session_state["_folium_stf_push_sig"] = sig
-        return True
-    if prev_sig != sig:
-        st.session_state["_folium_stf_push_sig"] = sig
-        return True
-    return False
-
-
 def render_pin_map(
     radius_km: float,
     *,
@@ -742,7 +723,7 @@ def render_pin_map(
     st.session_state["_folium_after_viewport_capture"] = _one_shot_center
 
     _nonce = int(st.session_state.get("_folium_remount_nonce", 0))
-    _push_stf = _folium_should_push_stf_view(lat, lng, radius_km, _nonce)
+    _sig = f"{lat:.6f}_{lng:.6f}_{float(radius_km):g}"
     if basemap == "google":
         st.caption(
             "**Move pin:** click the **map background** (not the blue marker). Layers: top-right. "
@@ -754,16 +735,15 @@ def render_pin_map(
             "**Move pin:** click the **map background**. Street map for labels; satellite + place names for imagery."
         )
 
-    _kw: dict = {
-        "height": 620,
-        "use_container_width": True,
-        "returned_objects": ro,
-        "key": f"talabat_pin_map_{_nonce}",
-    }
-    if _push_stf:
-        _kw["center"] = (lat, lng)
-        _kw["zoom"] = _map_zoom
-    out = st_folium(fmap, **_kw)
+    # Hard stop to zoom thrash: do not stream ``center``/``zoom`` props via st_folium.
+    # Instead, remount when pin/radius signature changes (or manual recenter increments nonce).
+    out = st_folium(
+        fmap,
+        height=620,
+        use_container_width=True,
+        returned_objects=ro,
+        key=f"talabat_pin_map_{_sig}_{_nonce}",
+    )
     out = dict(out or {})
     return out
 
