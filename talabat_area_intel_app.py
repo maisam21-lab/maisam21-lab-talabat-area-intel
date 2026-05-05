@@ -58,7 +58,7 @@ _DEFAULT_CONCURRENCY = 3
 _CITY_SLUGS = ["dubai", "sharjah", "abudhabi", "alain", "ajman"]
 
 # Product defaults (no client toggles): full grid + cuisine sweep, keep all listing rows, request Places enrichment.
-_SCRAPE_DEDUPE_BY_VENDOR_URL = False
+_SCRAPE_DEDUPE_BY_VENDOR_URL = True
 _SCRAPE_HIGH_VOLUME = True
 _SCRAPE_MAX_SAMPLE_POINTS = 6
 # Default max time for /result polling when the payload does not set scrape_wall_clock_sec.
@@ -2101,8 +2101,8 @@ def main() -> None:
         )
     else:
         st.success(
-            f"Collected **{len(df):,}** rows. Same brand may appear for different branches or grid samples; "
-            "use **brand_id** for rollups and **branch_sku** for unique rows."
+            f"Collected **{len(df):,}** deduped vendor rows (`dedupe_by_vendor_url=true`). "
+            "Use **brand_id** for rollups and **branch_sku** for branch-level checks."
         )
         st.caption(
             "Runs use high-volume listing coverage, **vendor pages for many unique restaurants** (API caps), "
