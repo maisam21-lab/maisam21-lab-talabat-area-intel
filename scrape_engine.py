@@ -1787,11 +1787,19 @@ def _union_listing_batches(*batches: list[RestaurantRecord]) -> list[RestaurantR
 
 def _listing_fast_path_enabled() -> bool:
     """If true, return as soon as the first DOM parse finds links (skips scroll — often ~40 rows only)."""
-    return os.getenv("SCRAPER_LISTING_FAST_PATH", "0").strip().lower() in ("1", "true", "yes", "y", "on")
+    return (os.getenv("SCRAPER_LISTING_FAST_PATH") or "0").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
 def _env_truthy(val: str | None) -> bool:
     return (val or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _env_str(key: str, default: str) -> str:
+    """Like getenv but treats empty/whitespace-only as unset (Docker often injects KEY=)."""
+    raw = os.getenv(key)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip()
 
 
 _DEFAULT_CHROME_UA = (
@@ -2305,9 +2313,9 @@ async def scrape_one_point(
 ) -> list[RestaurantRecord]:
     # Optional ``?page=`` pagination for hub listing URLs (similar idea to community listing scrapers that
     # walk ``ul[data-test='pagination']`` — e.g. github.com/Dataloops-code/Talabat-Restaurants1-Scraper-python).
-    paginate_listings = _env_truthy(os.getenv("SCRAPER_LISTING_PAGE_PAGINATION", "1"))
-    max_listing_pages = max(1, int(os.getenv("SCRAPER_LISTING_MAX_PAGES", "35")))
-    page_gap_sec = max(0.0, float(os.getenv("SCRAPER_LISTING_PAGE_GAP_SEC", "1.5")))
+    paginate_listings = _env_truthy(_env_str("SCRAPER_LISTING_PAGE_PAGINATION", "1"))
+    max_listing_pages = max(1, int(_env_str("SCRAPER_LISTING_MAX_PAGES", "35")))
+    page_gap_sec = max(0.0, float(_env_str("SCRAPER_LISTING_PAGE_GAP_SEC", "1.5")))
     api_rows = await _fetch_restaurants_from_internal_api(pin_lat, pin_lng, sample_lat, sample_lng)
     if api_rows:
         return api_rows
@@ -3111,7 +3119,7 @@ async def run_area_scrape(
             if enrich:
                 # Vendor pages fill most non-listing columns (phone, legal name, cuisines, branch coords, …).
                 # Legacy budget ``22 // grid_pts`` capped high-volume runs to ~3 URLs when grid_pts≈90 → mostly empty fields.
-                enrich_cap = int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "12"))
+                enrich_cap = int(_env_str("RESTAURANT_DETAIL_ENRICH_MAX", "12"))
                 n_pts = max(1, len(points))
                 force_unique = True
                 if force_unique:

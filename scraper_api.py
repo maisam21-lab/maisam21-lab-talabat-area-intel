@@ -180,6 +180,22 @@ def _env_truthy(val: str | None) -> bool:
     return (val or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _env_nonempty(key: str, default: str) -> str:
+    """Treat unset or empty Docker env (KEY=) as missing so defaults apply."""
+    raw = os.getenv(key)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip()
+
+
+def _int_env_nonempty(key: str, default: int) -> int:
+    s = _env_nonempty(key, str(default))
+    try:
+        return int(s)
+    except ValueError:
+        return default
+
+
 def _nominatim_enabled() -> bool:
     return os.getenv("GEOCODE_FALLBACK_NOMINATIM", "1").strip().lower() not in ("0", "false", "no", "off")
 
@@ -254,13 +270,13 @@ def scrape_config(x_api_key: str | None = Header(default=None)) -> dict:
         "scraper_max_radius_km": float(os.getenv("SCRAPER_MAX_RADIUS_KM", "10")),
         "scraper_max_sample_points_cap_api": int(os.getenv("SCRAPER_MAX_SAMPLE_POINTS_CAP_API", "400")),
         "max_scrape_sample_points_default": int(os.getenv("MAX_SCRAPE_SAMPLE_POINTS", "6")),
-        "restaurant_detail_enrich_max_default": int(os.getenv("RESTAURANT_DETAIL_ENRICH_MAX", "12")),
+        "restaurant_detail_enrich_max_default": _int_env_nonempty("RESTAURANT_DETAIL_ENRICH_MAX", 12),
         "scraper_per_point_timeout_sec": float(os.getenv("SCRAPER_PER_POINT_TIMEOUT_SEC", "90")),
         "scraper_listing_fast_path": os.getenv("SCRAPER_LISTING_FAST_PATH", "0").strip(),
         "scraper_humanize": os.getenv("SCRAPER_HUMANIZE", "0").strip(),
         "google_places_enrich_env": os.getenv("GOOGLE_PLACES_ENRICH", "0").strip(),
-        "scraper_listing_page_pagination": os.getenv("SCRAPER_LISTING_PAGE_PAGINATION", "0").strip(),
-        "scraper_listing_max_pages": int(os.getenv("SCRAPER_LISTING_MAX_PAGES", "25")),
+        "scraper_listing_page_pagination": _env_nonempty("SCRAPER_LISTING_PAGE_PAGINATION", "1"),
+        "scraper_listing_max_pages": _int_env_nonempty("SCRAPER_LISTING_MAX_PAGES", 35),
         "listing_harvest_response_max_urls": int(os.getenv("LISTING_HARVEST_RESPONSE_MAX_URLS", "2500")),
         "scraper_vendor_page_enrich": _env_truthy(os.getenv("SCRAPER_VENDOR_PAGE_ENRICH", "0")),
         "scraper_max_concurrent_scrapes": _SCRAPE_MAX_CONCURRENT_SCRAPES,
