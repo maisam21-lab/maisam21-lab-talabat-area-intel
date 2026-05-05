@@ -1506,7 +1506,7 @@ def main() -> None:
         ]
 
     st.subheader("Interactive search map")
-    st.caption("Click/drag on map updates the app pin.")
+    st.caption("Search + Run pin lat/lng are the reliable pin setters. If browser blocks map click wiring, use those controls.")
     if "pin_lat" in st.query_params and "pin_lng" in st.query_params:
         try:
             b_lat = float(str(st.query_params.get("pin_lat", "")).strip())
@@ -1527,7 +1527,7 @@ def main() -> None:
     step3_cls = "step-card"
     cstep1, cstep2, cstep3 = st.columns(3)
     with cstep1:
-        st.markdown(f"<div class='{step1_cls}'><b>Step 1</b><br>Drop a pin (search or click map)</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='{step1_cls}'><b>Step 1</b><br>Set pin (search or lat/lng)</div>", unsafe_allow_html=True)
     with cstep2:
         st.markdown(f"<div class='{step2_cls}'><b>Step 2</b><br>Set radius &amp; label</div>", unsafe_allow_html=True)
     with cstep3:
@@ -1558,6 +1558,17 @@ def main() -> None:
         st.session_state[f"run_pin_lng_input__{_pin_widget_scope}"] = _fin_lng
     st.session_state[lat_internal_key] = _fin_lat
     st.session_state[lng_internal_key] = _fin_lng
+    apply_pin_col, _ = st.columns([1, 3])
+    with apply_pin_col:
+        if st.button("Apply typed pin"):
+            cur_now = get_scrape_location()
+            set_scrape_location(
+                float(_fin_lat),
+                float(_fin_lng),
+                str(cur_now.get("label") or "Run pin"),
+                "manual_form",
+            )
+            sync_legacy_pin_mirror()
     current_loc = get_scrape_location()
     # Typing new lat/lng must reset map dedupe so the next click (even near the same coords) applies.
     if abs(_fin_lat - float(current_loc["lat"])) > 1e-5 or abs(_fin_lng - float(current_loc["lng"])) > 1e-5:
