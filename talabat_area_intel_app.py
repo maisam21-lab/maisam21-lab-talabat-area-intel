@@ -1500,14 +1500,7 @@ def main() -> None:
                 except requests.RequestException as exc:
                     st.error(f"Could not reach geocode API ({api_base_url}): {exc}")
         st.warning("Coastline tip: keep the pin slightly inland to avoid sparse ocean-side sampling.")
-        _loc_for_start = get_scrape_location()
-        _pin_source_for_start = str(_loc_for_start.get("source") or "")
-        _pin_ready_for_start = _pin_source_for_start not in {"init", ""}
-        if (not _pin_ready_for_start) and ("pin_lat" in st.query_params and "pin_lng" in st.query_params):
-            _pin_ready_for_start = True
-        if not _pin_ready_for_start:
-            st.caption("Set a pin first using **Address search** or **Run pin** lat/lng + **Apply typed pin**.")
-        run_single = st.button("Start Scraping", type="primary", width="stretch", disabled=not _pin_ready_for_start)
+        run_single = st.button("Start Scraping", type="primary", width="stretch")
 
     _pin_widget_scope = str(city_key) if is_city_mode else "custom_pin_mode"
     st.subheader("Run pin (single source for scraping)")
