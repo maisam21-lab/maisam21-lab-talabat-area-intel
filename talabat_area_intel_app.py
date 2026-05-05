@@ -1275,6 +1275,83 @@ def ensure_just_landed_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def build_sanity_check_report(df: pd.DataFrame, radius_km: float) -> dict[str, float | int | str]:
+    """Compute lightweight quality sanity metrics for stakeholder validation."""
+    if df is None or df.empty:
+        return {
+            "rows_total": 0,
+            "unique_brands": 0,
+            "unique_brand_ratio": 0.0,
+            "rows_with_contact": 0,
+            "contact_coverage_pct": 0.0,
+            "rows_with_legal_name": 0,
+            "legal_name_coverage_pct": 0.0,
+            "unique_cuisines": 0,
+            "top_cuisine_share_pct": 0.0,
+            "status": "warn",
+            "note": "No rows returned.",
+        }
+
+    total = int(len(df))
+    bsrc = df.get("brand_display_name", df.get("restaurant_name", pd.Series([""] * total)))
+    brands = bsrc.astype(str).str.strip().replace("", pd.NA).dropna()
+    unique_brands = int(brands.nunique())
+    unique_brand_ratio = (unique_brands / total) if total else 0.0
+
+    has_contact = (
+        df.get("contact_phone", pd.Series([""] * total)).astype(str).str.strip().replace("", pd.NA).notna()
+        | df.get("vendor_email", pd.Series([""] * total)).astype(str).str.strip().replace("", pd.NA).notna()
+        | df.get("vendor_website", pd.Series([""] * total)).astype(str).str.strip().replace("", pd.NA).notna()
+    )
+    rows_with_contact = int(has_contact.sum())
+    contact_coverage_pct = (rows_with_contact * 100.0 / total) if total else 0.0
+
+    legal = df.get("legal_name", pd.Series([""] * total)).astype(str).str.strip().replace("", pd.NA).notna()
+    rows_with_legal_name = int(legal.sum())
+    legal_name_coverage_pct = (rows_with_legal_name * 100.0 / total) if total else 0.0
+
+    cuisines_raw = df.get("cuisines", pd.Series([""] * total)).fillna("").astype(str).str.strip()
+    cuisine_tokens = cuisines_raw.str.split(",").explode().astype(str).str.strip()
+    cuisine_tokens = cuisine_tokens[cuisine_tokens != ""]
+    unique_cuisines = int(cuisine_tokens.nunique()) if not cuisine_tokens.empty else 0
+    if cuisine_tokens.empty:
+        top_cuisine_share_pct = 0.0
+    else:
+        counts = cuisine_tokens.value_counts()
+        top_cuisine_share_pct = float((counts.iloc[0] * 100.0) / max(1, int(counts.sum())))
+
+    # Simple operational guardrails; tuned to catch obvious anomalies, not strict rejection criteria.
+    min_brands_expected = 50 if float(radius_km) >= 10.0 else 20
+    status = "ok"
+    notes: list[str] = []
+    if unique_brands < min_brands_expected:
+        status = "warn"
+        notes.append(f"Low unique brand count ({unique_brands} < {min_brands_expected} expected baseline).")
+    if unique_brand_ratio < 0.08:
+        status = "warn"
+        notes.append(f"Low unique-brand ratio ({unique_brand_ratio:.3f}).")
+    if unique_cuisines <= 5 or top_cuisine_share_pct >= 55.0:
+        status = "warn"
+        notes.append("Cuisine diversity looks weak; verify parsing/mapping.")
+    if contact_coverage_pct < 8.0:
+        status = "warn"
+        notes.append("Contact coverage is low; legal/contact enrichment still incomplete.")
+
+    return {
+        "rows_total": total,
+        "unique_brands": unique_brands,
+        "unique_brand_ratio": round(unique_brand_ratio, 4),
+        "rows_with_contact": rows_with_contact,
+        "contact_coverage_pct": round(contact_coverage_pct, 2),
+        "rows_with_legal_name": rows_with_legal_name,
+        "legal_name_coverage_pct": round(legal_name_coverage_pct, 2),
+        "unique_cuisines": unique_cuisines,
+        "top_cuisine_share_pct": round(top_cuisine_share_pct, 2),
+        "status": status,
+        "note": " ".join(notes) if notes else "Sanity checks look reasonable for this run.",
+    }
+
+
 def build_excel_export_df(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     if "platform" not in out.columns:
@@ -2309,6 +2386,22 @@ def main() -> None:
     m1.metric("Total rows", int(len(df)))
     m2.metric("Unique places (Google)" if coverage_only else "Unique brands", brand_count)
     m3.metric("Avg rating", f"{avg_rating:.2f}" if avg_rating > 0 else "—")
+    sanity = build_sanity_check_report(df, float(radius_km))
+    with st.expander("Sanity check (rows, brands, cuisine, legal/contact)", expanded=True):
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Rows", int(sanity["rows_total"]))
+        s2.metric("Unique brands", int(sanity["unique_brands"]))
+        s3.metric("Contact coverage", f'{float(sanity["contact_coverage_pct"]):.1f}%')
+        s4.metric("Legal name coverage", f'{float(sanity["legal_name_coverage_pct"]):.1f}%')
+        st.caption(
+            f'Unique-brand ratio: `{float(sanity["unique_brand_ratio"]):.3f}` · '
+            f'Unique cuisines: `{int(sanity["unique_cuisines"])}` · '
+            f'Top cuisine share: `{float(sanity["top_cuisine_share_pct"]):.1f}%`'
+        )
+        if str(sanity.get("status") or "") == "warn":
+            st.warning(str(sanity.get("note") or "Sanity checks flagged potential quality issues."))
+        else:
+            st.success(str(sanity.get("note") or "Sanity checks passed."))
 
     tab_results, tab_heatmap, tab_outbound = st.tabs(
         ["Results", "Heatmap", "Whitespace"]
