@@ -422,21 +422,21 @@ def render_google_maps_pin(lat: float, lng: float, api_key: str, radius_km: floa
     return f"""
 <div id="gm-pin-map" style="height:420px;border:0;border-radius:10px;"></div>
 <script>
-  function _setBridgeValue(lat, lng) {
-    try {
+  function _setBridgeValue(lat, lng) {{
+    try {{
       const doc = window.parent.document;
       const next = lat.toFixed(6) + "," + lng.toFixed(6);
       const bridge = doc.querySelector('input[aria-label="map_pin_bridge"]');
       if (!bridge) return false;
       const setter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, 'value').set;
       setter.call(bridge, next);
-      bridge.dispatchEvent(new Event('input', { bubbles: true }));
-      bridge.dispatchEvent(new Event('change', { bubbles: true }));
+      bridge.dispatchEvent(new Event('input', {{ bubbles: true }}));
+      bridge.dispatchEvent(new Event('change', {{ bubbles: true }}));
       return true;
-    } catch (_) {
+    }} catch (_) {{
       return false;
-    }
-  }
+    }}
+  }}
 
   function _setUrlPin(lat, lng) {{
     const url = new URL(window.parent.location.href);
@@ -449,10 +449,10 @@ def render_google_maps_pin(lat: float, lng: float, api_key: str, radius_km: floa
     window.parent.location.href = url.toString();
   }}
 
-  function _publishPin(lat, lng) {
+  function _publishPin(lat, lng) {{
     _setBridgeValue(lat, lng);
     _setUrlPin(lat, lng);
-  }
+  }}
 
   function initGmPinMap() {{
     const center = {{ lat: {float(lat):.8f}, lng: {float(lng):.8f} }};
