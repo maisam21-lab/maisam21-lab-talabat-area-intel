@@ -1662,7 +1662,12 @@ def main() -> None:
     if click_ll is not None:
         c_lat, c_lng = click_ll
         _cur_pin = get_scrape_location()
-        if _folium_click_looks_like_phantom_default(
+        # Ignore no-op click payloads (often synthetic replay of the current pin/default on reruns).
+        if haversine_km(c_lat, c_lng, float(_cur_pin["lat"]), float(_cur_pin["lng"])) < 0.08:
+            click_ll = None
+            if interaction_blob is not None:
+                st.session_state["_folium_processed_click_blob"] = interaction_blob
+        elif _folium_click_looks_like_phantom_default(
             c_lat, c_lng, float(_cur_pin["lat"]), float(_cur_pin["lng"])
         ):
             click_ll = None
