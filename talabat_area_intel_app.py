@@ -15,7 +15,6 @@ import folium
 import pandas as pd
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 from folium.plugins import Fullscreen, HeatMap, MousePosition
 from streamlit_folium import st_folium
 
@@ -602,84 +601,6 @@ def _folium_click_looks_like_phantom_default(
     d_cur_click = haversine_km(cur_lat, cur_lng, click_lat, click_lng)
     # Reject synthetic ``last_clicked`` replays at the template default while the real pin is elsewhere.
     return d_cur_def > 1.0 and d_click_def < 0.08 and d_cur_click > 1.0
-
-
-def _consume_leaflet_confirmed_pin_from_query() -> tuple[float, float] | None:
-    """Read one-shot pin confirmation from query params (posted by the custom Leaflet iframe)."""
-    try:
-        qp = st.query_params
-        token = str(qp.get("_lp_commit") or "").strip()
-        if not token:
-            return None
-        if token == str(st.session_state.get("_lp_last_commit_token") or ""):
-            return None
-        lat_s = str(qp.get("_lp_lat") or "").strip()
-        lng_s = str(qp.get("_lp_lng") or "").strip()
-        lat_v = float(lat_s)
-        lng_v = float(lng_s)
-        if not (-90.0 < lat_v < 90.0 and -180.0 < lng_v < 180.0):
-            return None
-        st.session_state["_lp_last_commit_token"] = token
-        return lat_v, lng_v
-    except Exception:
-        return None
-
-
-def render_leaflet_pin_map(radius_km: float) -> None:
-    """Render stable Leaflet map via components.html with explicit Confirm Pin button."""
-    loc = get_scrape_location()
-    lat = float(loc["lat"])
-    lng = float(loc["lng"])
-    z = int(st.session_state.get("_pin_map_zoom_ui", _default_zoom_for_radius_km(radius_km)))
-    z = max(3, min(19, z))
-    map_html = f"""
-<div style="position:relative;">
-  <div id="leaflet-map-pin" style="height:620px;border:1px solid #e5e7eb;border-radius:10px;"></div>
-  <div style="position:absolute;left:12px;bottom:12px;z-index:9999;background:#fff;padding:8px 10px;border-radius:8px;border:1px solid #d1d5db;box-shadow:0 1px 6px rgba(0,0,0,.15);font-size:12px;">
-    <div id="lp-coords" style="margin-bottom:6px;">{lat:.6f}, {lng:.6f}</div>
-    <button id="lp-confirm" style="background:#111827;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;">Confirm Pin</button>
-  </div>
-</div>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script>
-(() => {{
-  const startLat = {lat:.8f};
-  const startLng = {lng:.8f};
-  const zoom = {z};
-  const radiusM = {float(radius_km) * 1000.0:.3f};
-  const map = L.map('leaflet-map-pin', {{zoomControl:true}}).setView([startLat, startLng], zoom);
-  L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
-    maxZoom: 19,
-    attribution: '&copy; OpenStreetMap contributors'
-  }}).addTo(map);
-  const marker = L.marker([startLat, startLng], {{draggable:true}}).addTo(map);
-  const circle = L.circle([startLat, startLng], {{radius: radiusM, color:'#1D4ED8', weight:3, fillColor:'#2563EB', fillOpacity:0.14}}).addTo(map);
-  const small = L.circle([startLat, startLng], {{radius: Math.min(180.0, Math.max(40.0, {float(radius_km) * 35.0:.3f})), color:'#1E40AF', weight:2, fillColor:'#1D4ED8', fillOpacity:0.35}}).addTo(map);
-  const coords = document.getElementById('lp-coords');
-  function setPoint(lat, lng) {{
-    marker.setLatLng([lat, lng]);
-    circle.setLatLng([lat, lng]);
-    small.setLatLng([lat, lng]);
-    coords.textContent = lat.toFixed(6) + ', ' + lng.toFixed(6);
-  }}
-  map.on('click', e => setPoint(e.latlng.lat, e.latlng.lng));
-  marker.on('dragend', e => {{
-    const p = e.target.getLatLng();
-    setPoint(p.lat, p.lng);
-  }});
-  document.getElementById('lp-confirm').addEventListener('click', () => {{
-    const p = marker.getLatLng();
-    const u = new URL(window.parent.location.href);
-    u.searchParams.set('_lp_lat', p.lat.toFixed(6));
-    u.searchParams.set('_lp_lng', p.lng.toFixed(6));
-    u.searchParams.set('_lp_commit', String(Date.now()));
-    window.parent.location.href = u.toString();
-  }});
-}})();
-</script>
-"""
-    components.html(map_html, height=640)
 
 
 def render_pin_map(
@@ -1632,8 +1553,8 @@ def main() -> None:
     _pin_widget_scope = str(city_key) if is_city_mode else "custom_pin_mode"
     st.subheader("Run pin (single source for scraping)")
     st.caption(
-        "Use the **map** (click background), the **Use map center as pin** button if clicks do not register, or **lat/lng** "
-        "below — all update the same `scrape_location` sent to the API. **Start Scraping** is in the sidebar."
+        "Use the **map** (click background) or **lat/lng** below — both update the same `scrape_location` "
+        "sent to the API. **Start Scraping** is in the sidebar."
     )
     loc_ui = get_scrape_location()
     lat_internal_key = f"_run_pin_lat__{_pin_widget_scope}"
@@ -1687,13 +1608,34 @@ def main() -> None:
             "Click the **map background** to move the scrape pin. After you pan/zoom, the map **stays there** until "
             "you change the pin, radius, or press **Recenter on pin**."
         )
-    _confirmed_pin = _consume_leaflet_confirmed_pin_from_query()
-    if _confirmed_pin is not None:
-        plat, plng = float(_confirmed_pin[0]), float(_confirmed_pin[1])
-        set_scrape_location(plat, plng, "Custom pin (Leaflet confirm)", "leaflet_confirm")
-        sync_legacy_pin_mirror()
-        st.toast(f"Pin → {plat:.5f}, {plng:.5f}", icon="📍")
-    render_leaflet_pin_map(radius_km)
+    folium_out = render_pin_map(
+        radius_km,
+        lock_pin=False,
+        supply_df=st.session_state.get("supply_overlay_df"),
+        google_coverage_df=st.session_state.get("google_coverage_df"),
+        dual_points=dual_points_for_map,
+    )
+    store_folium_payload(folium_out)
+    click_ll = _folium_click_latlng(folium_out)
+    if run_single:
+        click_ll = None
+    if click_ll is not None:
+        c_lat, c_lng = click_ll
+        cur = get_scrape_location()
+        # Ignore synthetic no-op / default replay clicks.
+        if (
+            haversine_km(c_lat, c_lng, float(cur["lat"]), float(cur["lng"])) < 0.08
+            or _folium_click_looks_like_phantom_default(c_lat, c_lng, float(cur["lat"]), float(cur["lng"]))
+        ):
+            click_ll = None
+    if click_ll is not None:
+        click_lat, click_lng = click_ll
+        click_sig = f"{click_lat:.6f},{click_lng:.6f}"
+        if click_sig != str(st.session_state.get("runpin_last_click_sig") or ""):
+            st.session_state["runpin_last_click_sig"] = click_sig
+            set_scrape_location(click_lat, click_lng, "Custom pin (map)", "folium_click")
+            sync_legacy_pin_mirror()
+            st.toast(f"Pin → {click_lat:.5f}, {click_lng:.5f}", icon="📍")
 
     _render_google_maps_reference_panel(radius_km)
 
