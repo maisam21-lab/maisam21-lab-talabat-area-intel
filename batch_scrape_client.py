@@ -10,6 +10,57 @@ import time
 _POST_TIMEOUT_CAP = float(os.getenv("SCRAPER_API_POST_TIMEOUT_SEC", "600"))
 
 
+def format_connection_error_hint(exc: BaseException, api_base_url: str = "") -> str:
+    """Append a short operational hint when polls fail with connection-level errors."""
+    base = str(exc).strip()
+    low = base.lower()
+    if any(
+        x in low
+        for x in (
+            "connection refused",
+            "failed to establish",
+            "name or service not known",
+            "nodename nor servname",
+            "temporary failure in name resolution",
+            "max retries exceeded",
+            "httpconnectionpool",
+        )
+    ):
+        origin = f" API_BASE_URL={api_base_url!r}." if api_base_url else ""
+        return (
+            f"{base} —{origin} If enqueue succeeded but polling failed, the API process may have restarted or exited; "
+            "check `docker compose ps` and `docker compose logs api`. "
+            "`http://api:8000` only works inside Compose; run Streamlit elsewhere → point Secrets/env at your public HTTPS API."
+        )
+    return base
+
+
+def http_get_with_connection_retries(
+    url: str,
+    *,
+    headers: dict[str, str],
+    timeout: float = 30.0,
+) -> requests.Response:
+    """
+    GET with retries on transient connection failures (API restarting, brief network loss).
+
+    Env: SCRAPER_RESULT_POLL_CONNECT_RETRIES (default 12), SCRAPER_RESULT_POLL_CONNECT_RETRY_SLEEP_SEC (default 4).
+    """
+    max_attempts = max(1, min(int(os.getenv("SCRAPER_RESULT_POLL_CONNECT_RETRIES", "12")), 40))
+    sleep_sec = max(0.5, min(float(os.getenv("SCRAPER_RESULT_POLL_CONNECT_RETRY_SLEEP_SEC", "4")), 120.0))
+    last_exc: BaseException | None = None
+    for attempt in range(max_attempts):
+        try:
+            return requests.get(url, headers=headers, timeout=timeout)
+        except (requests.ConnectionError, requests.Timeout) as e:
+            last_exc = e
+            if attempt + 1 >= max_attempts:
+                break
+            time.sleep(sleep_sec)
+    assert last_exc is not None
+    raise last_exc
+
+
 def _poll_result(
     *,
     api_base_url: str,
@@ -20,7 +71,7 @@ def _poll_result(
 ) -> dict[str, Any]:
     deadline = time.time() + float(timeout_sec)
     while time.time() < deadline:
-        r = requests.get(
+        r = http_get_with_connection_retries(
             f"{api_base_url.rstrip('/')}/result/{request_id}",
             headers=headers,
             timeout=30,
@@ -96,7 +147,7 @@ def run_dual_area_scrape_via_api(
                 location_df["dual_area"] = str(slot).strip().upper()[:8] or str(slot)
             result_frames.append(location_df)
         except Exception as exc:
-            request_errors.append(f"Location {i+1}: {exc}")
+            request_errors.append(f"Location {i+1}: {format_connection_error_hint(exc, api_base_url)}")
 
     if not result_frames:
         return pd.DataFrame(), request_errors

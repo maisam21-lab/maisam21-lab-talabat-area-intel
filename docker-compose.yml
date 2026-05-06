@@ -59,6 +59,7 @@ services:
       dockerfile: Dockerfile.streamlit
     restart: unless-stopped
     environment:
+      # Reachable only inside this Compose network. If UI shows connection refused while polling /result/..., check api logs — the worker may have crashed after enqueue.
       API_BASE_URL: http://api:8000
       # Shown in the UI “Build:” banner; override in .env e.g. APP_BUILD_STAMP=$(git rev-parse --short HEAD)
       APP_BUILD_STAMP: ${APP_BUILD_STAMP:-2026-05-03-vm-docker-compose}

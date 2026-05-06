@@ -38,10 +38,20 @@ from streamlit_location import (
     sync_legacy_pin_mirror,
 )
 try:
-    from batch_scrape_client import run_dual_area_scrape_via_api
+    from batch_scrape_client import (
+        format_connection_error_hint,
+        http_get_with_connection_retries,
+        run_dual_area_scrape_via_api,
+    )
 except ImportError:
     # Deployment-safe fallback when an older module version is present.
     from batch_scrape_client import run_batch_scrape_via_api as run_dual_area_scrape_via_api
+
+    def http_get_with_connection_retries(url, *, headers, timeout=30.0):
+        return requests.get(url, headers=headers, timeout=timeout)
+
+    def format_connection_error_hint(exc, api_base_url=""):
+        return str(exc)
 from geo_utils import haversine_km, haversine_series_km_from_pin
 from google_map_tiles import (
     ensure_google_map_tile_sessions,
@@ -2051,7 +2061,7 @@ def main() -> None:
                     def _poll_result(request_id_to_poll: str, total_timeout_sec: float = _SCRAPE_CLIENT_TIMEOUT_SEC) -> dict:
                         deadline = time.time() + float(total_timeout_sec)
                         while time.time() < deadline:
-                            poll_resp = requests.get(
+                            poll_resp = http_get_with_connection_retries(
                                 f"{api_base_url.rstrip('/')}/result/{request_id_to_poll}",
                                 headers=req_headers,
                                 timeout=30,
@@ -2121,7 +2131,7 @@ def main() -> None:
                             status_box.warning(timeout_msg)
                             # POST body may never arrive on slow paths, but the API often already enqueued using X-Request-ID.
                             try:
-                                probe = requests.get(
+                                probe = http_get_with_connection_retries(
                                     f"{api_base_url.rstrip('/')}/result/{attempt_rid}",
                                     headers=req_headers,
                                     timeout=25,
@@ -2219,7 +2229,7 @@ def main() -> None:
                             )
                         except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout):
                             try:
-                                probe_em = requests.get(
+                                probe_em = http_get_with_connection_retries(
                                     f"{api_base_url.rstrip('/')}/result/{em_rid}",
                                     headers=req_headers,
                                     timeout=25,
@@ -2287,7 +2297,7 @@ def main() -> None:
                     if fallback_notes:
                         st.warning("Primary scrape degraded due to timeouts: " + " ".join(fallback_notes))
                 except Exception as exc:
-                    st.error(f"Remote API scrape failed: {exc}")
+                    st.error(f"Remote API scrape failed: {format_connection_error_hint(exc, api_base_url)}")
                     df = pd.DataFrame()
                     st.session_state["google_coverage_df"] = pd.DataFrame()
 
