@@ -2380,7 +2380,11 @@ async def scrape_one_point(
     max_listing_pages = max(1, int(_env_str("SCRAPER_LISTING_MAX_PAGES", "35")))
     page_gap_sec = max(0.0, float(_env_str("SCRAPER_LISTING_PAGE_GAP_SEC", "1.5")))
     api_rows = await _fetch_restaurants_from_internal_api(pin_lat, pin_lng, sample_lat, sample_lng)
-    if api_rows:
+    api_rows_min_keep = max(1, int(_env_str("SCRAPER_API_ROWS_MIN_KEEP", "80")))
+    api_cuisine_nonempty = sum(1 for r in api_rows if str(getattr(r, "cuisines", "") or "").strip() != "")
+    # Internal API can be fast but shallow (often ~30-40 rows with low cuisine fill). Keep it only when it is
+    # sufficiently dense; otherwise continue with listing-page extraction and merge both sources.
+    if api_rows and len(api_rows) >= api_rows_min_keep and api_cuisine_nonempty > 0:
         return api_rows
 
     context = None
@@ -2419,7 +2423,7 @@ async def scrape_one_point(
     # On constrained hosts, cap how many hub pages Playwright opens (HTTP path above usually fills rows first).
     listing_urls = listing_urls[: max(1, int(os.getenv("SCRAPER_FALLBACK_LISTING_URLS", "8")))]
     allow_fast = _listing_fast_path_enabled() and not listing_cuisine_sweep and not paginate_listings
-    merged_all: list[RestaurantRecord] = []
+    merged_all: list[RestaurantRecord] = list(api_rows)
     strict = _env_truthy(os.getenv("SCRAPER_STRICT_LISTING_ERRORS"))
     post_nav_ms = _post_navigation_wait_ms()
     goto_until = _listing_goto_wait_until()
