@@ -7,7 +7,9 @@ ENV PIP_NO_CACHE_DIR=1
 WORKDIR /app
 
 COPY requirements.txt .
+# playwright-stealth is API-only (optional SCRAPER_PLAYWRIGHT_STEALTH); keep it out of Streamlit image builds.
 RUN pip install --upgrade pip && pip install -r requirements.txt \
+    && pip install "playwright-stealth>=1.0.0" \
     && playwright install --with-deps chromium
 
 # Increase shared memory for Chromium in containerized runs.
