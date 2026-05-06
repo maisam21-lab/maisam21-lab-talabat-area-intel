@@ -612,13 +612,20 @@ def _extract_next_data_json_text(html: str) -> str | None:
 
 
 def _fetch_listing_page_html(listing_url: str, headers: dict[str, str]) -> str | None:
+    html: str | None = None
     try:
         r = requests.get(listing_url, headers=headers, timeout=35)
+        if r.status_code < 400 and r.content:
+            html = r.text
     except requests.RequestException:
-        return None
-    if r.status_code >= 400 or not r.content:
-        return None
-    return r.text
+        html = None
+    # Fallback for blocked/thin listing pages: remote provider fetch (ScrapingBee/ScraperAPI/ZenRows/template).
+    if not html or len(html) < 300:
+        if _env_truthy(os.getenv("SCRAPER_REMOTE_LISTING_HTML", "1")):
+            html_remote = fetch_remote_vendor_html(listing_url)
+            if html_remote and len(html_remote) > 300:
+                return html_remote
+    return html
 
 
 def _vendor_urls_from_html_regex(html: str) -> list[str]:
@@ -905,6 +912,17 @@ async def extract_restaurants(
         jl, jld = parse_just_landed_from_text(blob)
         status = classify_status(blob)
         legal_name = _extract_legal_name_from_blob(blob)
+        parsed = parse_listing_snippet_fields(blob)
+        if not cuisines:
+            cuisines = str(parsed.get("cuisines") or "")
+        if not eta:
+            eta = str(parsed.get("eta") or "")
+        if not delivery_fee:
+            delivery_fee = str(parsed.get("delivery_fee") or "")
+        if not min_order:
+            min_order = str(parsed.get("min_order") or "")
+        if not rating:
+            rating = str(parsed.get("rating") or "")
 
         tokens = [t.strip() for t in blob.split("•")]
         for t in tokens:
