@@ -140,6 +140,7 @@ def enrich_records_with_google_places(records: list[RestaurantRecord], *, force:
                 "website",
                 "url",
                 "types",
+                "geometry",
                 "editorial_summary",
                 "opening_hours",
             ]
@@ -206,6 +207,24 @@ def enrich_records_with_google_places(records: list[RestaurantRecord], *, force:
             row.google_maps_link = maps_url[:500]
         if type_str:
             row.google_primary_type = type_str[:400]
+        loc = (res.get("geometry") or {}).get("location") or {}
+        try:
+            gla, gln = loc.get("lat"), loc.get("lng")
+            if gla is not None and gln is not None:
+                row.lat = float(gla)
+                row.lng = float(gln)
+        except (TypeError, ValueError):
+            pass
+        # Listing-only rows often have empty Talabat ``cuisines``; Places types are a useful fallback for analytics.
+        if not (row.cuisines or "").strip() and isinstance(types, list) and types:
+            skip = {"point_of_interest", "establishment"}
+            labels = [
+                str(t).replace("_", " ").strip().title()
+                for t in types
+                if t and str(t).lower() not in skip
+            ]
+            if labels:
+                row.cuisines = ", ".join(labels[:6])[:400]
         if gweb:
             row.google_business_website = gweb[:500]
             if not (row.vendor_website or "").strip():

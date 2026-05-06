@@ -270,6 +270,7 @@ def init_state() -> None:
     st.session_state.setdefault("runpin_last_click_sig", "")
     st.session_state.setdefault("_last_successful_snapshot_pin", None)
     st.session_state.setdefault("_last_successful_dual_snapshot", None)
+    st.session_state.setdefault("last_run_stamp", "")
 
 
 def _coords_tuple_close(a: tuple[float, ...] | None, b: tuple[float, ...] | None, tol: float = 1e-5) -> bool:
@@ -1142,7 +1143,10 @@ def build_sanity_check_report(df: pd.DataFrame, radius_km: float) -> dict[str, f
     legal_name_coverage_pct = (rows_with_legal_name * 100.0 / total) if total else 0.0
 
     cuisines_raw = df.get("cuisines", pd.Series([""] * total)).fillna("").astype(str).str.strip()
-    cuisine_tokens = cuisines_raw.str.split(",").explode().astype(str).str.strip()
+    gp_raw = df.get("google_primary_type", pd.Series([""] * total)).fillna("").astype(str).str.strip()
+    # Talabat card cuisine often empty when only listing URLs were harvested; Places types fill the gap after enrich.
+    effective_cuisine = cuisines_raw.mask(cuisines_raw == "", gp_raw)
+    cuisine_tokens = effective_cuisine.str.split(",").explode().astype(str).str.strip()
     cuisine_tokens = cuisine_tokens[cuisine_tokens != ""]
     unique_cuisines = int(cuisine_tokens.nunique()) if not cuisine_tokens.empty else 0
     if cuisine_tokens.empty:
@@ -1163,7 +1167,19 @@ def build_sanity_check_report(df: pd.DataFrame, radius_km: float) -> dict[str, f
         notes.append(f"Low unique-brand ratio ({unique_brand_ratio:.3f}).")
     if unique_cuisines <= 5 or top_cuisine_share_pct >= 55.0:
         status = "warn"
-        notes.append("Cuisine diversity looks weak; verify parsing/mapping.")
+        notes.append(
+            "Cuisine diversity looks weak; verify Talabat listing cards or Places enrichment (google_primary_type)."
+        )
+    if "lat" in df.columns and "source_pin_lat" in df.columns:
+        try:
+            dlat = (pd.to_numeric(df["lat"], errors="coerce") - pd.to_numeric(df["source_pin_lat"], errors="coerce")).abs()
+            if dlat.notna().all() and float(dlat.max()) < 1e-4:
+                status = "warn"
+                notes.append(
+                    "All rows share the scrape pin coordinates — enable Places Details geometry (API updated) or vendor-page lat/lng."
+                )
+        except Exception:
+            pass
     if contact_coverage_pct < 8.0:
         status = "warn"
         notes.append("Contact coverage is low; legal/contact enrichment still incomplete.")
@@ -1180,6 +1196,58 @@ def build_sanity_check_report(df: pd.DataFrame, radius_km: float) -> dict[str, f
         "top_cuisine_share_pct": round(top_cuisine_share_pct, 2),
         "status": status,
         "note": " ".join(notes) if notes else "Sanity checks look reasonable for this run.",
+    }
+
+
+def build_quality_gate_report(
+    sanity: dict[str, float | int | str],
+    *,
+    radius_km: float,
+    google_baseline_count: int,
+) -> dict[str, object]:
+    """Stakeholder gate for production-quality market-intel runs."""
+    rows_total = int(sanity.get("rows_total", 0) or 0)
+    unique_brands = int(sanity.get("unique_brands", 0) or 0)
+    unique_brand_ratio = float(sanity.get("unique_brand_ratio", 0.0) or 0.0)
+
+    is_10km = float(radius_km) >= 9.9
+    min_rows = 1500 if is_10km else 700
+    min_brands = 1000 if is_10km else 350
+    min_brand_ratio = 0.35 if is_10km else 0.20
+
+    checks: list[dict[str, object]] = []
+
+    def _push_check(name: str, passed: bool, actual: str, expected: str) -> None:
+        checks.append({"check": name, "passed": bool(passed), "actual": actual, "expected": expected})
+
+    _push_check("Total rows", rows_total >= min_rows, f"{rows_total:,}", f">= {min_rows:,}")
+    _push_check("Unique brands", unique_brands >= min_brands, f"{unique_brands:,}", f">= {min_brands:,}")
+    _push_check("Unique brand ratio", unique_brand_ratio >= min_brand_ratio, f"{unique_brand_ratio:.3f}", f">= {min_brand_ratio:.3f}")
+
+    if google_baseline_count > 0:
+        vs_google = float(rows_total) / float(google_baseline_count)
+        _push_check("Talabat vs Google baseline", vs_google >= 1.10, f"{vs_google:.2f}x", ">= 1.10x")
+    else:
+        _push_check("Talabat vs Google baseline", False, "N/A", "Need google baseline count > 0")
+
+    pass_count = sum(1 for c in checks if bool(c["passed"]))
+    total_checks = len(checks)
+    if pass_count == total_checks:
+        status = "pass"
+        note = "Gate PASSED: run quality is strong for stakeholder-facing use."
+    elif pass_count >= max(1, total_checks - 1):
+        status = "warn"
+        note = "Gate NEAR PASS: one criterion missed; validate before sharing widely."
+    else:
+        status = "fail"
+        note = "Gate FAILED: do not treat this run as production-quality market intel yet."
+
+    return {
+        "status": status,
+        "note": note,
+        "passed_checks": pass_count,
+        "total_checks": total_checks,
+        "checks": checks,
     }
 
 
@@ -1401,6 +1469,16 @@ def main() -> None:
             index=0,
         )
         city_lat, city_lng, _ = UAE_CITY_PRESETS[city_key]
+        # Auto-apply when the selected city changes so the run pin tracks the chosen area immediately.
+        _prev_city_seed_key = st.session_state.get("_scrape_city_seed_key")
+        seed_city_preset_if_changed(
+            city_key,
+            float(city_lat),
+            float(city_lng),
+            UAE_CITY_DISPLAY[city_key],
+        )
+        if st.session_state.get("_scrape_city_seed_key") != _prev_city_seed_key:
+            sync_legacy_pin_mirror()
         if st.button("Use city preset pin", width="stretch"):
             seed_city_preset_if_changed(
                 city_key,
@@ -1771,44 +1849,29 @@ window.addEventListener('message', function(e) {
         elapsed = int(time.time() - start_ts)
         timer_box.success(f"Done in {elapsed // 60:02d}:{elapsed % 60:02d}")
         progress.progress(1.0)
-        previous_success_df = st.session_state.get("last_successful_results_df", pd.DataFrame())
         dual_snap_cur = (
             float(st.session_state["dual_area_a_lat"]),
             float(st.session_state["dual_area_a_lng"]),
             float(st.session_state["dual_area_b_lat"]),
             float(st.session_state["dual_area_b_lng"]),
         )
-        prev_dual_snap = st.session_state.get("_last_successful_dual_snapshot")
-        dual_snap_ok = _coords_tuple_close(prev_dual_snap, dual_snap_cur)
         if dual_df is not None and not dual_df.empty:
             st.session_state["results_df"] = dual_df
             st.session_state["last_successful_results_df"] = dual_df
             st.session_state["_last_successful_dual_snapshot"] = dual_snap_cur
             st.session_state["last_run_returned_zero"] = False
-        elif (
-            dual_snap_ok
-            and previous_success_df is not None
-            and not previous_success_df.empty
-        ):
-            st.session_state["results_df"] = previous_success_df
-            st.session_state["last_run_returned_zero"] = True
         else:
             st.session_state["results_df"] = dual_df if dual_df is not None else pd.DataFrame()
             st.session_state["last_run_returned_zero"] = True
-            if (
-                dual_df is not None
-                and dual_df.empty
-                and previous_success_df is not None
-                and not previous_success_df.empty
-                and not dual_snap_ok
-            ):
-                st.info(
-                    "Dual-area scrape returned 0 rows — **not** showing results from a previous A/B pin pair. "
-                    "Adjust pins and run again."
-                )
         st.session_state["google_coverage_df"] = pd.DataFrame()
         st.session_state["last_run_done"] = True
         st.session_state["results_fingerprint"] = current_fingerprint
+        st.session_state["last_run_stamp"] = (
+            f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')} | "
+            f"dual A=({float(st.session_state['dual_area_a_lat']):.5f},{float(st.session_state['dual_area_a_lng']):.5f}) "
+            f"B=({float(st.session_state['dual_area_b_lat']):.5f},{float(st.session_state['dual_area_b_lng']):.5f}) "
+            f"| radius={float(radius_km):g}km"
+        )
         st.session_state["last_scrape_run_meta"] = {
             "dual_area_mode": True,
             "dual_area_locations": int(len(dual_area_df)),
@@ -2114,54 +2177,32 @@ window.addEventListener('message', function(e) {
                     df = pd.DataFrame()
                     st.session_state["google_coverage_df"] = pd.DataFrame()
 
-                previous_success_df = st.session_state.get("last_successful_results_df", pd.DataFrame())
                 cur_pin = (float(loc_req["lat"]), float(loc_req["lng"]))
-                snap_pin = st.session_state.get("_last_successful_snapshot_pin")
-                pin_snap_ok = _coords_tuple_close(snap_pin, cur_pin)
                 if df is not None and not df.empty:
                     st.session_state["results_df"] = df
                     st.session_state["last_successful_results_df"] = df
                     st.session_state["_last_successful_snapshot_pin"] = cur_pin
                     st.session_state["last_run_returned_zero"] = False
-                elif (
-                    pin_snap_ok
-                    and previous_success_df is not None
-                    and not previous_success_df.empty
-                ):
-                    st.session_state["results_df"] = previous_success_df
-                    st.session_state["last_run_returned_zero"] = True
                 else:
                     st.session_state["results_df"] = df if df is not None else pd.DataFrame()
                     st.session_state["last_run_returned_zero"] = True
-                    if (
-                        (df is None or df.empty)
-                        and previous_success_df is not None
-                        and not previous_success_df.empty
-                        and not pin_snap_ok
-                    ):
-                        st.info(
-                            "This scrape returned **0 Talabat rows** — the map pin differs from your last successful run, "
-                            "so the app will **not** show another location's table. "
-                            "Use Google coverage (if on) or fix the scrape, then try again."
-                        )
                 st.session_state["last_run_done"] = True
                 st.session_state["results_fingerprint"] = current_fingerprint
+                _rid_now = str((st.session_state.get("last_scrape_run_meta") or {}).get("request_id") or "n/a")
+                st.session_state["last_run_stamp"] = (
+                    f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')} | "
+                    f"request_id={_rid_now} | "
+                    f"pin=({float(cur_pin[0]):.5f},{float(cur_pin[1]):.5f}) | radius={float(radius_km):g}km"
+                )
         stop_event.set()
         elapsed = int(time.time() - start_ts)
         timer_box.success(f"Done in {elapsed // 60:02d}:{elapsed % 60:02d}")
 
     df = st.session_state.get("results_df", pd.DataFrame())
     if st.session_state.get("last_run_returned_zero", False):
-        _zr = st.session_state.get("results_df", pd.DataFrame())
-        if _zr is not None and not _zr.empty:
-            st.warning(
-                "Latest scrape returned **0 Talabat rows** at this pin. The table below is still your **last successful** "
-                "scrape at the **same** coordinates (cached until a run returns data)."
-            )
-        else:
-            st.warning(
-                "Latest scrape returned **0 Talabat rows** for this pin. No cached table is shown (pin changed or no prior success)."
-            )
+        st.warning(
+            "Latest scrape returned **0 Talabat rows** for this run. The app no longer reuses old Talabat rows."
+        )
     if df is None or df.empty:
         gdf_fallback = st.session_state.get("google_coverage_df", pd.DataFrame())
         if isinstance(gdf_fallback, pd.DataFrame) and not gdf_fallback.empty:
@@ -2257,6 +2298,46 @@ window.addEventListener('message', function(e) {
     m2.metric("Unique places (Google)" if coverage_only else "Unique brands", brand_count)
     m3.metric("Avg rating", f"{avg_rating:.2f}" if avg_rating > 0 else "—")
     sanity = build_sanity_check_report(df, float(radius_km))
+    gdf_now = st.session_state.get("google_coverage_df", pd.DataFrame())
+    google_baseline_count = int(len(gdf_now)) if isinstance(gdf_now, pd.DataFrame) else 0
+    gate = build_quality_gate_report(
+        sanity,
+        radius_km=float(radius_km),
+        google_baseline_count=google_baseline_count,
+    )
+    st.markdown("### Run quality gate")
+    if str(gate.get("status")) == "pass":
+        st.success(str(gate.get("note") or "Gate PASSED"))
+    elif str(gate.get("status")) == "warn":
+        st.warning(str(gate.get("note") or "Gate NEAR PASS"))
+    else:
+        st.error(str(gate.get("note") or "Gate FAILED"))
+    st.caption(
+        f"Checks passed: `{int(gate.get('passed_checks', 0))}/{int(gate.get('total_checks', 0))}` · "
+        f"Google baseline rows: `{google_baseline_count:,}`"
+    )
+    _checks_df = pd.DataFrame(gate.get("checks") or [])
+    if not _checks_df.empty:
+        _checks_df["passed"] = _checks_df["passed"].map(lambda x: "PASS" if bool(x) else "FAIL")
+        st.dataframe(_checks_df, use_container_width=True, hide_index=True)
+
+    st.markdown("### Run diagnostics")
+    _meta_debug = st.session_state.get("last_scrape_run_meta") or {}
+    _loc_dbg = get_scrape_location()
+    _rid_dbg = str(_meta_debug.get("request_id") or "n/a")
+    _eff_lat_dbg = _meta_debug.get("effective_scrape_pin_lat")
+    _eff_lng_dbg = _meta_debug.get("effective_scrape_pin_lng")
+    _eff_pin_dbg = (
+        f"{float(_eff_lat_dbg):.6f}, {float(_eff_lng_dbg):.6f}"
+        if _eff_lat_dbg is not None and _eff_lng_dbg is not None
+        else "n/a"
+    )
+    st.caption(
+        f"Run stamp: `{str(st.session_state.get('last_run_stamp') or 'n/a')}` · "
+        f"request_id: `{_rid_dbg}` · "
+        f"UI pin: `{float(_loc_dbg['lat']):.6f}, {float(_loc_dbg['lng']):.6f}` · "
+        f"API effective pin: `{_eff_pin_dbg}`"
+    )
     with st.expander("Sanity check (rows, brands, cuisine, legal/contact)", expanded=True):
         s1, s2, s3, s4 = st.columns(4)
         s1.metric("Rows", int(sanity["rows_total"]))

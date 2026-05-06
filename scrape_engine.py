@@ -416,6 +416,64 @@ async def click_just_landed_if_requested(page, just_landed_only: bool) -> None:
                 pass
 
 
+async def _bootstrap_talabat_warm_session(
+    pin_lat: float,
+    pin_lng: float,
+) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """
+    One short Playwright visit to Talabat to capture cookies, then reuse them for:
+
+    - ``requests`` listing HTML + ``/api/v2/restaurants`` (often empty without a browser session)
+    - subsequent Playwright contexts via ``add_cookies``
+
+    Enable with ``SCRAPER_TALABAT_WARM_SESSION=1``. Optional ``SCRAPER_WARM_SESSION_URL`` (default UAE hub).
+    """
+    goto_url = (os.getenv("SCRAPER_WARM_SESSION_URL") or "https://www.talabat.com/en/uae/restaurants").strip()
+    wait_ms = max(800, int(os.getenv("SCRAPER_WARM_SESSION_WAIT_MS", "3200")))
+    browser = None
+    context = None
+    page = None
+    raw: list[dict[str, Any]] = []
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=CHROMIUM_LAUNCH_ARGS)
+            context = await browser.new_context(**_listing_browser_context_kwargs(pin_lat, pin_lng))
+            page = await context.new_page()
+            await page.goto(goto_url, wait_until="domcontentloaded", timeout=90000)
+            await page.wait_for_timeout(wait_ms)
+            await dismiss_common_overlays(page)
+            await page.wait_for_timeout(min(900, wait_ms // 2))
+            raw = list(await context.cookies())
+    finally:
+        with suppress(Exception):
+            if page is not None:
+                await page.close()
+        with suppress(Exception):
+            if context is not None:
+                await context.close()
+        with suppress(Exception):
+            if browser is not None:
+                await browser.close()
+
+    pw_list: list[dict[str, Any]] = []
+    for c in raw:
+        dom = str(c.get("domain") or "").lower()
+        if "talabat.com" not in dom:
+            continue
+        entry: dict[str, Any] = {}
+        for k in ("name", "value", "domain", "path", "expires", "httpOnly", "secure"):
+            if k in c and c[k] is not None:
+                entry[k] = c[k]
+        ss = c.get("sameSite")
+        if ss in ("Strict", "Lax", "None"):
+            entry["sameSite"] = ss
+        if entry.get("name") and entry.get("value"):
+            pw_list.append(entry)
+    req_dict = {str(c["name"]): str(c["value"]) for c in pw_list}
+    logger.info("talabat_warm_session cookies=%s url=%s", len(req_dict), goto_url)
+    return req_dict, pw_list
+
+
 async def extract_restaurants_from_anchor_links(
     page,
     pin_lat: float,
@@ -611,10 +669,14 @@ def _extract_next_data_json_text(html: str) -> str | None:
     return None
 
 
-def _fetch_listing_page_html(listing_url: str, headers: dict[str, str]) -> str | None:
+def _fetch_listing_page_html(
+    listing_url: str,
+    headers: dict[str, str],
+    cookies: dict[str, str] | None = None,
+) -> str | None:
     html: str | None = None
     try:
-        r = requests.get(listing_url, headers=headers, timeout=35)
+        r = requests.get(listing_url, headers=headers, timeout=35, cookies=cookies or None)
         if r.status_code < 400 and r.content:
             html = r.text
     except requests.RequestException:
@@ -680,12 +742,12 @@ def _vendor_urls_from_listing_html(html: str) -> list[str]:
     return ordered
 
 
-def _listing_vendor_urls_from_page(listing_url: str) -> list[str]:
+def _listing_vendor_urls_from_page(listing_url: str, cookies: dict[str, str] | None = None) -> list[str]:
     """One GET per hub URL: Next payload + visible anchors (works when __NEXT_DATA__ is empty)."""
-    html = _fetch_listing_page_html(listing_url, _LISTING_HTML_HEADERS)
+    html = _fetch_listing_page_html(listing_url, _LISTING_HTML_HEADERS, cookies=cookies)
     urls = _vendor_urls_from_listing_html(html or "")
     if not urls and _env_truthy(os.getenv("SCRAPER_HTTP_LISTING_MOBILE_FALLBACK", "1")):
-        html2 = _fetch_listing_page_html(listing_url, _LISTING_HTML_MOBILE_HEADERS)
+        html2 = _fetch_listing_page_html(listing_url, _LISTING_HTML_MOBILE_HEADERS, cookies=cookies)
         urls = _vendor_urls_from_listing_html(html2 or "")
         if urls:
             logger.info("listing_html_mobile_ua url=%s vendors=%s", listing_url, len(urls))
@@ -2223,6 +2285,40 @@ def add_business_required_mapping(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _extra_listing_hub_urls_from_env() -> list[str]:
+    """
+    Comma- or newline-separated Talabat **listing** hub URLs (area pages, promos, etc.).
+
+    Use when the default ``/en/uae/restaurants`` + cuisine hubs return thin ``__NEXT_DATA__`` or few
+    vendor links for your egress IP. Example (discover in-browser, then paste):
+
+        SCRAPER_EXTRA_LISTING_HUB_URLS=https://www.talabat.com/en/uae/restaurants?...,https://...
+    """
+    raw = (os.getenv("SCRAPER_EXTRA_LISTING_HUB_URLS") or "").strip()
+    if not raw:
+        return []
+    out: list[str] = []
+    for part in raw.replace("\n", ",").split(","):
+        u = part.strip()
+        if not u:
+            continue
+        if "talabat.com" not in u.lower():
+            continue
+        if not u.lower().startswith("http"):
+            continue
+        out.append(u.split("#", 1)[0].strip())
+    return out
+
+
+def _ar_locale_listing_mirrors(urls: list[str]) -> list[str]:
+    """Duplicate ``/en/uae/`` hubs as ``/ar/uae/`` — sometimes surfaces more SSR links for the same area."""
+    mir: list[str] = []
+    for u in urls:
+        if "/en/uae/" in u:
+            mir.append(u.replace("/en/uae/", "/ar/uae/", 1))
+    return mir
+
+
 def _listing_seed_hub_urls(grid_high_volume: bool) -> list[str]:
     """
     Hub URLs used only for HTTP + Playwright listing seeds.
@@ -2235,8 +2331,13 @@ def _listing_seed_hub_urls(grid_high_volume: bool) -> list[str]:
         raw = capped_listing_urls(True)
     else:
         raw = capped_listing_urls(grid_high_volume)
+    merged: list[str] = list(raw)
+    if _env_truthy(os.getenv("SCRAPER_LISTING_INCLUDE_AR_LOCALE", "0")):
+        merged = merged + _ar_locale_listing_mirrors(raw)
+    merged = merged + _extra_listing_hub_urls_from_env()
+    merged = list(dict.fromkeys(merged))
     cap = max(2, int(os.getenv("SCRAPER_LISTING_SEED_MAX_HUB_URLS", "16")))
-    return raw[: min(cap, len(raw))]
+    return merged[: min(cap, len(merged))]
 
 
 async def _fetch_restaurants_from_listing_http(
@@ -2247,6 +2348,7 @@ async def _fetch_restaurants_from_listing_http(
     sample_lng: float,
     *,
     listing_cuisine_sweep: bool,
+    cookies: dict[str, str] | None = None,
 ) -> list[RestaurantRecord]:
     """
     Fast Talabat listing path: pull ``__NEXT_DATA__`` from public listing HTML.
@@ -2262,7 +2364,7 @@ async def _fetch_restaurants_from_listing_http(
         ordered_paths: list[str] = []
         seen_norm: set[str] = set()
         for listing_url in urls[:max_pages]:
-            for p in _listing_vendor_urls_from_page(listing_url):
+            for p in _listing_vendor_urls_from_page(listing_url, cookies=cookies):
                 nu = normalize_talabat_url(p).split("?")[0].rstrip("/").lower()
                 if nu in seen_norm:
                     continue
@@ -2288,6 +2390,7 @@ async def _playwright_listing_seed_records(
     *,
     scroll_rounds: int,
     scroll_wait_ms: int,
+    warm_playwright_cookies: list[dict[str, Any]] | None = None,
 ) -> list[RestaurantRecord]:
     """
     Single-browser pass over listing hub URLs: DOM extraction (anchors/cards/__NEXT_DATA__) plus
@@ -2320,6 +2423,9 @@ async def _playwright_listing_seed_records(
             except Exception:
                 break
             context = await browser.new_context(**_listing_browser_context_kwargs(pin_lat, pin_lng))
+            if warm_playwright_cookies:
+                with suppress(Exception):
+                    await context.add_cookies(warm_playwright_cookies)
             page = await context.new_page()
             await page.goto(listing_url, wait_until=goto_until, timeout=60000)
             await page.wait_for_timeout(post_nav_ms)
@@ -2373,13 +2479,21 @@ async def scrape_one_point(
     scroll_wait_ms: int,
     *,
     listing_cuisine_sweep: bool = False,
+    warm_request_cookies: dict[str, str] | None = None,
+    warm_playwright_cookies: list[dict[str, Any]] | None = None,
 ) -> list[RestaurantRecord]:
     # Optional ``?page=`` pagination for hub listing URLs (similar idea to community listing scrapers that
     # walk ``ul[data-test='pagination']`` — e.g. github.com/Dataloops-code/Talabat-Restaurants1-Scraper-python).
     paginate_listings = _env_truthy(_env_str("SCRAPER_LISTING_PAGE_PAGINATION", "1"))
     max_listing_pages = max(1, int(_env_str("SCRAPER_LISTING_MAX_PAGES", "35")))
     page_gap_sec = max(0.0, float(_env_str("SCRAPER_LISTING_PAGE_GAP_SEC", "1.5")))
-    api_rows = await _fetch_restaurants_from_internal_api(pin_lat, pin_lng, sample_lat, sample_lng)
+    api_rows = await _fetch_restaurants_from_internal_api(
+        pin_lat,
+        pin_lng,
+        sample_lat,
+        sample_lng,
+        cookies=warm_request_cookies,
+    )
     api_rows_min_keep = max(1, int(_env_str("SCRAPER_API_ROWS_MIN_KEEP", "80")))
     api_cuisine_nonempty = sum(1 for r in api_rows if str(getattr(r, "cuisines", "") or "").strip() != "")
     # Internal API can be fast but shallow (often ~30-40 rows with low cuisine fill). Keep it only when it is
@@ -2403,6 +2517,9 @@ async def scrape_one_point(
     except Exception as exc:
         logger.warning("listing_new_context_failed sample=(%.5f,%.5f) err=%s", sample_lat, sample_lng, exc)
         return []
+    if warm_playwright_cookies:
+        with suppress(Exception):
+            await context.add_cookies(warm_playwright_cookies)
     try:
         page = await context.new_page()
     except TargetClosedError:
@@ -2692,6 +2809,8 @@ async def _fetch_restaurants_from_internal_api(
     pin_lng: float,
     sample_lat: float,
     sample_lng: float,
+    *,
+    cookies: dict[str, str] | None = None,
 ) -> list[RestaurantRecord]:
     headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)",
@@ -2715,6 +2834,7 @@ async def _fetch_restaurants_from_internal_api(
                     "offset": offset,
                 },
                 headers=headers,
+                cookies=cookies or None,
                 timeout=20,
             )
             if r.status_code >= 400:
@@ -2951,7 +3071,21 @@ async def run_area_scrape(
 
     browser = None
     http_seed: list[RestaurantRecord] = []
+    warm_req_cookies: dict[str, str] = {}
+    warm_pw_cookies: list[dict[str, Any]] = []
     try:
+        if _env_truthy(os.getenv("SCRAPER_TALABAT_WARM_SESSION", "0")):
+            last_step = "talabat_warm_session"
+            if meta_out is not None:
+                meta_out["last_completed_step"] = last_step
+            try:
+                warm_req_cookies, warm_pw_cookies = await _bootstrap_talabat_warm_session(pin_lat, pin_lng)
+                if meta_out is not None:
+                    meta_out["talabat_warm_session_cookie_count"] = int(len(warm_req_cookies))
+            except Exception as exc:
+                logger.warning("talabat_warm_session_bootstrap_failed err=%s", exc)
+                warm_req_cookies, warm_pw_cookies = {}, []
+
         if _env_truthy(os.getenv("SCRAPER_HTTP_LISTING_SEED", "1")):
             last_step = "listing_http_seed"
             if meta_out is not None:
@@ -2964,6 +3098,7 @@ async def run_area_scrape(
                     pin_lat,
                     pin_lng,
                     listing_cuisine_sweep=hv,
+                    cookies=warm_req_cookies or None,
                 )
             except Exception as exc:
                 logger.warning("listing_http_seed_failed err=%s", exc)
@@ -3022,6 +3157,7 @@ async def run_area_scrape(
                         hub_urls,
                         scroll_rounds=scroll_rounds,
                         scroll_wait_ms=scroll_wait_ms,
+                        warm_playwright_cookies=warm_pw_cookies or None,
                     )
                     http_seed = _merge_restaurant_rows_by_url(http_seed, pw_seed_rows)
                     logger.info(
@@ -3083,6 +3219,8 @@ async def run_area_scrape(
                                     scroll_rounds=scroll_rounds,
                                     scroll_wait_ms=scroll_wait_ms,
                                     listing_cuisine_sweep=hv,
+                                    warm_request_cookies=warm_req_cookies or None,
+                                    warm_playwright_cookies=warm_pw_cookies or None,
                                 )
                             )
                             rows = await asyncio.wait_for(task, timeout=per_point_timeout)
