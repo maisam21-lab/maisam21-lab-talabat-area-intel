@@ -5,7 +5,6 @@ import io
 import json
 import math
 import os
-from pathlib import Path
 from urllib.parse import quote, quote_plus
 import threading
 import time
@@ -415,86 +414,54 @@ def _render_google_maps_reference_panel(radius_km: float) -> None:
             st.caption("Embedded preview is off (`STREAMLIT_GOOGLE_MAPS_EMBED=0`).")
 
 
-def render_google_maps_pin(lat: float, lng: float, api_key: str, radius_km: float) -> str:
-    """Interactive Google map: click/drag marker updates Streamlit bridge input."""
+def render_google_maps_pin(lat: float, lng: float, radius_km: float, api_key: str) -> str:
     safe_key = quote(str(api_key or "").strip(), safe="")
     radius_m = max(100.0, float(radius_km) * 1000.0)
     return f"""
-<div id="gm-pin-map" style="height:420px;border:0;border-radius:10px;"></div>
+<div id="map" style="height:500px;width:100%;border-radius:12px"></div>
 <script>
-  function _setBridgeValue(lat, lng) {{
-    try {{
-      const doc = window.parent.document;
-      const next = lat.toFixed(6) + "," + lng.toFixed(6);
-      const bridge = doc.querySelector('input[aria-label="map_pin_bridge"]');
-      if (!bridge) return false;
-      const setter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, 'value').set;
-      setter.call(bridge, next);
-      bridge.dispatchEvent(new Event('input', {{ bubbles: true }}));
-      bridge.dispatchEvent(new Event('change', {{ bubbles: true }}));
-      return true;
-    }} catch (_) {{
-      return false;
-    }}
-  }}
-
-  function _setUrlPin(lat, lng) {{
-    const url = new URL(window.parent.location.href);
-    const nextLat = lat.toFixed(6);
-    const nextLng = lng.toFixed(6);
-    if ((url.searchParams.get('pin_lat') || '') === nextLat && (url.searchParams.get('pin_lng') || '') === nextLng) return;
-    url.searchParams.set('pin_lat', nextLat);
-    url.searchParams.set('pin_lng', nextLng);
-    url.searchParams.set('_pin_ts', String(Date.now()));
-    window.parent.location.href = url.toString();
-  }}
-
-  function _publishPin(lat, lng) {{
-    _setBridgeValue(lat, lng);
-    _setUrlPin(lat, lng);
-  }}
-
-  function initGmPinMap() {{
-    const center = {{ lat: {float(lat):.8f}, lng: {float(lng):.8f} }};
-    const map = new google.maps.Map(document.getElementById('gm-pin-map'), {{
-      center: center, zoom: 13, mapTypeId: 'roadmap', gestureHandling: 'greedy'
-    }});
-    const marker = new google.maps.Marker({{
-      position: center, map: map, draggable: true,
-      icon: 'http://maps.google.com/mapfiles/ms/icons/blue-dot.png'
+function initMap() {{
+    const pos = {{lat: {float(lat):.8f}, lng: {float(lng):.8f}}};
+    const map = new google.maps.Map(document.getElementById('map'), {{
+        center: pos,
+        zoom: 12,
+        mapTypeId: 'hybrid'
     }});
     const circle = new google.maps.Circle({{
-      map: map, center: center, radius: {radius_m:.1f},
-      strokeColor: '#1D4ED8', strokeOpacity: 0.95, strokeWeight: 2,
-      fillColor: '#2563EB', fillOpacity: 0.12
+        map: map,
+        center: pos,
+        radius: {radius_m:.1f},
+        fillColor: '#2563EB',
+        fillOpacity: 0.15,
+        strokeColor: '#1D4ED8',
+        strokeWeight: 2
     }});
+    const marker = new google.maps.Marker({{
+        position: pos,
+        map: map,
+        draggable: true,
+        title: 'Scrape pin'
+    }});
+    function sendPin(lat, lng) {{
+        window.parent.postMessage({{
+            type: 'pin_update',
+            lat: lat,
+            lng: lng
+        }}, '*');
+    }}
     map.addListener('click', (e) => {{
-      marker.setPosition(e.latLng);
-      circle.setCenter(e.latLng);
-      _publishPin(e.latLng.lat(), e.latLng.lng());
+        marker.setPosition(e.latLng);
+        circle.setCenter(e.latLng);
+        sendPin(e.latLng.lat(), e.latLng.lng());
     }});
     marker.addListener('dragend', (e) => {{
-      circle.setCenter(e.latLng);
-      _publishPin(e.latLng.lat(), e.latLng.lng());
+        circle.setCenter(e.latLng);
+        sendPin(e.latLng.lat(), e.latLng.lng());
     }});
-  }}
+}}
 </script>
-<script async defer src="https://maps.googleapis.com/maps/api/js?key={safe_key}&callback=initGmPinMap"></script>
+<script src="https://maps.googleapis.com/maps/api/js?key={safe_key}&callback=initMap" async defer></script>
 """
-
-
-def _google_pin_component(lat: float, lng: float, api_key: str, radius_km: float):
-    comp = components.declare_component(
-        "google_pin_picker",
-        path=str(Path(__file__).resolve().parent / "components" / "google_pin_picker"),
-    )
-    return comp(
-        lat=float(lat),
-        lng=float(lng),
-        api_key=str(api_key or ""),
-        radius_km=float(radius_km),
-        default=None,
-    )
 
 
 def _configure_map_basemaps(fmap: folium.Map) -> str:
@@ -1561,26 +1528,24 @@ def main() -> None:
 
     st.subheader("Interactive search map")
     st.caption("Click or drag the marker to update the app pin lat/lng.")
-    loc_bridge = get_scrape_location()
-    bridge_default = f"{float(loc_bridge['lat']):.6f},{float(loc_bridge['lng']):.6f}"
-    st.text_input(
-        "map_pin_bridge",
-        value=bridge_default,
-        key="map_pin_bridge",
-        label_visibility="collapsed",
-    )
-    bridge_raw = str(st.session_state.get("map_pin_bridge") or "").strip()
-    if bridge_raw and "," in bridge_raw:
-        try:
-            br_lat_s, br_lng_s = [x.strip() for x in bridge_raw.split(",", 1)]
-            br_lat = float(br_lat_s)
-            br_lng = float(br_lng_s)
-            cur2 = get_scrape_location()
-            if abs(br_lat - float(cur2["lat"])) > 1e-5 or abs(br_lng - float(cur2["lng"])) > 1e-5:
-                set_scrape_location(br_lat, br_lng, "Map pin", "map_click")
-                sync_legacy_pin_mirror()
-        except Exception:
-            pass
+    listener_js = """
+<script>
+window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'pin_update') {
+        const lat = Number(e.data.lat || 0).toFixed(6);
+        const lng = Number(e.data.lng || 0).toFixed(6);
+        const url = new URL(window.parent.location.href);
+        url.searchParams.set('pin_lat', lat);
+        url.searchParams.set('pin_lng', lng);
+        window.parent.history.replaceState({}, '', url);
+        const btn = window.parent.document.getElementById('pin_update_trigger');
+        if (btn) btn.click();
+    }
+});
+</script>
+<button id="pin_update_trigger" style="display:none" onclick="window.location.reload()">update</button>
+"""
+    components.html(listener_js, height=0)
     if "pin_lat" in st.query_params and "pin_lng" in st.query_params:
         try:
             b_lat = float(str(st.query_params.get("pin_lat", "")).strip())
@@ -1660,22 +1625,13 @@ def main() -> None:
     _z = max(3, min(21, int(st.session_state.get("_pin_map_zoom_ui", _default_zoom_for_radius_km(radius_km)))))
     _gm_key = _get_google_maps_api_key_for_basemap()
     if _gm_key:
-        map_pick = _google_pin_component(
+        map_html = render_google_maps_pin(
             float(_map_loc["lat"]),
             float(_map_loc["lng"]),
-            _gm_key,
             float(radius_km),
+            _gm_key,
         )
-        if isinstance(map_pick, dict):
-            try:
-                p_lat = float(map_pick.get("lat"))
-                p_lng = float(map_pick.get("lng"))
-                cur_pick = get_scrape_location()
-                if abs(p_lat - float(cur_pick["lat"])) > 1e-5 or abs(p_lng - float(cur_pick["lng"])) > 1e-5:
-                    set_scrape_location(p_lat, p_lng, "Map pin", "map_click")
-                    sync_legacy_pin_mirror()
-            except Exception:
-                pass
+        components.html(map_html, height=520)
     else:
         _gmap_url = f"https://www.google.com/maps?q={float(_map_loc['lat']):.6f},{float(_map_loc['lng']):.6f}&z={_z}&output=embed"
         st.markdown(
