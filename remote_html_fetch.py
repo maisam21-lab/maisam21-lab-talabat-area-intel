@@ -1,4 +1,4 @@
-"""Optional second HTML source via managed scrapers (ScraperAPI, ZenRows, or custom URL template).
+"""Optional second HTML source via managed scrapers (ScraperAPI, ZenRows, ScrapingBee, or custom URL template).
 
 Set any provider key and merge runs automatically unless REMOTE_VENDOR_HTML=0.
 Billing is on you — this module only fires when credentials exist (or REMOTE_VENDOR_HTML=1 with template).
@@ -14,6 +14,7 @@ import requests
 
 _SCRAPERAPI = "http://api.scraperapi.com/"
 _ZENROWS = "https://api.zenrows.com/v1/"
+_SCRAPINGBEE = "https://app.scrapingbee.com/api/v1/"
 _DEFAULT_UA = "TalabatAreaIntel/1.0 (+https://github.com/maisam21-lab/maisam21-lab-talabat-area-intel)"
 
 
@@ -33,12 +34,22 @@ def zenrows_key() -> str:
     return (os.getenv("ZENROWS_API_KEY") or "").strip()
 
 
+def scrapingbee_key() -> str:
+    return (os.getenv("SCRAPINGBEE_API_KEY") or "").strip()
+
+
 def remote_html_template() -> str:
     return (os.getenv("REMOTE_HTML_URL_TEMPLATE") or "").strip()
 
 
 def remote_html_api_key() -> str:
-    return (os.getenv("REMOTE_HTML_API_KEY") or scraperapi_key() or zenrows_key() or "").strip()
+    return (
+        os.getenv("REMOTE_HTML_API_KEY")
+        or scrapingbee_key()
+        or scraperapi_key()
+        or zenrows_key()
+        or ""
+    ).strip()
 
 
 def remote_vendor_html_enabled() -> bool:
@@ -46,9 +57,9 @@ def remote_vendor_html_enabled() -> bool:
     if _falsy_explicit(flag):
         return False
     if _truthy(flag):
-        return bool(remote_html_template() or scraperapi_key() or zenrows_key())
+        return bool(remote_html_template() or scrapingbee_key() or scraperapi_key() or zenrows_key())
     # Unset: auto-on when any provider is configured (maximize data when keys exist).
-    return bool(remote_html_template() or scraperapi_key() or zenrows_key())
+    return bool(remote_html_template() or scrapingbee_key() or scraperapi_key() or zenrows_key())
 
 
 def _fetch_via_template(url: str) -> str | None:
@@ -118,6 +129,31 @@ def _fetch_via_zenrows(url: str) -> str | None:
         return None
 
 
+def _fetch_via_scrapingbee(url: str) -> str | None:
+    key = scrapingbee_key()
+    if not key:
+        return None
+    params: dict[str, str] = {"api_key": key, "url": url}
+    if _truthy(os.getenv("SCRAPINGBEE_RENDER_JS")):
+        params["render_js"] = "true"
+    if _truthy(os.getenv("SCRAPINGBEE_BLOCK_RESOURCES")):
+        params["block_resources"] = "true"
+    cc = (os.getenv("SCRAPINGBEE_COUNTRY_CODE") or "").strip()
+    if cc:
+        params["country_code"] = cc
+    try:
+        r = requests.get(
+            _SCRAPINGBEE,
+            params=params,
+            timeout=int(os.getenv("SCRAPINGBEE_TIMEOUT_SEC", "90")),
+            headers={"User-Agent": _DEFAULT_UA},
+        )
+        r.raise_for_status()
+        return r.text if r.text and len(r.text) > 200 else None
+    except (requests.RequestException, ValueError):
+        return None
+
+
 def fetch_remote_vendor_html(url: str) -> str | None:
     """Return raw HTML for a Talabat vendor URL, or None."""
     if not remote_vendor_html_enabled():
@@ -128,6 +164,8 @@ def fetch_remote_vendor_html(url: str) -> str | None:
     html: str | None = None
     if remote_html_template():
         html = _fetch_via_template(u)
+    if html is None:
+        html = _fetch_via_scrapingbee(u)
     if html is None:
         html = _fetch_via_scraperapi(u)
     if html is None:
