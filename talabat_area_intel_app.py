@@ -16,6 +16,11 @@ import pandas as pd
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
+
+try:
+    from streamlit_folium import st_folium as _st_folium
+except ImportError:
+    _st_folium = None
 from folium.plugins import Fullscreen, HeatMap, MousePosition
 
 from outbound_prioritization import (
@@ -44,7 +49,7 @@ from google_map_tiles import (
     google_maps_tile_attribution,
 )
 from supply_overlay import normalize_supply_overlay_df
-from uae_cities import UAE_CITY_DISPLAY, UAE_CITY_PRESETS
+from uae_cities import UAE_AREA_PIN_PRESETS, UAE_CITY_DISPLAY, UAE_CITY_PRESETS
 
 DEFAULT_PIN = (25.2048, 55.2708)
 
@@ -1571,6 +1576,21 @@ def main() -> None:
                                 st.warning(f"No geocoding result. {payload.get('error', 'no details')}")
                 except requests.RequestException as exc:
                     st.error(f"Could not reach geocode API ({api_base_url}): {exc}")
+
+        st.markdown("**District pin (one click)**")
+        _ap_keys = list(UAE_AREA_PIN_PRESETS.keys())
+        _ap_sel = st.selectbox(
+            "Jump run pin to…",
+            options=_ap_keys,
+            format_func=lambda k: UAE_AREA_PIN_PRESETS[k][2],
+            key="sidebar_area_pin_preset",
+        )
+        if st.button("Apply district pin", width="stretch", help="Sets lat/lng without browser iframe messaging."):
+            _alat, _alng, _alab = UAE_AREA_PIN_PRESETS[_ap_sel]
+            set_scrape_location(float(_alat), float(_alng), _alab, "area_preset")
+            sync_legacy_pin_mirror()
+            st.rerun()
+
         st.warning("Coastline tip: keep the pin slightly inland to avoid sparse ocean-side sampling.")
         run_single = st.button("Start Scraping", type="primary", width="stretch")
 
@@ -1591,7 +1611,15 @@ def main() -> None:
     st.session_state[lng_internal_key] = float(loc_ui["lng"])
     # ``st.number_input`` keeps its own session_state per ``key=``; after a map click / geocode / preset the
     # authoritative pin moves but the widgets would still return stale coords and overwrite the pin below.
-    if source_now in {"folium_click", "geocode", "city_preset", "init", "map_center_button", "map_click"}:
+    if source_now in {
+        "folium_click",
+        "geocode",
+        "city_preset",
+        "area_preset",
+        "init",
+        "map_center_button",
+        "map_click",
+    }:
         st.session_state.pop(f"run_pin_lat_input__{_pin_widget_scope}", None)
         st.session_state.pop(f"run_pin_lng_input__{_pin_widget_scope}", None)
 
@@ -1613,8 +1641,59 @@ def main() -> None:
             },
         ]
 
-    st.subheader("Interactive search map")
-    st.caption("Click or drag the marker to update the app pin lat/lng.")
+    if _st_folium is not None:
+        st.subheader("Set pin (click map — recommended)")
+        st.caption(
+            "Click **anywhere** on the map below to set the Talabat run pin. "
+            "This path is native to Streamlit (Leaflet) and does **not** rely on Google iframe messaging. "
+            "For **Business Bay** trials, use the sidebar **District pin → Business Bay → Apply district pin**, then scrape."
+        )
+        _floc = get_scrape_location()
+        _fz = _default_zoom_for_radius_km(radius_km)
+        _fmap = folium.Map(
+            location=[float(_floc["lat"]), float(_floc["lng"])],
+            zoom_start=_fz,
+            tiles="OpenStreetMap",
+        )
+        folium.Circle(
+            location=[float(_floc["lat"]), float(_floc["lng"])],
+            radius=float(radius_km) * 1000.0,
+            color="#2563EB",
+            weight=2,
+            fill=True,
+            fill_color="#2563EB",
+            fill_opacity=0.08,
+        ).add_to(_fmap)
+        folium.Marker(
+            [float(_floc["lat"]), float(_floc["lng"])],
+            tooltip="Current run pin — click map to move",
+        ).add_to(_fmap)
+        _folium_out = _st_folium(_fmap, height=440, width="100%", key="area_intel_run_pin_folium")
+        if _folium_out and _folium_out.get("last_clicked"):
+            _lc = _folium_out["last_clicked"]
+            _nlat = float(_lc["lat"])
+            _nlng = float(_lc["lng"])
+            _curp = get_scrape_location()
+            if abs(_nlat - float(_curp["lat"])) > 1e-5 or abs(_nlng - float(_curp["lng"])) > 1e-5:
+                set_scrape_location(
+                    _nlat,
+                    _nlng,
+                    f"Folium map ({_nlat:.5f}, {_nlng:.5f})",
+                    "folium_click",
+                )
+                sync_legacy_pin_mirror()
+                st.rerun()
+    else:
+        st.warning(
+            "Install **streamlit-folium** (`pip install streamlit-folium`) and rebuild the Streamlit image "
+            "to enable the reliable click-to-set-pin map."
+        )
+
+    st.subheader("Interactive search map (Google)")
+    st.caption(
+        "Optional: drag the marker **if** your host allows the iframe to update the app URL. "
+        "If lat/lng never change, use the **Leaflet map above** or **District pin** / **Address search**."
+    )
     # Google Maps runs in a *sibling* iframe and calls ``postMessage`` on ``window.parent`` (the Streamlit page).
     # A listener on *this* iframe's ``window`` never sees those events — attach once on ``window.parent``.
     listener_js = """

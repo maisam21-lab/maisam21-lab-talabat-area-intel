@@ -22,6 +22,18 @@ UAE_CITY_DISPLAY: dict[str, str] = {
     "ajman": "Ajman",
 }
 
+# Micro-market centres for one-click run pins (Streamlit-safe; no browser iframe messaging).
+# Values are approximate district centres for UAE market-intel benchmark runs.
+UAE_AREA_PIN_PRESETS: dict[str, tuple[float, float, str]] = {
+    "dubai_default": (25.2048, 55.2708, "Dubai · city centre (default)"),
+    "business_bay": (25.1865, 55.2642, "Business Bay"),
+    "dubai_marina": (25.0772, 55.1398, "Dubai Marina"),
+    "jlt": (25.0684, 55.1392, "JLT"),
+    "difc": (25.2130, 55.2798, "DIFC / Downtown core"),
+    "deira": (25.2694, 55.2972, "Deira / waterfront"),
+    "jumeirah": (25.2285, 55.2644, "Jumeirah (Beach Rd)"),
+}
+
 _ALIAS_TO_KEY: dict[str, str] = {
     "dubai": "dubai",
     "sharjah": "sharjah",

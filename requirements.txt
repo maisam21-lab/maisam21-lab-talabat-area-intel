@@ -1,4 +1,5 @@
 streamlit
+streamlit-folium
 playwright
 pandas
 openpyxl
