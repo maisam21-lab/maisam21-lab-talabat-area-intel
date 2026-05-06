@@ -93,8 +93,8 @@ def _pin_label_from_map_click(lat: float, lng: float) -> str:
 _SCRAPE_DEDUPE_BY_VENDOR_URL = True
 _SCRAPE_HIGH_VOLUME = True
 _SCRAPE_MAX_SAMPLE_POINTS = 6
-# Default max time for /result polling when the payload does not set scrape_wall_clock_sec.
-_SCRAPE_CLIENT_TIMEOUT_SEC = 1300
+# Default floor for /result polling when the payload omits scrape_wall_clock_sec (legacy); prefer per-profile wall.
+_SCRAPE_CLIENT_TIMEOUT_SEC = int(os.getenv("SCRAPE_CLIENT_POLL_TIMEOUT_SEC", "1800"))
 # POST /scrape only enqueues ({request_id, queued}); polling uses /result. Use (connect, read) timeouts because
 # Streamlit Cloud → raw ``http://`` IP can stall on **connect** (read-only bump does not help).
 _SCRAPE_POST_TIMEOUT_SEC = float(os.getenv("SCRAPER_API_POST_TIMEOUT_SEC", "600"))
@@ -104,11 +104,13 @@ _SCRAPE_ENQUEUE_READ_CAP_SEC = float(os.getenv("SCRAPER_API_ENQUEUE_READ_CAP_SEC
 
 
 def _scrape_poll_budget_sec_for_payload(payload: dict) -> float:
-    """Upper bound for /result polling; must exceed API scrape_wall_clock_sec when the client sends it."""
+    """Upper bound for /result polling; must exceed API ``asyncio.wait_for`` wall + Places tail."""
     wall = int((payload or {}).get("scrape_wall_clock_sec") or 0)
     budget = float(_SCRAPE_CLIENT_TIMEOUT_SEC)
+    # API caps scrape_wall_clock_sec at 3600s; add margin for result serialization and slow polls.
+    poll_margin = float(os.getenv("SCRAPE_CLIENT_POLL_MARGIN_SEC", "420"))
     if wall > 0:
-        budget = max(budget, float(wall) + 180.0)
+        budget = max(budget, float(wall) + poll_margin)
     try:
         raw_pb = str(st.secrets.get("SCRAPER_POLL_TOTAL_TIMEOUT_SEC", "")).strip()
         if raw_pb:
@@ -126,6 +128,8 @@ _SCRAPE_PROFILES: dict[str, dict] = {
         "scroll_wait_ms": 500,
         "google_places_enrich": True,
         "enrich": False,
+        # Aligns Streamlit poll budget with API asyncio.wait_for (scraper_api caps at 3600s).
+        "scrape_wall_clock_sec": 900,
     },
     # Better coverage with moderate runtime.
     "Balanced": {
@@ -135,6 +139,7 @@ _SCRAPE_PROFILES: dict[str, dict] = {
         "scroll_wait_ms": 500,
         "google_places_enrich": True,
         "enrich": False,
+        "scrape_wall_clock_sec": 1800,
     },
     # Highest listing coverage on shared hosts; vendor Playwright enrich stays off unless API sets SCRAPER_VENDOR_PAGE_ENRICH.
     "Complete": {
@@ -144,6 +149,8 @@ _SCRAPE_PROFILES: dict[str, dict] = {
         "scroll_wait_ms": 500,
         "google_places_enrich": True,
         "enrich": False,
+        # Without this, the UI stopped polling at ~1300s while the API could still be running (high_volume + Places).
+        "scrape_wall_clock_sec": 3300,
     },
     # Dedicated worker: many grid points + vendor detail pages (requires API env SCRAPER_VENDOR_PAGE_ENRICH=1).
     "Worker (vendor pages)": {
@@ -153,7 +160,7 @@ _SCRAPE_PROFILES: dict[str, dict] = {
         "scroll_wait_ms": 800,
         "google_places_enrich": True,
         "enrich": True,
-        "scrape_wall_clock_sec": 2400,
+        "scrape_wall_clock_sec": 3600,
     },
 }
 _DEFAULT_SCRAPE_PROFILE = "Complete"
@@ -1868,7 +1875,7 @@ def main() -> None:
         st.markdown(
             """
 - **Enqueue read-timeout** (Streamlit Cloud to a raw `http://` IP): prefer **`https://` `API_BASE_URL`** (e.g. Caddy), or raise **`SCRAPER_API_POST_TIMEOUT_SEC`** in Secrets (e.g. `900`).
-- **Long Worker jobs:** client poll budget follows **`scrape_wall_clock_sec`**; optional override **`SCRAPER_POLL_TOTAL_TIMEOUT_SEC`** (e.g. `3600`).
+- **Long Worker jobs:** client poll budget follows each profile’s **`scrape_wall_clock_sec`** (+ margin); optional override **`SCRAPER_POLL_TOTAL_TIMEOUT_SEC`** in Secrets (e.g. `7200`) for very slow hosts.
 - **POST `/scrape` returns quickly** (async enqueue): read cap via env or Secrets **`SCRAPER_API_ENQUEUE_READ_CAP_SEC`** (default ~240s); increase only if you use a **legacy synchronous** `/scrape` that returns full `records` in one response.
 """
         )
@@ -2075,7 +2082,13 @@ def main() -> None:
                             if poll_status == "failed":
                                 raise RuntimeError(str((poll_data or {}).get("error") or "Remote scrape job failed"))
                             time.sleep(10)
-                        raise RuntimeError("Remote scrape job timed out while waiting for completion.")
+                        raise RuntimeError(
+                            f"Remote scrape job timed out after {int(total_timeout_sec)}s polling "
+                            f"/result/{request_id_to_poll}. The worker may still be running — check API logs. "
+                            "In Streamlit Secrets set **SCRAPER_POLL_TOTAL_TIMEOUT_SEC** (e.g. 7200) if you need longer "
+                            "waits, or use a lighter profile / lower max_sample_points. "
+                            "Profiles now send **scrape_wall_clock_sec** so the client budget tracks server wall clock."
+                        )
 
                     def _enqueue_read_timeout_sec() -> float:
                         try:
