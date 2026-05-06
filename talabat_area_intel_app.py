@@ -49,6 +49,7 @@ from google_map_tiles import (
     google_maps_tile_attribution,
 )
 from supply_overlay import normalize_supply_overlay_df
+from nominatim_enrich import reverse_geocode_display_name
 from uae_cities import UAE_AREA_PIN_PRESETS, UAE_CITY_DISPLAY, UAE_CITY_PRESETS
 
 DEFAULT_PIN = (25.2048, 55.2708)
@@ -61,6 +62,22 @@ _DEFAULT_SCROLL_WAIT_MS = 500
 _DEFAULT_CONCURRENCY = 3
 
 _CITY_SLUGS = ["dubai", "sharjah", "abudhabi", "alain", "ajman"]
+
+
+def _truthy_env(name: str, default: bool = True) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "y", "on")
+
+
+def _pin_label_from_map_click(lat: float, lng: float) -> str:
+    """Human-readable label for a map pin: street address via Nominatim when enabled, else coordinates."""
+    if _truthy_env("STREAMLIT_PIN_REVERSE_GEOCODE", True):
+        addr = reverse_geocode_display_name(lat, lng)
+        if addr:
+            return addr
+    return f"Map pin ({float(lat):.5f}, {float(lng):.5f})"
 
 # Product defaults (no client toggles): full grid + cuisine sweep, keep all listing rows, request Places enrichment.
 _SCRAPE_DEDUPE_BY_VENDOR_URL = True
@@ -1645,7 +1662,8 @@ def main() -> None:
         st.subheader("Set pin (click map — recommended)")
         st.caption(
             "Click **anywhere** on the map below to set the Talabat run pin. "
-            "This path is native to Streamlit (Leaflet) and does **not** rely on Google iframe messaging. "
+            "The app resolves a **street address** (OpenStreetMap Nominatim) when possible; disable with env "
+            "`STREAMLIT_PIN_REVERSE_GEOCODE=0` if your host cannot reach Nominatim. "
             "For **Business Bay** trials, use the sidebar **District pin → Business Bay → Apply district pin**, then scrape."
         )
         _floc = get_scrape_location()
@@ -1675,12 +1693,9 @@ def main() -> None:
             _nlng = float(_lc["lng"])
             _curp = get_scrape_location()
             if abs(_nlat - float(_curp["lat"])) > 1e-5 or abs(_nlng - float(_curp["lng"])) > 1e-5:
-                set_scrape_location(
-                    _nlat,
-                    _nlng,
-                    f"Folium map ({_nlat:.5f}, {_nlng:.5f})",
-                    "folium_click",
-                )
+                with st.spinner("Looking up address for pin…"):
+                    _plab = _pin_label_from_map_click(_nlat, _nlng)
+                set_scrape_location(_nlat, _nlng, _plab, "folium_click")
                 sync_legacy_pin_mirror()
                 st.rerun()
     else:
@@ -1726,7 +1741,7 @@ def main() -> None:
             b_lng = float(str(st.query_params.get("pin_lng", "")).strip())
             cur = get_scrape_location()
             if abs(b_lat - float(cur["lat"])) > 1e-5 or abs(b_lng - float(cur["lng"])) > 1e-5:
-                set_scrape_location(b_lat, b_lng, "Map pin", "map_click")
+                set_scrape_location(b_lat, b_lng, _pin_label_from_map_click(b_lat, b_lng), "map_click")
                 sync_legacy_pin_mirror()
         except Exception:
             pass
@@ -1827,6 +1842,9 @@ def main() -> None:
         )
     else:
         st.write(f"**Run pin:** `{float(loc_run['lat']):.6f}, {float(loc_run['lng']):.6f}`")
+    _pin_lbl = str(loc_run.get("label") or "").strip()
+    if _run_source not in {"init", ""} and _pin_lbl:
+        st.write(f"**Pinned address / label:** `{_pin_lbl}`")
     st.write(
         f"Radius: `{radius_km} km` · Profile: `{selected_profile_name}` · "
         f"**Talabat rows → Google Places** backfill when the API has `GOOGLE_MAPS_API_KEY` (profile requests it) · "

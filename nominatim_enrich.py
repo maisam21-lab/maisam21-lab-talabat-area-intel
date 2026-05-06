@@ -13,6 +13,39 @@ REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
 _DEFAULT_UA = "TalabatAreaIntel/1.0 (+https://github.com/maisam21-lab/maisam21-lab-talabat-area-intel)"
 
 
+def reverse_geocode_display_name(
+    lat: float,
+    lng: float,
+    *,
+    session: requests.Session | None = None,
+    timeout: float = 12.0,
+) -> str | None:
+    """Single-point reverse geocode (OSM Nominatim). Returns ``display_name`` or ``None`` on failure."""
+    ua = (os.getenv("NOMINATIM_USER_AGENT") or "").strip() or _DEFAULT_UA
+    headers = {"User-Agent": ua, "Accept-Language": "en"}
+    sess = session or requests.Session()
+    try:
+        r = sess.get(
+            REVERSE_URL,
+            params={
+                "lat": float(lat),
+                "lon": float(lng),
+                "format": "json",
+                "zoom": 18,
+                "addressdetails": 1,
+                "accept-language": "en",
+            },
+            headers=headers,
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except (requests.RequestException, OSError, ValueError, TypeError):
+        return None
+    disp = str(data.get("display_name") or "").strip()
+    return disp[:500] if disp else None
+
+
 def _truthy(val: str | None) -> bool:
     return (val or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
