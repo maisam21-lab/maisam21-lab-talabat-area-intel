@@ -257,7 +257,7 @@ def parse_lat_lng(text: str) -> tuple[float | None, float | None]:
     return None, None
 
 
-def parse_listing_snippet_fields(snippet: str) -> dict[str, str]:
+def parse_listing_snippet_fields(snippet: str, cuisine_line_hint: str = "") -> dict[str, str]:
     """Best-effort extraction of card-visible metadata from listing snippets."""
     raw = " ".join((snippet or "").split())
     low = raw.lower()
@@ -299,17 +299,41 @@ def parse_listing_snippet_fields(snippet: str) -> dict[str, str]:
     if m_min:
         out["min_order"] = m_min.group(1).upper().strip()
 
-    # Cuisine-ish token from bullet-separated snippet.
-    for tok in re.split(r"[•|·]", raw):
+    def _is_valid_cuisine_token(t: str) -> bool:
+        tl = t.lower().strip()
+        if not tl:
+            return False
+        if any(x in tl for x in ("min", "aed", "delivery", "rating", "review", "closed", "open now", "⭐", "star")):
+            return False
+        if any(ch.isdigit() for ch in tl):
+            return False
+        if re.fullmatch(r"[^\w]+", tl):
+            return False
+        return bool(re.search(r"[A-Za-z]", tl))
+
+    # Talabat cards usually show cuisines on the first bullet-separated line under the restaurant name.
+    lines = [ln.strip() for ln in str(snippet or "").splitlines() if ln and ln.strip()]
+    cuisine_line = str(cuisine_line_hint or "").strip()
+    if not cuisine_line:
+        for ln in lines[1:]:
+            if re.search(r"[•|·]", ln):
+                ll = ln.lower()
+                if not any(x in ll for x in ("min", "aed", "delivery", "rating", "review")):
+                    cuisine_line = ln
+                    break
+    if not cuisine_line:
+        for ln in lines:
+            if re.search(r"[•|·]", ln):
+                cuisine_line = ln
+                break
+
+    cuisine_tokens: list[str] = []
+    for tok in re.split(r"[•|·]", cuisine_line):
         t = tok.strip()
-        tl = t.lower()
-        if not t:
-            continue
-        if any(x in tl for x in ("min", "aed", "delivery", "rating", "review", "closed", "open now")):
-            continue
-        if re.search(r"[A-Za-z]", t) and len(t) >= 4:
-            out["cuisines"] = t[:220]
-            break
+        if _is_valid_cuisine_token(t):
+            cuisine_tokens.append(t)
+    if cuisine_tokens:
+        out["cuisines"] = ", ".join(cuisine_tokens)[:220]
     return out
 
 
@@ -411,22 +435,40 @@ async def extract_restaurants_from_anchor_links(
       ]);
       const seen = new Set();
       const out = [];
-      const cardSnippet = (a) => {
+      const cardTextLines = (a) => {
         let el = a.closest('[data-testid*="vendor"]') || a.closest('[data-testid*="restaurant"]')
           || a.closest('article') || a.parentElement;
         for (let i = 0; i < 5 && el; i++) {
           const t = (el.innerText || '').trim();
-          if (t.length > 50) return t.slice(0, 900);
+          if (t.length > 50) return t.split('\n').map(s => (s || '').trim()).filter(Boolean);
           el = el.parentElement;
         }
         const p = a.parentElement;
-        return ((p && p.innerText) || a.innerText || '').trim().slice(0, 900);
+        const t = ((p && p.innerText) || a.innerText || '').trim();
+        return t.split('\n').map(s => (s || '').trim()).filter(Boolean);
       };
-      const add = (u, name, snippet) => {
+      const detectCuisineLine = (name, lines) => {
+        const lowerName = (name || '').trim().toLowerCase();
+        for (const line of lines || []) {
+          const l = (line || '').trim();
+          const ll = l.toLowerCase();
+          if (!l || ll === lowerName) continue;
+          if (!/[•|·]/.test(l)) continue;
+          if (/(min|aed|delivery|rating|review)/i.test(ll)) continue;
+          return l;
+        }
+        return '';
+      };
+      const add = (u, name, snippet, cuisineLine) => {
         const c = u.split('?')[0];
         if (seen.has(c)) return;
         seen.add(c);
-        out.push({ url: c, name: (name || '').trim(), snippet: (snippet || '').trim() });
+        out.push({
+          url: c,
+          name: (name || '').trim(),
+          snippet: (snippet || '').trim(),
+          cuisine_line: (cuisineLine || '').trim()
+        });
       };
       for (const a of document.querySelectorAll('a[href]')) {
         let href = a.getAttribute('href') || '';
@@ -442,12 +484,14 @@ async def extract_restaurants_from_anchor_links(
             if (exclude.has(seg) || seg.length < 3) continue;
             const canon = 'https://www.talabat.com/uae/' + parts[1];
             const name = (a.innerText || '').trim().split('\\n')[0].trim();
-            add(canon, name, cardSnippet(a));
+            const lines = cardTextLines(a);
+            add(canon, name, (lines || []).join('\\n').slice(0, 900), detectCuisineLine(name, lines));
             continue;
           }
           if (href.includes('/restaurant/')) {
             const nm = (a.innerText || '').trim().split('\\n')[0].trim();
-            add(href.split('?')[0], nm, cardSnippet(a));
+            const lines = cardTextLines(a);
+            add(href.split('?')[0], nm, (lines || []).join('\\n').slice(0, 900), detectCuisineLine(nm, lines));
           }
         } catch (e) { /* ignore */ }
       }
@@ -462,9 +506,10 @@ async def extract_restaurants_from_anchor_links(
         url = str(item.get("url") or "").strip()
         name = str(item.get("name") or "").strip()
         snippet = str(item.get("snippet") or "")
+        cuisine_line = str(item.get("cuisine_line") or "")
         if not url:
             continue
-        parsed = parse_listing_snippet_fields(snippet)
+        parsed = parse_listing_snippet_fields(snippet, cuisine_line)
         slug_name = url.rstrip("/").split("/")[-1].replace("-", " ").title() if url else ""
         if not name:
             name = slug_name
