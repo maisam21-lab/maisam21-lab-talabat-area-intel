@@ -444,11 +444,20 @@ function initMap() {{
         title: 'Scrape pin'
     }});
     function sendPin(lat, lng) {{
-        window.parent.postMessage({{
-            type: 'pin_update',
-            lat: lat,
-            lng: lng
-        }}, '*');
+        var la = Number(lat), ln = Number(lng);
+        // Prefer updating the Streamlit app URL from inside this iframe (same tab origin on most hosts).
+        try {{
+            var r = window.parent;
+            if (r && r !== window && r.location) {{
+                var u = new URL(r.location.href);
+                u.searchParams.set('pin_lat', la.toFixed(6));
+                u.searchParams.set('pin_lng', ln.toFixed(6));
+                r.history.replaceState({{}}, '', u.toString());
+                r.location.reload();
+                return;
+            }}
+        }} catch (e) {{}}
+        window.parent.postMessage({{ type: 'pin_update', lat: la, lng: ln }}, '*');
     }}
     map.addListener('click', (e) => {{
         marker.setPosition(e.latLng);
@@ -1606,22 +1615,30 @@ def main() -> None:
 
     st.subheader("Interactive search map")
     st.caption("Click or drag the marker to update the app pin lat/lng.")
+    # Google Maps runs in a *sibling* iframe and calls ``postMessage`` on ``window.parent`` (the Streamlit page).
+    # A listener on *this* iframe's ``window`` never sees those events — attach once on ``window.parent``.
     listener_js = """
 <script>
-window.addEventListener('message', function(e) {
-    if (e.data && e.data.type === 'pin_update') {
-        const lat = Number(e.data.lat || 0).toFixed(6);
-        const lng = Number(e.data.lng || 0).toFixed(6);
-        const url = new URL(window.parent.location.href);
-        url.searchParams.set('pin_lat', lat);
-        url.searchParams.set('pin_lng', lng);
-        window.parent.history.replaceState({}, '', url);
-        const btn = window.parent.document.getElementById('pin_update_trigger');
-        if (btn) btn.click();
-    }
-});
+(function () {
+    try {
+        var p = window.parent;
+        if (!p || p === window || p.__talabatAreaIntelPinListener) return;
+        p.__talabatAreaIntelPinListener = true;
+        p.addEventListener('message', function (e) {
+            if (!e.data || e.data.type !== 'pin_update') return;
+            var lat = Number(e.data.lat || 0).toFixed(6);
+            var lng = Number(e.data.lng || 0).toFixed(6);
+            try {
+                var u = new URL(p.location.href);
+                u.searchParams.set('pin_lat', lat);
+                u.searchParams.set('pin_lng', lng);
+                p.history.replaceState({}, '', u.toString());
+                p.location.reload();
+            } catch (err) {}
+        });
+    } catch (e) {}
+})();
 </script>
-<button id="pin_update_trigger" style="display:none" onclick="window.location.reload()">update</button>
 """
     components.html(listener_js, height=0)
     if "pin_lat" in st.query_params and "pin_lng" in st.query_params:
