@@ -7,6 +7,7 @@ import math
 import os
 import random
 import re
+import time
 import traceback
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -30,11 +31,26 @@ from models import (
 )
 from html_enrichment import merge_html_into_accumulator
 from remote_html_fetch import fetch_remote_vendor_html
+from scrape_network import playwright_proxy_from_env, requests_proxies_from_env
 from next_data_extract import normalize_talabat_url, parse_next_data_script, paths_from_next_data_json
 from nominatim_enrich import enrich_records_reverse_geocode
 from places_enrich import enrich_records_with_google_places, google_places_enrich_effective
 
 logger = logging.getLogger("talabat_area_intel.scrape")
+
+
+async def _apply_playwright_stealth_if_enabled(page) -> None:
+    """Optional playwright-stealth (``pip install playwright-stealth``); enable with ``SCRAPER_PLAYWRIGHT_STEALTH=1``."""
+    st = (os.getenv("SCRAPER_PLAYWRIGHT_STEALTH", "0") or "").strip().lower()
+    if st not in ("1", "true", "yes", "y", "on"):
+        return
+    try:
+        from playwright_stealth import Stealth
+
+        await Stealth().apply_stealth_async(page)
+    except Exception as exc:
+        logger.warning("playwright_stealth_failed err=%s", exc)
+
 
 # Required for Chromium in Docker / Render (small /dev/shm, no user namespace sandbox).
 CHROMIUM_LAUNCH_ARGS = [
@@ -439,6 +455,7 @@ async def _bootstrap_talabat_warm_session(
             browser = await p.chromium.launch(headless=True, args=CHROMIUM_LAUNCH_ARGS)
             context = await browser.new_context(**_listing_browser_context_kwargs(pin_lat, pin_lng))
             page = await context.new_page()
+            await _apply_playwright_stealth_if_enabled(page)
             await page.goto(goto_url, wait_until="domcontentloaded", timeout=90000)
             await page.wait_for_timeout(wait_ms)
             await dismiss_common_overlays(page)
@@ -676,7 +693,13 @@ def _fetch_listing_page_html(
 ) -> str | None:
     html: str | None = None
     try:
-        r = requests.get(listing_url, headers=headers, timeout=35, cookies=cookies or None)
+        r = requests.get(
+            listing_url,
+            headers=headers,
+            timeout=35,
+            cookies=cookies or None,
+            proxies=requests_proxies_from_env(),
+        )
         if r.status_code < 400 and r.content:
             html = r.text
     except requests.RequestException:
@@ -1695,6 +1718,7 @@ async def _fetch_vendor_page_enrichment(browser, url: str) -> dict[str, str | fl
         return {}
     try:
         page = await ctx.new_page()
+        await _apply_playwright_stealth_if_enabled(page)
     except TargetClosedError:
         logger.warning("vendor_enrich_target_closed new_page failed url=%s", url)
         try:
@@ -1986,7 +2010,7 @@ def _post_navigation_wait_ms() -> int:
 
 def _listing_browser_context_kwargs(sample_lat: float, sample_lng: float) -> dict[str, Any]:
     tz = (os.getenv("SCRAPER_TIMEZONE_ID") or "Asia/Dubai").strip()
-    return {
+    kw: dict[str, Any] = {
         "geolocation": {"latitude": float(sample_lat), "longitude": float(sample_lng)},
         "permissions": ["geolocation"],
         "locale": "en-US",
@@ -2000,11 +2024,15 @@ def _listing_browser_context_kwargs(sample_lat: float, sample_lng: float) -> dic
         "bypass_csp": True,
         "extra_http_headers": _extra_http_headers_merge(),
     }
+    px = playwright_proxy_from_env()
+    if px:
+        kw["proxy"] = px
+    return kw
 
 
 def _vendor_browser_context_kwargs() -> dict[str, Any]:
     tz = (os.getenv("SCRAPER_TIMEZONE_ID") or "Asia/Dubai").strip()
-    return {
+    kw: dict[str, Any] = {
         "locale": "en-US",
         "timezone_id": tz,
         "user_agent": _scraper_user_agent(),
@@ -2014,6 +2042,10 @@ def _vendor_browser_context_kwargs() -> dict[str, Any]:
         "has_touch": False,
         "extra_http_headers": _extra_http_headers_merge(),
     }
+    px = playwright_proxy_from_env()
+    if px:
+        kw["proxy"] = px
+    return kw
 
 
 def _listing_url_with_page_param(base_url: str, page_num: int) -> str:
@@ -2427,6 +2459,7 @@ async def _playwright_listing_seed_records(
                 with suppress(Exception):
                     await context.add_cookies(warm_playwright_cookies)
             page = await context.new_page()
+            await _apply_playwright_stealth_if_enabled(page)
             await page.goto(listing_url, wait_until=goto_until, timeout=60000)
             await page.wait_for_timeout(post_nav_ms)
             await dismiss_common_overlays(page)
@@ -2522,6 +2555,7 @@ async def scrape_one_point(
             await context.add_cookies(warm_playwright_cookies)
     try:
         page = await context.new_page()
+        await _apply_playwright_stealth_if_enabled(page)
     except TargetClosedError:
         logger.warning("listing_target_closed new_page sample=(%.5f,%.5f), skipping", sample_lat, sample_lng)
         try:
@@ -2824,27 +2858,50 @@ async def _fetch_restaurants_from_internal_api(
         out: list[RestaurantRecord] = []
         offset = 0
         sess = requests.Session()
+        proxies = requests_proxies_from_env()
+        max_attempts = max(1, min(12, int(os.getenv("SCRAPER_LISTING_API_MAX_ATTEMPTS", "5"))))
+        base_backoff = max(0.3, float(os.getenv("SCRAPER_LISTING_API_BACKOFF_SEC", "2")))
+        page_sleep = max(0.0, float(os.getenv("SCRAPER_LISTING_API_PAGE_SLEEP_SEC", "0.35")))
+        req_timeout = max(8.0, float(os.getenv("SCRAPER_LISTING_API_TIMEOUT_SEC", "25")))
         while True:
-            r = sess.get(
-                TALABAT_LISTING_API,
-                params={
-                    "lat": float(sample_lat),
-                    "lng": float(sample_lng),
-                    "limit": limit,
-                    "offset": offset,
-                },
-                headers=headers,
-                cookies=cookies or None,
-                timeout=20,
-            )
-            if r.status_code >= 400:
-                if offset == 0:
+            data: Any | None = None
+            last_status: int | None = None
+            for attempt in range(max_attempts):
+                try:
+                    r = sess.get(
+                        TALABAT_LISTING_API,
+                        params={
+                            "lat": float(sample_lat),
+                            "lng": float(sample_lng),
+                            "limit": limit,
+                            "offset": offset,
+                        },
+                        headers=headers,
+                        cookies=cookies or None,
+                        timeout=req_timeout,
+                        proxies=proxies,
+                    )
+                    last_status = int(r.status_code)
+                    if r.status_code in (429, 502, 503, 504):
+                        time.sleep(min(60.0, base_backoff * (2**attempt)))
+                        continue
+                    if r.status_code >= 400:
+                        data = None
+                        break
+                    data = r.json() if r.content else {}
+                    break
+                except requests.RequestException:
+                    if attempt + 1 >= max_attempts:
+                        last_status = None
+                        break
+                    time.sleep(min(45.0, base_backoff * (2**attempt)))
+            if data is None:
+                if offset == 0 and last_status is not None:
                     logger.info(
                         "talabat_listing_api_http=%s (HTML __NEXT_DATA__ fetch or Playwright will be used)",
-                        r.status_code,
+                        last_status,
                     )
                 break
-            data = r.json() if r.content else {}
             items = _extract_restaurant_items(data)
             if not items:
                 break
@@ -2855,6 +2912,8 @@ async def _fetch_restaurants_from_internal_api(
             if len(items) < limit:
                 break
             offset += limit
+            if page_sleep:
+                time.sleep(page_sleep)
         return out
 
     try:
@@ -2994,6 +3053,11 @@ async def run_area_scrape(
         meta_out["scrape_city_label"] = (scrape_city or "").strip()
         meta_out["scrape_target_label"] = (scrape_target_label or "").strip()
         meta_out["listing_entry_urls_sample"] = capped_listing_urls(hv)[:6]
+        meta_out["scraper_requests_proxy"] = bool(requests_proxies_from_env())
+        meta_out["scraper_playwright_proxy"] = bool(playwright_proxy_from_env())
+        _st = (os.getenv("SCRAPER_PLAYWRIGHT_STEALTH", "0") or "").strip().lower()
+        meta_out["scraper_playwright_stealth"] = _st in ("1", "true", "yes", "y", "on")
+        meta_out["scraper_conservative"] = _env_truthy(os.getenv("SCRAPER_CONSERVATIVE", "0"))
         meta_out["high_volume_mode"] = bool(hv)
         meta_out["scraper_humanize"] = _env_truthy(os.getenv("SCRAPER_HUMANIZE"))
         meta_out["google_places_enrich_request"] = google_places_enrich
@@ -3032,6 +3096,10 @@ async def run_area_scrape(
         if meta_out is not None:
             meta_out["last_completed_step"] = last_step
         points = generate_points_in_radius(pin_lat, pin_lng, radius_km, spacing_km)
+    if _env_truthy(os.getenv("SCRAPER_CONSERVATIVE", "0")):
+        con_cap = max(1, int(os.getenv("SCRAPER_CONSERVATIVE_MAX_SAMPLE_POINTS", "14")))
+        con_hv_cap = max(1, int(os.getenv("SCRAPER_CONSERVATIVE_HV_MAX_SAMPLE_POINTS", "28")))
+        max_pts = min(max_pts, con_hv_cap if hv else con_cap)
     # Multiple geolocation samples merge different "near me" listing slices (Talabat caps each view ~100–200).
     points = _cap_sample_points(points, max_pts)
     if meta_out is not None:
@@ -3054,7 +3122,11 @@ async def run_area_scrape(
     scroll_rounds, scroll_wait_ms = _listing_scroll_params(scroll_rounds, scroll_wait_ms)
     if _env_truthy(os.getenv("SCRAPER_HUMANIZE")):
         scroll_wait_ms = int(scroll_wait_ms * float(os.getenv("SCRAPER_HUMANIZE_SCROLL_WAIT_MULT", "1.12")))
-    sem = asyncio.Semaphore(min(5, max(1, int(os.getenv("SCRAPER_PLAYWRIGHT_CONCURRENCY", "5")))))
+    _pw_conc = max(1, int(os.getenv("SCRAPER_PLAYWRIGHT_CONCURRENCY", "5")))
+    _sem_limit = min(_pw_conc, max(1, int(concurrency)))
+    if _env_truthy(os.getenv("SCRAPER_CONSERVATIVE", "0")):
+        _sem_limit = min(_sem_limit, max(1, int(os.getenv("SCRAPER_CONSERVATIVE_PLAYWRIGHT_CONCURRENCY", "2"))))
+    sem = asyncio.Semaphore(max(1, _sem_limit))
     checkpoint_lock = asyncio.Lock()
     records: list[RestaurantRecord] = []
     raw_listing_count = 0

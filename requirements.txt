@@ -1,6 +1,7 @@
 streamlit
 streamlit-folium
 playwright
+playwright-stealth
 pandas
 openpyxl
 numpy

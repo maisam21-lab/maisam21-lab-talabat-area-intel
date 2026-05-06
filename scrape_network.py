@@ -1,0 +1,66 @@
+"""Outbound proxy resolution for ``requests`` and Playwright (same URL, operator-controlled).
+
+Set **one** of (first wins):
+
+- ``SCRAPER_HTTP_PROXY`` — recommended for scraper-only routing without changing global ``HTTP_PROXY``.
+- ``ALL_PROXY`` / ``HTTPS_PROXY`` / ``HTTP_PROXY`` — standard process-wide variables.
+
+Example::
+
+    SCRAPER_HTTP_PROXY=http://user:pass@proxy.example.com:8888
+
+Playwright receives ``{"server", "username"?, "password"?}``; ``requests`` uses ``{"http": url, "https": url}``.
+
+Respect Talabat terms of use: proxies are for reliability and approved infrastructure only.
+"""
+
+from __future__ import annotations
+
+import os
+from urllib.parse import unquote, urlparse
+
+
+def proxy_url_from_env() -> str:
+    for key in (
+        "SCRAPER_HTTP_PROXY",
+        "SCRAPER_ALL_PROXY",
+        "ALL_PROXY",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+    ):
+        v = (os.getenv(key) or "").strip().strip('"').strip("'")
+        if v:
+            return v
+    return ""
+
+
+def requests_proxies_from_env() -> dict[str, str] | None:
+    url = proxy_url_from_env()
+    if not url:
+        return None
+    return {"http": url, "https": url}
+
+
+def playwright_proxy_from_env() -> dict[str, str] | None:
+    """Return Playwright ``proxy`` dict for ``browser.new_context`` / ``new_page`` routing."""
+    url = proxy_url_from_env()
+    if not url:
+        return None
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        return None
+    scheme = (parsed.scheme or "http").lower()
+    if scheme not in ("http", "https", "socks5"):
+        scheme = "http"
+    host = parsed.hostname
+    port = parsed.port
+    if port:
+        server = f"{scheme}://{host}:{port}"
+    else:
+        server = f"{scheme}://{host}"
+    cfg: dict[str, str] = {"server": server}
+    if parsed.username:
+        cfg["username"] = unquote(parsed.username)
+    if parsed.password is not None:
+        cfg["password"] = unquote(parsed.password)
+    return cfg

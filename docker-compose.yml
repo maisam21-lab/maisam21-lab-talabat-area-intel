@@ -18,6 +18,7 @@ services:
     restart: unless-stopped
     shm_size: "1gb"
     environment:
+      # Small VM: SCRAPER_CONSERVATIVE=1 caps grid + Playwright concurrency; SCRAPER_HTTP_PROXY for outbound proxy.
       SCRAPER_VENDOR_PAGE_ENRICH: "1"
       # Empty KEY= in .env disables pagination in Python; set real defaults here so shallow ~40 runs cannot happen silently.
       MAX_SCRAPE_SAMPLE_POINTS: "150"
