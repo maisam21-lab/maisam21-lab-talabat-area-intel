@@ -166,6 +166,12 @@ _SCRAPE_PROFILES: dict[str, dict] = {
 _DEFAULT_SCRAPE_PROFILE = "Complete"
 _BUILD_STAMP = os.getenv("APP_BUILD_STAMP", "2026-04-23-executive-mode-80dbf21")
 
+# Lean UI defaults for day-to-day scraping use.
+_SHOW_GOOGLE_REFERENCE_PANEL = False
+_SHOW_TIMEOUTS_EXPANDER = False
+_SHOW_QUALITY_GATE_PANEL = False
+_SHOW_RUN_DIAGNOSTICS_PANEL = False
+
 
 def inject_ui_theme() -> None:
     """Apply a cleaner, executive-style UI theme for Streamlit controls and sections."""
@@ -1844,7 +1850,8 @@ def main() -> None:
             f'<iframe src="{_gmap_url}" width="100%" height="420" style="border:0;border-radius:10px;" loading="lazy"></iframe>',
             unsafe_allow_html=True,
         )
-    _render_google_maps_reference_panel(radius_km)
+    if _SHOW_GOOGLE_REFERENCE_PANEL:
+        _render_google_maps_reference_panel(radius_km)
 
     st.subheader("Run")
     loc_run = get_scrape_location()
@@ -1871,14 +1878,15 @@ def main() -> None:
     st.caption(
         "Runs usually take a few minutes; large radius, **Complete** profile, or API wall-clock limits can add more time."
     )
-    with st.expander("Timeouts, Streamlit → API, and optional Secrets", expanded=False):
-        st.markdown(
-            """
+    if _SHOW_TIMEOUTS_EXPANDER:
+        with st.expander("Timeouts, Streamlit → API, and optional Secrets", expanded=False):
+            st.markdown(
+                """
 - **Enqueue read-timeout** (Streamlit Cloud to a raw `http://` IP): prefer **`https://` `API_BASE_URL`** (e.g. Caddy), or raise **`SCRAPER_API_POST_TIMEOUT_SEC`** in Secrets (e.g. `900`).
 - **Long Worker jobs:** client poll budget follows each profile’s **`scrape_wall_clock_sec`** (+ margin); optional override **`SCRAPER_POLL_TOTAL_TIMEOUT_SEC`** in Secrets (e.g. `7200`) for very slow hosts.
 - **POST `/scrape` returns quickly** (async enqueue): read cap via env or Secrets **`SCRAPER_API_ENQUEUE_READ_CAP_SEC`** (default ~240s); increase only if you use a **legacy synchronous** `/scrape` that returns full `records` in one response.
 """
-        )
+            )
     pinned_count = "one"
     use_two_pinned = False
     run_two_pins = False
@@ -2442,39 +2450,41 @@ def main() -> None:
         radius_km=float(radius_km),
         google_baseline_count=google_baseline_count,
     )
-    st.markdown("### Run quality gate")
-    if str(gate.get("status")) == "pass":
-        st.success(str(gate.get("note") or "Gate PASSED"))
-    elif str(gate.get("status")) == "warn":
-        st.warning(str(gate.get("note") or "Gate NEAR PASS"))
-    else:
-        st.error(str(gate.get("note") or "Gate FAILED"))
-    st.caption(
-        f"Checks passed: `{int(gate.get('passed_checks', 0))}/{int(gate.get('total_checks', 0))}` · "
-        f"Google baseline rows: `{google_baseline_count:,}`"
-    )
-    _checks_df = pd.DataFrame(gate.get("checks") or [])
-    if not _checks_df.empty:
-        _checks_df["passed"] = _checks_df["passed"].map(lambda x: "PASS" if bool(x) else "FAIL")
-        st.dataframe(_checks_df, use_container_width=True, hide_index=True)
+    if _SHOW_QUALITY_GATE_PANEL:
+        st.markdown("### Run quality gate")
+        if str(gate.get("status")) == "pass":
+            st.success(str(gate.get("note") or "Gate PASSED"))
+        elif str(gate.get("status")) == "warn":
+            st.warning(str(gate.get("note") or "Gate NEAR PASS"))
+        else:
+            st.error(str(gate.get("note") or "Gate FAILED"))
+        st.caption(
+            f"Checks passed: `{int(gate.get('passed_checks', 0))}/{int(gate.get('total_checks', 0))}` · "
+            f"Google baseline rows: `{google_baseline_count:,}`"
+        )
+        _checks_df = pd.DataFrame(gate.get("checks") or [])
+        if not _checks_df.empty:
+            _checks_df["passed"] = _checks_df["passed"].map(lambda x: "PASS" if bool(x) else "FAIL")
+            st.dataframe(_checks_df, use_container_width=True, hide_index=True)
 
-    st.markdown("### Run diagnostics")
-    _meta_debug = st.session_state.get("last_scrape_run_meta") or {}
-    _loc_dbg = get_scrape_location()
-    _rid_dbg = str(_meta_debug.get("request_id") or "n/a")
-    _eff_lat_dbg = _meta_debug.get("effective_scrape_pin_lat")
-    _eff_lng_dbg = _meta_debug.get("effective_scrape_pin_lng")
-    _eff_pin_dbg = (
-        f"{float(_eff_lat_dbg):.6f}, {float(_eff_lng_dbg):.6f}"
-        if _eff_lat_dbg is not None and _eff_lng_dbg is not None
-        else "n/a"
-    )
-    st.caption(
-        f"Run stamp: `{str(st.session_state.get('last_run_stamp') or 'n/a')}` · "
-        f"request_id: `{_rid_dbg}` · "
-        f"UI pin: `{float(_loc_dbg['lat']):.6f}, {float(_loc_dbg['lng']):.6f}` · "
-        f"API effective pin: `{_eff_pin_dbg}`"
-    )
+    if _SHOW_RUN_DIAGNOSTICS_PANEL:
+        st.markdown("### Run diagnostics")
+        _meta_debug = st.session_state.get("last_scrape_run_meta") or {}
+        _loc_dbg = get_scrape_location()
+        _rid_dbg = str(_meta_debug.get("request_id") or "n/a")
+        _eff_lat_dbg = _meta_debug.get("effective_scrape_pin_lat")
+        _eff_lng_dbg = _meta_debug.get("effective_scrape_pin_lng")
+        _eff_pin_dbg = (
+            f"{float(_eff_lat_dbg):.6f}, {float(_eff_lng_dbg):.6f}"
+            if _eff_lat_dbg is not None and _eff_lng_dbg is not None
+            else "n/a"
+        )
+        st.caption(
+            f"Run stamp: `{str(st.session_state.get('last_run_stamp') or 'n/a')}` · "
+            f"request_id: `{_rid_dbg}` · "
+            f"UI pin: `{float(_loc_dbg['lat']):.6f}, {float(_loc_dbg['lng']):.6f}` · "
+            f"API effective pin: `{_eff_pin_dbg}`"
+        )
     with st.expander("Sanity check (rows, brands, cuisine, legal/contact)", expanded=True):
         s1, s2, s3, s4 = st.columns(4)
         s1.metric("Rows", int(sanity["rows_total"]))
