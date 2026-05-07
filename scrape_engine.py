@@ -500,82 +500,80 @@ async def extract_restaurants_from_anchor_links(
     sample_lng: float,
 ) -> list[RestaurantRecord]:
     """Primary extractor: UAE vendor links (/uae/{slug}) + legacy /restaurant/ links."""
-    payload = await page.evaluate(
-        """() => {
-      const exclude = new Set([
-        'restaurants','groceries','mart','pharmacy','flowers','en','ar','faq','terms','privacy',
-        'privacy-policy','contact','contact-us','login','register','cart','checkout','cities',
-        'blog','careers','corporate','about','sitemap','order','account','wallet','deals',
-        'dineout','shops'
-      ]);
-      const seen = new Set();
-      const out = [];
-      const cardTextLines = (a) => {
-        let el = a.closest('[data-testid*="vendor"]') || a.closest('[data-testid*="restaurant"]')
-          || a.closest('article') || a.parentElement;
-        for (let i = 0; i < 5 && el; i++) {
-          const t = (el.innerText || '').trim();
-          if (t.length > 50) return t.split('\n').map(s => (s || '').trim()).filter(Boolean);
-          el = el.parentElement;
-        }
-        const p = a.parentElement;
-        const t = ((p && p.innerText) || a.innerText || '').trim();
-        return t.split('\n').map(s => (s || '').trim()).filter(Boolean);
-      };
-      const detectCuisineLine = (name, lines) => {
-        const lowerName = (name || '').trim().toLowerCase();
-        for (const line of lines || []) {
-          const l = (line || '').trim();
-          const ll = l.toLowerCase();
-          if (!l || ll === lowerName) continue;
-          // ASCII-only separator heuristic to avoid evaluate parser issues on some runtimes.
-          if (!(l.includes('|') || l.includes('/') || l.includes(','))) continue;
-          if (/(min|aed|delivery|rating|review)/i.test(ll)) continue;
-          return l;
-        }
-        return '';
-      };
-      const add = (u, name, snippet, cuisineLine) => {
-        const c = u.split('?')[0];
-        if (seen.has(c)) return;
-        seen.add(c);
-        out.push({
-          url: c,
-          name: (name || '').trim(),
-          snippet: (snippet || '').trim(),
-          cuisine_line: (cuisineLine || '').trim()
-        });
-      };
-      for (const a of document.querySelectorAll('a[href]')) {
-        let href = a.getAttribute('href') || '';
-        if (!href || href === '#' || href.startsWith('javascript')) continue;
-        if (href.startsWith('/')) href = 'https://www.talabat.com' + href;
-        if (!href.includes('talabat.com')) continue;
-        try {
-          const u = new URL(href);
-          let parts = u.pathname.split('/').filter(Boolean);
-          if (parts[0] === 'en' || parts[0] === 'ar') parts = parts.slice(1);
-          if (parts.length >= 2 && parts[0] === 'uae') {
-            const seg = parts[1].toLowerCase();
-            if (exclude.has(seg) || seg.length < 3) continue;
-            const canon = 'https://www.talabat.com/uae/' + parts[1];
-            const name = (a.innerText || '').trim().split('\\n')[0].trim();
-            const lines = cardTextLines(a);
-            add(canon, name, (lines || []).join('\\n').slice(0, 900), detectCuisineLine(name, lines));
-            continue;
-          }
-          if (href.includes('/restaurant/')) {
-            const nm = (a.innerText || '').trim().split('\\n')[0].trim();
-            const lines = cardTextLines(a);
-            add(href.split('?')[0], nm, (lines || []).join('\\n').slice(0, 900), detectCuisineLine(nm, lines));
-          }
-        } catch (e) { /* ignore */ }
-      }
-      return out;
-    }"""
-    )
-    if not payload:
+    # Avoid large inline JS blocks in evaluate; some Chromium/runtime combinations throw SyntaxError.
+    try:
+        pairs = await page.eval_on_selector_all(
+            "a[href]",
+            "els => els.map(a => [String(a.getAttribute('href') || ''), String(a.innerText || '')])",
+        )
+    except Exception:
         return []
+    if not pairs:
+        return []
+
+    exclude = {
+        "restaurants",
+        "groceries",
+        "mart",
+        "pharmacy",
+        "flowers",
+        "en",
+        "ar",
+        "faq",
+        "terms",
+        "privacy",
+        "privacy-policy",
+        "contact",
+        "contact-us",
+        "login",
+        "register",
+        "cart",
+        "checkout",
+        "cities",
+        "blog",
+        "careers",
+        "corporate",
+        "about",
+        "sitemap",
+        "order",
+        "account",
+        "wallet",
+        "deals",
+        "dineout",
+        "shops",
+    }
+    payload: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for pair in pairs:
+        if not isinstance(pair, list) or len(pair) < 2:
+            continue
+        href = str(pair[0] or "").strip()
+        txt = str(pair[1] or "").strip()
+        if not href or href == "#" or href.startswith("javascript"):
+            continue
+        if href.startswith("/"):
+            href = "https://www.talabat.com" + href
+        if "talabat.com" not in href:
+            continue
+        nu = normalize_talabat_url(href).split("?")[0].rstrip("/")
+        low = nu.lower()
+        # legacy route
+        if "/restaurant/" in low:
+            if low in seen_urls:
+                continue
+            seen_urls.add(low)
+            payload.append({"url": nu, "name": txt, "snippet": txt, "cuisine_line": ""})
+            continue
+        parts = [p for p in nu.split("/") if p]
+        if len(parts) >= 2 and parts[-2].lower() == "uae":
+            slug = parts[-1]
+            if slug.lower() in exclude or len(slug) < 3:
+                continue
+            canon = f"https://www.talabat.com/uae/{slug}"
+            if canon.lower() in seen_urls:
+                continue
+            seen_urls.add(canon.lower())
+            payload.append({"url": canon, "name": txt, "snippet": txt, "cuisine_line": ""})
     now_utc = datetime.now(timezone.utc).isoformat()
     results: list[RestaurantRecord] = []
     for item in payload:
