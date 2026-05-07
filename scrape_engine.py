@@ -528,7 +528,8 @@ async def extract_restaurants_from_anchor_links(
           const l = (line || '').trim();
           const ll = l.toLowerCase();
           if (!l || ll === lowerName) continue;
-          if (!/[•|·]/.test(l)) continue;
+          // Keep parser ASCII-safe for Page.evaluate across Chromium builds.
+          if (!(l.includes('|') || l.includes('•') || l.includes('·'))) continue;
           if (/(min|aed|delivery|rating|review)/i.test(ll)) continue;
           return l;
         }
