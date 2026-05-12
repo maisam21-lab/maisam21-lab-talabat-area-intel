@@ -1139,11 +1139,20 @@ def compact_output_df(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 
 
 def is_google_coverage_only_results(df: pd.DataFrame) -> bool:
-    """True when every row is the Google coverage fallback (Talabat scrape returned no restaurants)."""
+    """True when every row is a non-Talabat coverage fallback row."""
     if df is None or df.empty or "platform" not in df.columns:
         return False
     v = df["platform"].astype(str).str.strip().str.lower()
-    return bool(len(v) and (v == "google coverage").all())
+    return bool(
+        len(v)
+        and v.isin(
+            [
+                "google coverage",
+                "foursquare coverage",
+                "google + foursquare coverage",
+            ]
+        ).all()
+    )
 
 
 def ensure_just_landed_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -1494,6 +1503,13 @@ def main() -> None:
                 "SCRAPER_VENDOR_PAGE_ENRICH=1 (e.g. Hetzner worker)."
             ),
             key="sidebar_scrape_profile",
+        )
+        scrape_source_mode = st.selectbox(
+            "Data source",
+            options=["Talabat scrape", "Google per area", "Google + Foursquare per area"],
+            index=0,
+            help="Coverage modes skip Talabat scraping and pull nearby places directly from selected provider(s).",
+            key="sidebar_data_source_mode",
         )
         st.caption(f"API: `{api_base_url}` · Profiles: {', '.join(_SCRAPE_PROFILES.keys())}")
         try:
@@ -1871,7 +1887,7 @@ def main() -> None:
         st.write(f"**Pinned address / label:** `{_pin_lbl}`")
     st.write(
         f"Radius: `{radius_km} km` · Profile: `{selected_profile_name}` · "
-        f"**Talabat rows → Google Places** backfill when the API has `GOOGLE_MAPS_API_KEY` (profile requests it) · "
+        f"Source: `{scrape_source_mode}` · "
         f"Status: `{listing_status_mode}` · New-only: `{new_on_platform_only}` · "
         f"Target label: `{target_area_label.strip() or '—'}`"
     )
@@ -1903,6 +1919,7 @@ def main() -> None:
             listing_status_mode,
             str(new_on_platform_only),
             selected_profile_name,
+            scrape_source_mode,
             str(include_google_coverage),
             dual_sig,
             target_area_label.strip(),
@@ -2071,252 +2088,351 @@ def main() -> None:
                     payload["scrape_target_label"] = UAE_CITY_DISPLAY.get(city_key, city_key)
                 _poll_budget_sec = _scrape_poll_budget_sec_for_payload(payload)
                 try:
-                    fallback_notes: list[str] = []
-                    req_headers = dict(headers)
-                    def _poll_result(request_id_to_poll: str, total_timeout_sec: float = _SCRAPE_CLIENT_TIMEOUT_SEC) -> dict:
-                        deadline = time.time() + float(total_timeout_sec)
-                        while time.time() < deadline:
-                            poll_resp = http_get_with_connection_retries(
-                                f"{api_base_url.rstrip('/')}/result/{request_id_to_poll}",
+                    if scrape_source_mode in {"Google per area", "Google + Foursquare per area"}:
+                        req_headers = dict(headers)
+                        pin_payload = {
+                            "pin_lat": float(loc_req["lat"]),
+                            "pin_lng": float(loc_req["lng"]),
+                            "radius_km": float(radius_km),
+                        }
+                        gc_resp = requests.post(
+                            f"{api_base_url.rstrip('/')}/google-coverage",
+                            json=pin_payload,
+                            headers=req_headers,
+                            timeout=120,
+                        )
+                        if gc_resp.status_code >= 400:
+                            raise RuntimeError(_friendly_api_error(gc_resp))
+                        gc_data = gc_resp.json() if gc_resp.content else {}
+                        gdf = pd.DataFrame((gc_data or {}).get("records", []))
+                        gdf_out = gdf.copy()
+                        fsq_df = pd.DataFrame()
+                        if scrape_source_mode == "Google + Foursquare per area":
+                            fsq_resp = requests.post(
+                                f"{api_base_url.rstrip('/')}/foursquare-coverage",
+                                json=pin_payload,
                                 headers=req_headers,
-                                timeout=30,
+                                timeout=120,
                             )
-                            if poll_resp.status_code >= 400:
-                                raise RuntimeError(_friendly_api_error(poll_resp))
-                            poll_data = poll_resp.json() if poll_resp.content else {}
-                            poll_status = str((poll_data or {}).get("status") or "").lower()
-                            if poll_status == "complete":
-                                return poll_data
-                            if poll_status == "failed":
-                                raise RuntimeError(str((poll_data or {}).get("error") or "Remote scrape job failed"))
-                            time.sleep(10)
-                        raise RuntimeError(
-                            f"Remote scrape job timed out after {int(total_timeout_sec)}s polling "
-                            f"/result/{request_id_to_poll}. The worker may still be running — check API logs. "
-                            "In Streamlit Secrets set **SCRAPER_POLL_TOTAL_TIMEOUT_SEC** (e.g. 7200) if you need longer "
-                            "waits, or use a lighter profile / lower max_sample_points. "
-                            "Profiles now send **scrape_wall_clock_sec** so the client budget tracks server wall clock."
+                            if fsq_resp.status_code >= 400:
+                                raise RuntimeError(_friendly_api_error(fsq_resp))
+                            fsq_data = fsq_resp.json() if fsq_resp.content else {}
+                            fsq_df = pd.DataFrame((fsq_data or {}).get("records", []))
+                            if not fsq_df.empty:
+                                gdf_out = pd.concat([gdf_out, fsq_df], ignore_index=True, sort=False)
+                        st.session_state["google_coverage_df"] = gdf_out
+                        google_view_df = pd.DataFrame(
+                            {
+                                "restaurant_name": gdf.get("name", pd.Series([""] * len(gdf))),
+                                "restaurant_url": gdf.get("google_maps_link", pd.Series([""] * len(gdf))),
+                                "google_rating": gdf.get("rating", pd.Series([""] * len(gdf))),
+                                "google_reviews_count": gdf.get("user_ratings_total", pd.Series([""] * len(gdf))),
+                                "google_place_id": gdf.get("google_place_id", pd.Series([""] * len(gdf))),
+                                "google_maps_name": gdf.get("name", pd.Series([""] * len(gdf))),
+                                "google_maps_link": gdf.get("google_maps_link", pd.Series([""] * len(gdf))),
+                                "google_primary_type": gdf.get("google_primary_type", pd.Series([""] * len(gdf))),
+                                "google_formatted_address": gdf.get("google_formatted_address", pd.Series([""] * len(gdf))),
+                                "contact_phone": gdf.get("international_phone_number", pd.Series([""] * len(gdf))),
+                                "lat": gdf.get("lat", pd.Series([None] * len(gdf))),
+                                "lng": gdf.get("lng", pd.Series([None] * len(gdf))),
+                                "platform": pd.Series(["Google coverage"] * len(gdf)),
+                                "status": pd.Series(["coverage_only"] * len(gdf)),
+                            }
                         )
-
-                    def _enqueue_read_timeout_sec() -> float:
-                        try:
-                            raw = str(st.secrets.get("SCRAPER_API_POST_TIMEOUT_SEC", "")).strip()
-                            if raw:
-                                return max(120.0, min(float(raw), float(_poll_budget_sec)))
-                        except Exception:
-                            pass
-                        return max(120.0, min(float(_SCRAPE_POST_TIMEOUT_SEC), float(_poll_budget_sec)))
-
-                    _read_t = _enqueue_read_timeout_sec()
-                    _connect_t = min(60.0, _read_t)
-
-                    def _post_enqueue_read_sec(max_read: float) -> float:
-                        cap = float(_SCRAPE_ENQUEUE_READ_CAP_SEC)
-                        try:
-                            raw = str(st.secrets.get("SCRAPER_API_ENQUEUE_READ_CAP_SEC", "")).strip()
-                            if raw:
-                                cap = max(30.0, float(raw))
-                        except Exception:
-                            pass
-                        return max(45.0, min(float(max_read), cap))
-
-                    _enqueue_read = _post_enqueue_read_sec(_read_t)
-
-                    def _post_scrape(req_payload: dict, timeout_msg: str) -> tuple[int, dict] | None:
-                        attempt_rid = uuid.uuid4().hex
-                        post_headers = dict(req_headers)
-                        post_headers["X-Request-ID"] = attempt_rid
-                        try:
-                            enqueue_resp = requests.post(
-                                f"{api_base_url.rstrip('/')}/scrape",
-                                json=req_payload,
-                                headers=post_headers,
-                                timeout=(_connect_t, _enqueue_read),
+                        fsq_view_df = pd.DataFrame()
+                        if not fsq_df.empty:
+                            fsq_view_df = pd.DataFrame(
+                                {
+                                    "restaurant_name": fsq_df.get("name", pd.Series([""] * len(fsq_df))),
+                                    "restaurant_url": fsq_df.get("foursquare_link", pd.Series([""] * len(fsq_df))),
+                                    "foursquare_id": fsq_df.get("foursquare_id", pd.Series([""] * len(fsq_df))),
+                                    "foursquare_categories": fsq_df.get("foursquare_categories", pd.Series([""] * len(fsq_df))),
+                                    "foursquare_formatted_address": fsq_df.get("foursquare_formatted_address", pd.Series([""] * len(fsq_df))),
+                                    "lat": fsq_df.get("lat", pd.Series([None] * len(fsq_df))),
+                                    "lng": fsq_df.get("lng", pd.Series([None] * len(fsq_df))),
+                                    "platform": pd.Series(["Foursquare coverage"] * len(fsq_df)),
+                                    "status": pd.Series(["coverage_only"] * len(fsq_df)),
+                                }
                             )
-                            if enqueue_resp.status_code >= 400:
-                                return int(enqueue_resp.status_code), {}
-                            enqueue_data = enqueue_resp.json() if enqueue_resp.content else {}
-                            # Backward compatibility: older API versions return final scrape payload directly from /scrape.
-                            if isinstance(enqueue_data, dict) and "records" in enqueue_data:
-                                return 200, enqueue_data
-                            rid = str(
-                                enqueue_data.get("request_id")
-                                or enqueue_resp.headers.get("X-Request-ID")
-                                or attempt_rid
-                            ).strip()
-                            if not rid:
-                                raise RuntimeError("Missing request_id from /scrape enqueue response")
-                            result_data = _poll_result(rid, total_timeout_sec=_poll_budget_sec)
-                            return 200, result_data
-                        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout):
-                            status_box.warning(timeout_msg)
-                            # POST body may never arrive on slow paths, but the API often already enqueued using X-Request-ID.
-                            try:
-                                probe = http_get_with_connection_retries(
-                                    f"{api_base_url.rstrip('/')}/result/{attempt_rid}",
+                        df = pd.concat([google_view_df, fsq_view_df], ignore_index=True, sort=False)
+                        if not df.empty:
+                            _dedupe_key = (
+                                df.get("restaurant_name", pd.Series([""] * len(df))).astype(str).str.strip().str.lower()
+                                + "|"
+                                + pd.to_numeric(df.get("lat", pd.Series([None] * len(df))), errors="coerce").round(5).astype(str)
+                                + "|"
+                                + pd.to_numeric(df.get("lng", pd.Series([None] * len(df))), errors="coerce").round(5).astype(str)
+                            )
+                            df = df.loc[~_dedupe_key.duplicated()].reset_index(drop=True)
+                        if scrape_source_mode == "Google + Foursquare per area":
+                            api_request_id = (
+                                f"multi-{str(gc_data.get('request_id') or '')[:8]}-{uuid.uuid4().hex[:4]}"
+                            )
+                        else:
+                            api_request_id = str(gc_data.get("request_id") or f"google-{uuid.uuid4().hex[:8]}")
+                        st.session_state["last_scrape_city"] = None
+                        st.session_state["last_scrape_run_meta"] = {
+                            "request_id": api_request_id,
+                            "source_mode": (
+                                "google_foursquare_coverage"
+                                if scrape_source_mode == "Google + Foursquare per area"
+                                else "google_coverage"
+                            ),
+                            "effective_scrape_pin_lat": float(loc_req["lat"]),
+                            "effective_scrape_pin_lng": float(loc_req["lng"]),
+                        }
+                        progress.progress(1.0)
+                        if scrape_source_mode == "Google + Foursquare per area":
+                            status_box.info(f"Google + Foursquare coverage completed · request_id={api_request_id}")
+                        else:
+                            status_box.info(f"Google area coverage completed · request_id={api_request_id}")
+                    else:
+                        fallback_notes: list[str] = []
+                        req_headers = dict(headers)
+                        def _poll_result(request_id_to_poll: str, total_timeout_sec: float = _SCRAPE_CLIENT_TIMEOUT_SEC) -> dict:
+                            deadline = time.time() + float(total_timeout_sec)
+                            while time.time() < deadline:
+                                poll_resp = http_get_with_connection_retries(
+                                    f"{api_base_url.rstrip('/')}/result/{request_id_to_poll}",
                                     headers=req_headers,
-                                    timeout=25,
+                                    timeout=30,
                                 )
-                            except requests.exceptions.RequestException:
-                                return None
-                            if probe.status_code == 404:
-                                return None
-                            if probe.status_code >= 400:
-                                return None
-                            try:
-                                return (200, _poll_result(attempt_rid, total_timeout_sec=_poll_budget_sec))
-                            except Exception:
-                                return None
-
-                    scrape_result = _post_scrape(
-                        payload,
-                        "Primary /scrape hit connect or read timeout (checking whether the job was still enqueued)…",
-                    )
-                    # Do **not** treat client-side timeout (None) like HTTP 504: auto-retries enqueue extra jobs and
-                    # overload a single VM (multiple Playwright runs). Only retry on real 502/504 from the server.
-                    if scrape_result is None:
-                        raise RuntimeError(
-                            "POST /scrape did not return a response in time and no /result job could be recovered. "
-                            "This is usually network path (Streamlit Cloud → raw HTTP). Prefer **https://** "
-                            "`API_BASE_URL`, or raise **SCRAPER_API_ENQUEUE_READ_CAP_SEC** / **SCRAPER_API_POST_TIMEOUT_SEC** "
-                            "in Secrets. Wait for any in-flight scrape on the VM to finish, then try once — avoid "
-                            "double-clicking **Start Scraping**."
-                        )
-                    if int(scrape_result[0]) >= 400:
-                        code = int(scrape_result[0])
-                        # Hosted gateway timeouts: retry with progressively lighter payloads (same host, one job at a time).
-                        if code in (502, 504):
-                            fallback_payload = dict(payload)
-                            fallback_payload["high_volume"] = False
-                            fallback_payload["just_landed_only"] = False
-                            fallback_payload["status_filter"] = "all"
-                            fallback_payload["max_sample_points"] = min(int(payload["max_sample_points"]), 12)
-                            fallback_payload["scroll_rounds"] = 10
-                            fallback_notes.append("Fallback 1 used: disabled high-volume, reduced grid sample cap and scroll rounds.")
-                            scrape_result = _post_scrape(
-                                fallback_payload,
-                                "Lighter retry also hit read-timeout. Retrying once with ultra-light settings...",
+                                if poll_resp.status_code >= 400:
+                                    raise RuntimeError(_friendly_api_error(poll_resp))
+                                poll_data = poll_resp.json() if poll_resp.content else {}
+                                poll_status = str((poll_data or {}).get("status") or "").lower()
+                                if poll_status == "complete":
+                                    return poll_data
+                                if poll_status == "failed":
+                                    raise RuntimeError(str((poll_data or {}).get("error") or "Remote scrape job failed"))
+                                time.sleep(10)
+                            raise RuntimeError(
+                                f"Remote scrape job timed out after {int(total_timeout_sec)}s polling "
+                                f"/result/{request_id_to_poll}. The worker may still be running — check API logs. "
+                                "In Streamlit Secrets set **SCRAPER_POLL_TOTAL_TIMEOUT_SEC** (e.g. 7200) if you need longer "
+                                "waits, or use a lighter profile / lower max_sample_points. "
+                                "Profiles now send **scrape_wall_clock_sec** so the client budget tracks server wall clock."
                             )
-                            if scrape_result is None:
-                                raise RuntimeError(
-                                    "Second /scrape attempt timed out client-side before a response. "
-                                    "Use HTTPS for API_BASE_URL or increase enqueue timeouts; avoid stacking scrapes on a small VM."
+
+                        def _enqueue_read_timeout_sec() -> float:
+                            try:
+                                raw = str(st.secrets.get("SCRAPER_API_POST_TIMEOUT_SEC", "")).strip()
+                                if raw:
+                                    return max(120.0, min(float(raw), float(_poll_budget_sec)))
+                            except Exception:
+                                pass
+                            return max(120.0, min(float(_SCRAPE_POST_TIMEOUT_SEC), float(_poll_budget_sec)))
+
+                        _read_t = _enqueue_read_timeout_sec()
+                        _connect_t = min(60.0, _read_t)
+
+                        def _post_enqueue_read_sec(max_read: float) -> float:
+                            cap = float(_SCRAPE_ENQUEUE_READ_CAP_SEC)
+                            try:
+                                raw = str(st.secrets.get("SCRAPER_API_ENQUEUE_READ_CAP_SEC", "")).strip()
+                                if raw:
+                                    cap = max(30.0, float(raw))
+                            except Exception:
+                                pass
+                            return max(45.0, min(float(max_read), cap))
+
+                        _enqueue_read = _post_enqueue_read_sec(_read_t)
+
+                        def _post_scrape(req_payload: dict, timeout_msg: str) -> tuple[int, dict] | None:
+                            attempt_rid = uuid.uuid4().hex
+                            post_headers = dict(req_headers)
+                            post_headers["X-Request-ID"] = attempt_rid
+                            try:
+                                enqueue_resp = requests.post(
+                                    f"{api_base_url.rstrip('/')}/scrape",
+                                    json=req_payload,
+                                    headers=post_headers,
+                                    timeout=(_connect_t, _enqueue_read),
                                 )
+                                if enqueue_resp.status_code >= 400:
+                                    return int(enqueue_resp.status_code), {}
+                                enqueue_data = enqueue_resp.json() if enqueue_resp.content else {}
+                                # Backward compatibility: older API versions return final scrape payload directly from /scrape.
+                                if isinstance(enqueue_data, dict) and "records" in enqueue_data:
+                                    return 200, enqueue_data
+                                rid = str(
+                                    enqueue_data.get("request_id")
+                                    or enqueue_resp.headers.get("X-Request-ID")
+                                    or attempt_rid
+                                ).strip()
+                                if not rid:
+                                    raise RuntimeError("Missing request_id from /scrape enqueue response")
+                                result_data = _poll_result(rid, total_timeout_sec=_poll_budget_sec)
+                                return 200, result_data
+                            except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout):
+                                status_box.warning(timeout_msg)
+                                # POST body may never arrive on slow paths, but the API often already enqueued using X-Request-ID.
+                                try:
+                                    probe = http_get_with_connection_retries(
+                                        f"{api_base_url.rstrip('/')}/result/{attempt_rid}",
+                                        headers=req_headers,
+                                        timeout=25,
+                                    )
+                                except requests.exceptions.RequestException:
+                                    return None
+                                if probe.status_code == 404:
+                                    return None
+                                if probe.status_code >= 400:
+                                    return None
+                                try:
+                                    return (200, _poll_result(attempt_rid, total_timeout_sec=_poll_budget_sec))
+                                except Exception:
+                                    return None
+
+                        scrape_result = _post_scrape(
+                            payload,
+                            "Primary /scrape hit connect or read timeout (checking whether the job was still enqueued)…",
+                        )
+                        # Do **not** treat client-side timeout (None) like HTTP 504: auto-retries enqueue extra jobs and
+                        # overload a single VM (multiple Playwright runs). Only retry on real 502/504 from the server.
+                        if scrape_result is None:
+                            raise RuntimeError(
+                                "POST /scrape did not return a response in time and no /result job could be recovered. "
+                                "This is usually network path (Streamlit Cloud → raw HTTP). Prefer **https://** "
+                                "`API_BASE_URL`, or raise **SCRAPER_API_ENQUEUE_READ_CAP_SEC** / **SCRAPER_API_POST_TIMEOUT_SEC** "
+                                "in Secrets. Wait for any in-flight scrape on the VM to finish, then try once — avoid "
+                                "double-clicking **Start Scraping**."
+                            )
+                        if int(scrape_result[0]) >= 400:
                             code = int(scrape_result[0])
+                            # Hosted gateway timeouts: retry with progressively lighter payloads (same host, one job at a time).
                             if code in (502, 504):
-                                ultra_payload = dict(fallback_payload)
-                                ultra_payload["just_landed_only"] = False
-                                ultra_payload["status_filter"] = "all"
-                                ultra_payload["max_sample_points"] = min(int(fallback_payload["max_sample_points"]), 4)
-                                ultra_payload["scroll_rounds"] = 8
-                                ultra_payload["spacing_km"] = 2.5
-                                fallback_notes.append("Fallback 2 used: ultra-light profile with very low sample cap and wider spacing.")
+                                fallback_payload = dict(payload)
+                                fallback_payload["high_volume"] = False
+                                fallback_payload["just_landed_only"] = False
+                                fallback_payload["status_filter"] = "all"
+                                fallback_payload["max_sample_points"] = min(int(payload["max_sample_points"]), 12)
+                                fallback_payload["scroll_rounds"] = 10
+                                fallback_notes.append("Fallback 1 used: disabled high-volume, reduced grid sample cap and scroll rounds.")
                                 scrape_result = _post_scrape(
-                                    ultra_payload,
-                                    "Ultra-light retry also hit read-timeout.",
+                                    fallback_payload,
+                                    "Lighter retry also hit read-timeout. Retrying once with ultra-light settings...",
                                 )
                                 if scrape_result is None:
                                     raise RuntimeError(
-                                        "Third /scrape attempt timed out client-side. Check API host load and network; "
-                                        "the VM runs at most one scrape at a time by default — wait for the prior job."
+                                        "Second /scrape attempt timed out client-side before a response. "
+                                        "Use HTTPS for API_BASE_URL or increase enqueue timeouts; avoid stacking scrapes on a small VM."
                                     )
-                        if int(scrape_result[0]) >= 400:
-                            raise RuntimeError(f"HTTP {int(scrape_result[0])} from /scrape enqueue")
-                    api_data = scrape_result[1] if scrape_result is not None else {}
-                    api_request_id = str(api_data.get("request_id") or "")
-                    df = pd.DataFrame(api_data.get("records", []))
-                    df = ensure_just_landed_columns(df)
-                    if df.empty:
-                        status_box.warning("Scrape returned 0 rows. Trying emergency single-point fallback...")
-                        emergency_payload = dict(payload)
-                        emergency_payload["high_volume"] = False
-                        emergency_payload["dedupe_by_vendor_url"] = True
-                        emergency_payload["just_landed_only"] = False
-                        emergency_payload["status_filter"] = "all"
-                        emergency_payload["max_sample_points"] = 1
-                        emergency_payload["scroll_rounds"] = 4
-                        emergency_payload["scroll_wait_ms"] = min(int(payload["scroll_wait_ms"]), 700)
-                        em_rid = uuid.uuid4().hex
-                        em_headers = dict(req_headers)
-                        em_headers["X-Request-ID"] = em_rid
-                        em_data: dict = {}
-                        em_resp: requests.Response | None = None
-                        try:
-                            em_resp = requests.post(
-                                f"{api_base_url.rstrip('/')}/scrape",
-                                json=emergency_payload,
-                                headers=em_headers,
-                                timeout=(_connect_t, _enqueue_read),
-                            )
-                        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout):
+                                code = int(scrape_result[0])
+                                if code in (502, 504):
+                                    ultra_payload = dict(fallback_payload)
+                                    ultra_payload["just_landed_only"] = False
+                                    ultra_payload["status_filter"] = "all"
+                                    ultra_payload["max_sample_points"] = min(int(fallback_payload["max_sample_points"]), 4)
+                                    ultra_payload["scroll_rounds"] = 8
+                                    ultra_payload["spacing_km"] = 2.5
+                                    fallback_notes.append("Fallback 2 used: ultra-light profile with very low sample cap and wider spacing.")
+                                    scrape_result = _post_scrape(
+                                        ultra_payload,
+                                        "Ultra-light retry also hit read-timeout.",
+                                    )
+                                    if scrape_result is None:
+                                        raise RuntimeError(
+                                            "Third /scrape attempt timed out client-side. Check API host load and network; "
+                                            "the VM runs at most one scrape at a time by default — wait for the prior job."
+                                        )
+                            if int(scrape_result[0]) >= 400:
+                                raise RuntimeError(f"HTTP {int(scrape_result[0])} from /scrape enqueue")
+                        api_data = scrape_result[1] if scrape_result is not None else {}
+                        api_request_id = str(api_data.get("request_id") or "")
+                        df = pd.DataFrame(api_data.get("records", []))
+                        df = ensure_just_landed_columns(df)
+                        if df.empty:
+                            status_box.warning("Scrape returned 0 rows. Trying emergency single-point fallback...")
+                            emergency_payload = dict(payload)
+                            emergency_payload["high_volume"] = False
+                            emergency_payload["dedupe_by_vendor_url"] = True
+                            emergency_payload["just_landed_only"] = False
+                            emergency_payload["status_filter"] = "all"
+                            emergency_payload["max_sample_points"] = 1
+                            emergency_payload["scroll_rounds"] = 4
+                            emergency_payload["scroll_wait_ms"] = min(int(payload["scroll_wait_ms"]), 700)
+                            em_rid = uuid.uuid4().hex
+                            em_headers = dict(req_headers)
+                            em_headers["X-Request-ID"] = em_rid
+                            em_data: dict = {}
+                            em_resp: requests.Response | None = None
                             try:
-                                probe_em = http_get_with_connection_retries(
-                                    f"{api_base_url.rstrip('/')}/result/{em_rid}",
+                                em_resp = requests.post(
+                                    f"{api_base_url.rstrip('/')}/scrape",
+                                    json=emergency_payload,
+                                    headers=em_headers,
+                                    timeout=(_connect_t, _enqueue_read),
+                                )
+                            except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout):
+                                try:
+                                    probe_em = http_get_with_connection_retries(
+                                        f"{api_base_url.rstrip('/')}/result/{em_rid}",
+                                        headers=req_headers,
+                                        timeout=25,
+                                    )
+                                except requests.exceptions.RequestException:
+                                    probe_em = None
+                                if (
+                                    probe_em is not None
+                                    and probe_em.status_code != 404
+                                    and probe_em.status_code < 400
+                                ):
+                                    em_data = _poll_result(em_rid, total_timeout_sec=_poll_budget_sec)
+                            if em_resp is not None and em_resp.status_code < 400:
+                                em_enqueue_data = em_resp.json() if em_resp.content else {}
+                                # Backward compatibility: older API versions return final scrape payload directly.
+                                if isinstance(em_enqueue_data, dict) and "records" in em_enqueue_data:
+                                    em_data = em_enqueue_data
+                                else:
+                                    em_rid2 = str(
+                                        em_enqueue_data.get("request_id")
+                                        or em_resp.headers.get("X-Request-ID")
+                                        or em_rid
+                                    ).strip()
+                                    em_data = _poll_result(em_rid2, total_timeout_sec=_poll_budget_sec)
+                            if em_data:
+                                em_df = pd.DataFrame(em_data.get("records", []))
+                                em_df = ensure_just_landed_columns(em_df)
+                                if not em_df.empty:
+                                    df = em_df
+                                    api_request_id = str(
+                                        em_data.get("request_id") or api_request_id
+                                    )
+                                    api_data = em_data
+                        gdf = pd.DataFrame()
+                        st.session_state["last_scrape_city"] = api_data.get("city")
+                        meta_run = api_data.get("scrape_run_meta") or {}
+                        meta_run.setdefault("request_id", api_request_id)
+                        st.session_state["last_scrape_run_meta"] = meta_run
+                        elat = meta_run.get("effective_scrape_pin_lat")
+                        elng = meta_run.get("effective_scrape_pin_lng")
+                        if elat is not None and elng is not None:
+                            st.session_state["_last_successful_run_effective_pin"] = (float(elat), float(elng))
+                        if include_google_coverage:
+                            try:
+                                gc_resp = requests.post(
+                                    f"{api_base_url.rstrip('/')}/google-coverage",
+                                    json={
+                                        "pin_lat": float(loc_req["lat"]),
+                                        "pin_lng": float(loc_req["lng"]),
+                                        "radius_km": float(radius_km),
+                                    },
                                     headers=req_headers,
-                                    timeout=25,
+                                    timeout=80,
                                 )
-                            except requests.exceptions.RequestException:
-                                probe_em = None
-                            if (
-                                probe_em is not None
-                                and probe_em.status_code != 404
-                                and probe_em.status_code < 400
-                            ):
-                                em_data = _poll_result(em_rid, total_timeout_sec=_poll_budget_sec)
-                        if em_resp is not None and em_resp.status_code < 400:
-                            em_enqueue_data = em_resp.json() if em_resp.content else {}
-                            # Backward compatibility: older API versions return final scrape payload directly.
-                            if isinstance(em_enqueue_data, dict) and "records" in em_enqueue_data:
-                                em_data = em_enqueue_data
-                            else:
-                                em_rid2 = str(
-                                    em_enqueue_data.get("request_id")
-                                    or em_resp.headers.get("X-Request-ID")
-                                    or em_rid
-                                ).strip()
-                                em_data = _poll_result(em_rid2, total_timeout_sec=_poll_budget_sec)
-                        if em_data:
-                            em_df = pd.DataFrame(em_data.get("records", []))
-                            em_df = ensure_just_landed_columns(em_df)
-                            if not em_df.empty:
-                                df = em_df
-                                api_request_id = str(
-                                    em_data.get("request_id") or api_request_id
-                                )
-                                api_data = em_data
-                    gdf = pd.DataFrame()
-                    st.session_state["last_scrape_city"] = api_data.get("city")
-                    meta_run = api_data.get("scrape_run_meta") or {}
-                    meta_run.setdefault("request_id", api_request_id)
-                    st.session_state["last_scrape_run_meta"] = meta_run
-                    elat = meta_run.get("effective_scrape_pin_lat")
-                    elng = meta_run.get("effective_scrape_pin_lng")
-                    if elat is not None and elng is not None:
-                        st.session_state["_last_successful_run_effective_pin"] = (float(elat), float(elng))
-                    if include_google_coverage:
-                        try:
-                            gc_resp = requests.post(
-                                f"{api_base_url.rstrip('/')}/google-coverage",
-                                json={
-                                    "pin_lat": float(loc_req["lat"]),
-                                    "pin_lng": float(loc_req["lng"]),
-                                    "radius_km": float(radius_km),
-                                },
-                                headers=req_headers,
-                                timeout=80,
-                            )
-                            if gc_resp.status_code < 400:
-                                gc_data = gc_resp.json()
-                                gdf = pd.DataFrame(gc_data.get("records", []))
-                            else:
-                                st.warning(f"Google coverage fetch skipped: {_friendly_api_error(gc_resp)}")
-                        except Exception as exc:
-                            st.warning(f"Google coverage fetch failed: {exc}")
-                    st.session_state["google_coverage_df"] = gdf
-                    progress.progress(1.0)
-                    status_box.info(f"Remote scrape completed · request_id={api_request_id}")
-                    if fallback_notes:
-                        st.warning("Primary scrape degraded due to timeouts: " + " ".join(fallback_notes))
+                                if gc_resp.status_code < 400:
+                                    gc_data = gc_resp.json()
+                                    gdf = pd.DataFrame(gc_data.get("records", []))
+                                else:
+                                    st.warning(f"Google coverage fetch skipped: {_friendly_api_error(gc_resp)}")
+                            except Exception as exc:
+                                st.warning(f"Google coverage fetch failed: {exc}")
+                        st.session_state["google_coverage_df"] = gdf
+                        progress.progress(1.0)
+                        status_box.info(f"Remote scrape completed · request_id={api_request_id}")
+                        if fallback_notes:
+                            st.warning("Primary scrape degraded due to timeouts: " + " ".join(fallback_notes))
                 except Exception as exc:
                     st.error(f"Remote API scrape failed: {format_connection_error_hint(exc, api_base_url)}")
                     df = pd.DataFrame()
@@ -2344,7 +2460,7 @@ def main() -> None:
         timer_box.success(f"Done in {elapsed // 60:02d}:{elapsed % 60:02d}")
 
     df = st.session_state.get("results_df", pd.DataFrame())
-    if st.session_state.get("last_run_returned_zero", False):
+    if scrape_source_mode == "Talabat scrape" and st.session_state.get("last_run_returned_zero", False):
         st.warning(
             "Latest scrape returned **0 Talabat rows** for this run. The app no longer reuses old Talabat rows."
         )
@@ -2414,11 +2530,21 @@ def main() -> None:
             )
 
     coverage_only = is_google_coverage_only_results(df)
-    if coverage_only:
+    if coverage_only and scrape_source_mode == "Talabat scrape":
         st.warning(
             f"**Last Talabat scrape returned 0 restaurants.** Showing **{len(df):,} Google Places** near your pin "
             "(coverage API: hotels, chains, POIs). These rows are **not** Talabat listings, vendor URLs, or order data. "
             "Use API host **Logs** for `/scrape` (VPS: `docker compose` logs), try radius **10 km**, status **all**, and confirm the response includes `records`."
+        )
+    elif scrape_source_mode == "Google per area":
+        st.success(
+            f"Collected **{len(df):,}** Google per-area rows. "
+            "This mode bypasses Talabat scrape and uses `/google-coverage` directly."
+        )
+    elif scrape_source_mode == "Google + Foursquare per area":
+        st.success(
+            f"Collected **{len(df):,}** Google + Foursquare per-area rows. "
+            "This mode bypasses Talabat scrape and merges `/google-coverage` + `/foursquare-coverage`."
         )
     else:
         st.success(
@@ -2510,9 +2636,8 @@ def main() -> None:
     with tab_results:
         if coverage_only:
             st.info(
-                "**Nothing in this table comes from Talabat listings** — it is **Google coverage only** "
-                "(nearby Places). Talabat rows always include a **`restaurant_url`** on `talabat.com`. "
-                "The last `/scrape` returned **0** listing `records`; use API **Logs** on the host (VPS / `docker compose`) and re-run after fixing scrape errors or filters."
+                "**Nothing in this table comes from Talabat listings** — it is **coverage data only** "
+                "(Google and/or Foursquare nearby places). Talabat rows always include a **`restaurant_url`** on `talabat.com`."
             )
         st.dataframe(view_df, width="stretch", height=460)
         excel_df = build_excel_export_df(view_df)

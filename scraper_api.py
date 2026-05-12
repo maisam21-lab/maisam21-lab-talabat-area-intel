@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from google_coverage import fetch_google_nearby_restaurants, google_coverage_enabled
+from foursquare_coverage import fetch_foursquare_nearby_restaurants, foursquare_coverage_enabled
 from pin_validation import assert_client_pin_matches_body, validate_scrape_pin
 from listing_harvest import country_path_slug, default_listing_url_for_slug, harvest_vendor_urls
 from scrape_engine import run_area_scrape
@@ -171,6 +172,12 @@ class GoogleCoverageRequest(BaseModel):
     radius_km: float = Field(default=10.0, ge=5.0, le=10.0)
 
 
+class FoursquareCoverageRequest(BaseModel):
+    pin_lat: float = Field(default=25.2048)
+    pin_lng: float = Field(default=55.2708)
+    radius_km: float = Field(default=10.0, ge=5.0, le=10.0)
+
+
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 # Nominatim requires a valid User-Agent (https://operations.osmfoundation.org/policies/nominatim/).
 _DEFAULT_NOMINATIM_UA = "TalabatAreaIntel/1.0 (+https://github.com/maisam21-lab/maisam21-lab-talabat-area-intel)"
@@ -263,6 +270,7 @@ def scrape_config(x_api_key: str | None = Header(default=None)) -> dict:
     return {
         "ok": True,
         "google_maps_key_configured": bool(os.getenv("GOOGLE_MAPS_API_KEY", "").strip()),
+        "foursquare_key_configured": bool(os.getenv("FOURSQUARE_API_KEY", "").strip()),
         "geocode_use_google": _google_geocode_enabled(),
         "geocode_fallback_nominatim": _nominatim_enabled(),
         "scraper_wall_clock_sec_default": float(os.getenv("SCRAPER_WALL_CLOCK_SEC", "600")),
@@ -456,6 +464,28 @@ def google_coverage(payload: GoogleCoverageRequest, x_api_key: str | None = Head
         }
     pin_lat, pin_lng = validate_scrape_pin(payload.pin_lat, payload.pin_lng)
     rows = fetch_google_nearby_restaurants(pin_lat=pin_lat, pin_lng=pin_lng, radius_km=float(payload.radius_km))
+    return {
+        "ok": True,
+        "count": len(rows),
+        "records": rows,
+        "pin_lat": pin_lat,
+        "pin_lng": pin_lng,
+        "radius_km": float(payload.radius_km),
+    }
+
+
+@app.post("/foursquare-coverage")
+def foursquare_coverage(payload: FoursquareCoverageRequest, x_api_key: str | None = Header(default=None)) -> dict:
+    verify_api_key(x_api_key)
+    if not foursquare_coverage_enabled():
+        return {
+            "ok": True,
+            "count": 0,
+            "records": [],
+            "note": "Foursquare coverage disabled or FOURSQUARE_API_KEY missing on API service.",
+        }
+    pin_lat, pin_lng = validate_scrape_pin(payload.pin_lat, payload.pin_lng)
+    rows = fetch_foursquare_nearby_restaurants(pin_lat=pin_lat, pin_lng=pin_lng, radius_km=float(payload.radius_km))
     return {
         "ok": True,
         "count": len(rows),
