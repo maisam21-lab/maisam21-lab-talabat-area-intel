@@ -21,20 +21,20 @@ services:
       # Small VM: SCRAPER_CONSERVATIVE=1 caps grid + Playwright concurrency.
       # Outbound proxy: SCRAPER_HTTP_PROXY=... OR Scrape.do: SCRAPE_DO_TOKEN=... (see scrape_network.py).
       SCRAPER_VENDOR_PAGE_ENRICH: "1"
-      # Empty KEY= in .env disables pagination in Python; set real defaults here so shallow ~40 runs cannot happen silently.
-      MAX_SCRAPE_SAMPLE_POINTS: "150"
-      SCRAPER_HIGH_VOLUME: "1"
+      # Small-VM defaults: heavy Playwright + 150 samples OOMs; .env can raise caps on bigger workers.
+      MAX_SCRAPE_SAMPLE_POINTS: "20"
+      SCRAPER_HIGH_VOLUME: "0"
       SCRAPER_HTTP_LISTING_PAGES: "25"
       SCRAPER_HTTP_LISTING_MAX_PATHS: "1500"
-      SCRAPER_PLAYWRIGHT_LISTING_SEED: "1"
+      SCRAPER_PLAYWRIGHT_LISTING_SEED: "0"
       SCRAPER_PLAYWRIGHT_SEED_URLS: "12"
       SCRAPER_LISTING_PAGE_PAGINATION: "1"
       SCRAPER_LISTING_MAX_PAGES: "40"
       SCRAPER_LISTING_SCROLL_ROUNDS: "35"
       SCRAPER_AGGRESSIVE_LISTING: "1"
-      SCRAPER_MIN_GRID_POINTS: "150"
-      SCRAPER_HIGH_VOLUME_MIN_SAMPLES: "150"
-      SCRAPER_PLAYWRIGHT_CONCURRENCY: "5"
+      SCRAPER_MIN_GRID_POINTS: "20"
+      SCRAPER_HIGH_VOLUME_MIN_SAMPLES: "20"
+      SCRAPER_PLAYWRIGHT_CONCURRENCY: "1"
       RESTAURANT_DETAIL_ENRICH_MAX: "400"
     env_file:
       - .env
