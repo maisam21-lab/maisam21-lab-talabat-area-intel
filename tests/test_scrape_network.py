@@ -4,7 +4,47 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from scrape_network import playwright_proxy_from_env, proxy_url_from_env, requests_proxies_from_env
+from scrape_network import (
+    outbound_proxy_source,
+    playwright_proxy_from_env,
+    proxy_url_from_env,
+    requests_proxies_from_env,
+)
+
+
+def test_outbound_proxy_source_scraper_http_wins() -> None:
+    with patch.dict(
+        "os.environ",
+        {"HTTP_PROXY": "http://old:1", "SCRAPER_HTTP_PROXY": "http://new:2", "SCRAPE_DO_TOKEN": "tok"},
+        clear=False,
+    ):
+        assert outbound_proxy_source() == "SCRAPER_HTTP_PROXY"
+
+
+def test_outbound_proxy_source_scrape_do_when_no_explicit() -> None:
+    env = {
+        "SCRAPER_HTTP_PROXY": "",
+        "SCRAPER_ALL_PROXY": "",
+        "ALL_PROXY": "",
+        "HTTPS_PROXY": "",
+        "HTTP_PROXY": "",
+        "SCRAPE_DO_TOKEN": "mytoken",
+    }
+    with patch.dict("os.environ", env, clear=True):
+        assert outbound_proxy_source() == "SCRAPE_DO_TOKEN"
+
+
+def test_outbound_proxy_source_empty() -> None:
+    env = {
+        "SCRAPER_HTTP_PROXY": "",
+        "SCRAPER_ALL_PROXY": "",
+        "ALL_PROXY": "",
+        "HTTPS_PROXY": "",
+        "HTTP_PROXY": "",
+        "SCRAPE_DO_TOKEN": "",
+    }
+    with patch.dict("os.environ", env, clear=True):
+        assert outbound_proxy_source() == ""
 
 
 def test_proxy_url_scraper_wins_over_http_proxy() -> None:

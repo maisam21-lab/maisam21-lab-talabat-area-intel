@@ -15,6 +15,7 @@ from google_coverage import fetch_google_nearby_restaurants, google_coverage_ena
 from foursquare_coverage import fetch_foursquare_nearby_restaurants, foursquare_coverage_enabled
 from pin_validation import assert_client_pin_matches_body, validate_scrape_pin
 from listing_harvest import country_path_slug, default_listing_url_for_slug, harvest_vendor_urls
+from scrape_network import outbound_proxy_source
 from scrape_engine import run_area_scrape
 from uae_cities import resolve_city
 
@@ -290,6 +291,8 @@ def scrape_config(x_api_key: str | None = Header(default=None)) -> dict:
         "listing_harvest_response_max_urls": int(os.getenv("LISTING_HARVEST_RESPONSE_MAX_URLS", "2500")),
         "scraper_vendor_page_enrich": _env_truthy(os.getenv("SCRAPER_VENDOR_PAGE_ENRICH", "0")),
         "scraper_max_concurrent_scrapes": _SCRAPE_MAX_CONCURRENT_SCRAPES,
+        "outbound_proxy_configured": bool(outbound_proxy_source()),
+        "outbound_proxy_source": outbound_proxy_source() or None,
     }
 
 

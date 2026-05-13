@@ -45,6 +45,24 @@ def _scrape_do_proxy_url_from_env() -> str:
     return f"http://{user_q}:{pass_q}@{host}:{port}"
 
 
+def outbound_proxy_source() -> str:
+    """Which env key supplies the outbound proxy (same precedence as ``proxy_url_from_env``). Empty if none."""
+    for key in (
+        "SCRAPER_HTTP_PROXY",
+        "SCRAPER_ALL_PROXY",
+        "ALL_PROXY",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+    ):
+        v = (os.getenv(key) or "").strip().strip('"').strip("'")
+        if v:
+            return key
+    token = (os.getenv("SCRAPE_DO_TOKEN") or "").strip().strip('"').strip("'")
+    if token:
+        return "SCRAPE_DO_TOKEN"
+    return ""
+
+
 def proxy_url_from_env() -> str:
     for key in (
         "SCRAPER_HTTP_PROXY",
