@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 import traceback
 import uuid
+from contextlib import asynccontextmanager
 
 import requests
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -19,10 +21,26 @@ from scrape_network import outbound_proxy_source
 from scrape_engine import run_area_scrape
 from uae_cities import resolve_city
 
-app = FastAPI(title="Talabat Area Scraper API", version="1.0.0")
+_AREA_INTEL_LOG_HANDLER_ATTR = "_talabat_area_intel_stderr"
+
+
+@asynccontextmanager
+async def _app_lifespan(app: FastAPI):
+    """Ensure ``talabat_area_intel.*`` INFO lines reach Docker logs (uvicorn often leaves root at WARNING)."""
+    talabat = logging.getLogger("talabat_area_intel")
+    talabat.setLevel(logging.INFO)
+    if not any(getattr(h, _AREA_INTEL_LOG_HANDLER_ATTR, False) for h in talabat.handlers):
+        h = logging.StreamHandler(sys.stderr)
+        setattr(h, _AREA_INTEL_LOG_HANDLER_ATTR, True)
+        h.setLevel(logging.INFO)
+        h.setFormatter(logging.Formatter("%(message)s"))
+        talabat.addHandler(h)
+        talabat.propagate = False
+    yield
+
+
+app = FastAPI(title="Talabat Area Scraper API", version="1.0.0", lifespan=_app_lifespan)
 logger = logging.getLogger("talabat_area_intel.api")
-# Default root log level is WARNING, so scrape_start / scrape_progress / scrape_done (INFO) were invisible in Docker.
-logging.getLogger("talabat_area_intel").setLevel(logging.INFO)
 _JOB_RESULTS: dict[str, dict] = {}
 _JOB_LOCK = asyncio.Lock()
 # One scrape at a time by default: parallel Playwright jobs on a small VM cause OOM, zero rows, and “frozen” APIs.
@@ -519,6 +537,7 @@ async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None
 
     async def _run_job() -> None:
         await _scrape_execution_semaphore.acquire()
+        logger.info("scrape_worker_begin request_id=%s", request_id)
         submitted_at: float | None = None
         try:
             async with _JOB_LOCK:
