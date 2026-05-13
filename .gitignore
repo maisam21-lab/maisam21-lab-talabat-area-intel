@@ -18,6 +18,9 @@ env.worker.local
 deploy/ssl/*.pem
 deploy/.htpasswd
 
+# Scrape job snapshots (./data/scrape_jobs on host when using docker-compose volume)
+data/scrape_jobs/*.json
+
 # OS / editor
 .DS_Store
 Thumbs.db

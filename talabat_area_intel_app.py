@@ -1071,6 +1071,8 @@ def _friendly_api_error(response: requests.Response) -> str:
     else:
         detail = "Upstream gateway returned a non-JSON error page before the API could send structured JSON."
     hint = {
+        404: "Unknown request_id: the API process may have restarted before this poll, or the id is wrong. "
+        "Completed/failed jobs are reloaded from disk after deploy if ./data/scrape_jobs is mounted. Otherwise start a new scrape.",
         502: "Try a smaller radius or check API logs for this request id.",
         504: "Scrape timed out. Raise server timeout limits or check API logs.",
         500: "Internal scrape failure. Check backend logs with request id.",

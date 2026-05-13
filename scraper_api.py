@@ -18,6 +18,7 @@ from foursquare_coverage import fetch_foursquare_nearby_restaurants, foursquare_
 from pin_validation import assert_client_pin_matches_body, validate_scrape_pin
 from listing_harvest import country_path_slug, default_listing_url_for_slug, harvest_vendor_urls
 from scrape_network import outbound_proxy_source
+from scrape_job_store import job_store_dir, load_job_record, persist_job_record
 from scrape_engine import run_area_scrape
 from uae_cities import resolve_city
 
@@ -311,6 +312,7 @@ def scrape_config(x_api_key: str | None = Header(default=None)) -> dict:
         "scraper_max_concurrent_scrapes": _SCRAPE_MAX_CONCURRENT_SCRAPES,
         "outbound_proxy_configured": bool(outbound_proxy_source()),
         "outbound_proxy_source": outbound_proxy_source() or None,
+        "scrape_job_store_dir": str(job_store_dir()),
     }
 
 
@@ -547,32 +549,38 @@ async def scrape(payload: ScrapeRequest, request: Request, x_api_key: str | None
                 _JOB_RESULTS[request_id] = cur
             try:
                 result = await _execute_scrape(payload, request_id=request_id)
+                done: dict = {
+                    "status": "complete",
+                    "request_id": request_id,
+                    "result": result,
+                    "submitted_at": submitted_at,
+                }
                 async with _JOB_LOCK:
-                    _JOB_RESULTS[request_id] = {
-                        "status": "complete",
-                        "request_id": request_id,
-                        "result": result,
-                        "submitted_at": submitted_at,
-                    }
+                    _JOB_RESULTS[request_id] = done
+                persist_job_record(request_id, done)
             except HTTPException as exc:
+                failed: dict = {
+                    "status": "failed",
+                    "request_id": request_id,
+                    "error": str(exc.detail),
+                    "status_code": int(exc.status_code),
+                    "submitted_at": submitted_at,
+                }
                 async with _JOB_LOCK:
-                    _JOB_RESULTS[request_id] = {
-                        "status": "failed",
-                        "request_id": request_id,
-                        "error": str(exc.detail),
-                        "status_code": int(exc.status_code),
-                        "submitted_at": submitted_at,
-                    }
+                    _JOB_RESULTS[request_id] = failed
+                persist_job_record(request_id, failed)
             except Exception as exc:
                 logger.error("scrape_job_failed request_id=%s error=%s\n%s", request_id, exc, traceback.format_exc())
+                failed_exc: dict = {
+                    "status": "failed",
+                    "request_id": request_id,
+                    "error": f"Scrape failed: {exc}",
+                    "status_code": 500,
+                    "submitted_at": submitted_at,
+                }
                 async with _JOB_LOCK:
-                    _JOB_RESULTS[request_id] = {
-                        "status": "failed",
-                        "request_id": request_id,
-                        "error": f"Scrape failed: {exc}",
-                        "status_code": 500,
-                        "submitted_at": submitted_at,
-                    }
+                    _JOB_RESULTS[request_id] = failed_exc
+                persist_job_record(request_id, failed_exc)
         finally:
             _scrape_execution_semaphore.release()
 
@@ -589,6 +597,12 @@ async def get_scrape_result(request_id: str, x_api_key: str | None = Header(defa
     verify_api_key(x_api_key)
     async with _JOB_LOCK:
         job = _JOB_RESULTS.get(request_id)
+    if not job:
+        loaded = load_job_record(request_id)
+        if loaded:
+            async with _JOB_LOCK:
+                _JOB_RESULTS.setdefault(request_id, loaded)
+            job = loaded
     if not job:
         raise HTTPException(status_code=404, detail="request_id not found")
     status = str(job.get("status") or "unknown")

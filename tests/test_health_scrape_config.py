@@ -26,6 +26,7 @@ class TestHealthScrapeConfig(unittest.TestCase):
             self.assertIn("google_maps_key_configured", data)
             self.assertIn("outbound_proxy_configured", data)
             self.assertIn("outbound_proxy_source", data)
+            self.assertIn("scrape_job_store_dir", data)
         finally:
             if prev is None:
                 os.environ.pop("SCRAPER_API_KEY", None)

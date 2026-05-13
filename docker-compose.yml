@@ -39,6 +39,8 @@ services:
       RESTAURANT_DETAIL_ENRICH_MAX: "400"
     env_file:
       - .env
+    volumes:
+      - ./data/scrape_jobs:/app/data/scrape_jobs
     expose:
       - "8000"
     healthcheck:

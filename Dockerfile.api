@@ -15,6 +15,8 @@ RUN pip install --upgrade pip && pip install -r requirements.txt \
 # Increase shared memory for Chromium in containerized runs.
 RUN echo "tmpfs /dev/shm tmpfs defaults,size=512m 0 0" >> /etc/fstab
 
+RUN mkdir -p /app/data/scrape_jobs
+
 COPY . .
 
 EXPOSE 8000
