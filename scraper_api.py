@@ -20,6 +20,8 @@ from uae_cities import resolve_city
 
 app = FastAPI(title="Talabat Area Scraper API", version="1.0.0")
 logger = logging.getLogger("talabat_area_intel.api")
+# Default root log level is WARNING, so scrape_start / scrape_progress / scrape_done (INFO) were invisible in Docker.
+logging.getLogger("talabat_area_intel").setLevel(logging.INFO)
 _JOB_RESULTS: dict[str, dict] = {}
 _JOB_LOCK = asyncio.Lock()
 # One scrape at a time by default: parallel Playwright jobs on a small VM cause OOM, zero rows, and “frozen” APIs.
