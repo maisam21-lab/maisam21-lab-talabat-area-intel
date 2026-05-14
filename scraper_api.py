@@ -301,7 +301,7 @@ def scrape_config(x_api_key: str | None = Header(default=None)) -> dict:
         "scraper_max_sample_points_cap_api": int(os.getenv("SCRAPER_MAX_SAMPLE_POINTS_CAP_API", "400")),
         "max_scrape_sample_points_default": int(os.getenv("MAX_SCRAPE_SAMPLE_POINTS", "6")),
         "restaurant_detail_enrich_max_default": _int_env_nonempty("RESTAURANT_DETAIL_ENRICH_MAX", 12),
-        "scraper_per_point_timeout_sec": float(os.getenv("SCRAPER_PER_POINT_TIMEOUT_SEC", "90")),
+        "scraper_per_point_timeout_sec": float(os.getenv("SCRAPER_PER_POINT_TIMEOUT_SEC", "120")),
         "scraper_listing_fast_path": os.getenv("SCRAPER_LISTING_FAST_PATH", "0").strip(),
         "scraper_humanize": os.getenv("SCRAPER_HUMANIZE", "0").strip(),
         "google_places_enrich_env": os.getenv("GOOGLE_PLACES_ENRICH", "0").strip(),

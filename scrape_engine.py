@@ -3195,9 +3195,11 @@ async def run_area_scrape(
         async with async_playwright() as p:
             done = 0
             total = len(pending_items)
+            # Must exceed listing ``page.goto(..., timeout=60000)`` plus DOM work; a lower asyncio
+            # cap cancels the task first → net::ERR_ABORTED / TargetClosedError spam on slow proxy links.
             per_point_timeout = max(
-                45.0,
-                float(os.getenv("SCRAPER_PER_POINT_TIMEOUT_SEC", "45")),
+                90.0,
+                float(os.getenv("SCRAPER_PER_POINT_TIMEOUT_SEC", "120")),
             )
 
             async def launch_browser_instance():
