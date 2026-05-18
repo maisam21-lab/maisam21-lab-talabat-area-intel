@@ -495,6 +495,7 @@ const state = {
   pendingLatLng: null,
   jobId: null,
   pollTimer: null,
+  dragging: false,
 };
 let pinIdSeq = 0;
 
@@ -507,7 +508,9 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r
   maxZoom: 19,
 }).addTo(map);
 
+// Click on map → open name modal (only if not dragging)
 map.on('click', (e) => {
+  if (state.dragging) return;
   state.pendingLatLng = e.latlng;
   const input = document.getElementById('pin-name-input');
   input.value = '';
@@ -521,35 +524,80 @@ document.getElementById('pin-name-input').addEventListener('keydown', (e) => {
 });
 
 // ── Pin management ────────────────────────────────────────────
+function makePinIcon(color) {
+  return L.divIcon({
+    className: '',
+    html: `<div style="
+      width:26px; height:26px;
+      background:${color}; border:3px solid #fff;
+      border-radius:50% 50% 50% 0; transform:rotate(-45deg);
+      box-shadow:0 3px 10px rgba(0,0,0,.45);
+      cursor:grab; transition:transform .15s;
+    "></div>`,
+    iconSize: [26, 26],
+    iconAnchor: [13, 26],
+    popupAnchor: [0, -26],
+  });
+}
+
 function addPin(lat, lng, name) {
   const id = ++pinIdSeq;
   const radius = parseFloat(document.getElementById('radius-input').value) || 10;
 
   const marker = L.marker([lat, lng], {
-    icon: L.divIcon({
-      className: '',
-      html: `<div style="
-        width:22px; height:22px;
-        background:#1F4E79; border:3px solid #fff;
-        border-radius:50% 50% 50% 0; transform:rotate(-45deg);
-        box-shadow:0 2px 8px rgba(0,0,0,.4);
-      "></div>`,
-      iconSize: [22, 22],
-      iconAnchor: [11, 22],
-    }),
-  }).addTo(map).bindPopup(`<b>${escHtml(name)}</b><br>${radius}km radius`);
+    icon: makePinIcon('#1B3A26'),
+    draggable: true,
+    autoPan: true,
+  }).addTo(map);
+
+  marker.bindPopup(`
+    <div style="min-width:160px;">
+      <b style="font-size:14px;">${escHtml(name)}</b><br>
+      <span style="color:#666; font-size:12px;">${radius}km radius</span><br>
+      <button onclick="renamePin(${id})" style="margin-top:8px; padding:4px 10px; background:#1B3A26; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px;">Rename</button>
+      <button onclick="removePin(${id})" style="margin-top:8px; padding:4px 10px; background:#c53030; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px;">Remove</button>
+    </div>
+  `);
 
   const circle = L.circle([lat, lng], {
     radius: radius * 1000,
-    color: '#2E75B6',
-    fillColor: '#BDD7EE',
-    fillOpacity: 0.15,
+    color: '#2D5C3C',
+    fillColor: '#C6DDD0',
+    fillOpacity: 0.18,
     weight: 2,
-    dashArray: '6 4',
+    dashArray: '7 5',
   }).addTo(map);
+
+  // Track drag state so map click doesn't fire after drag
+  marker.on('dragstart', () => { state.dragging = true; });
+  marker.on('drag', (e) => {
+    const ll = e.target.getLatLng();
+    circle.setLatLng(ll);
+  });
+  marker.on('dragend', (e) => {
+    setTimeout(() => { state.dragging = false; }, 200);
+    const ll = e.target.getLatLng();
+    const pin = state.pins.find(p => p.id === id);
+    if (pin) {
+      pin.lat = ll.lat;
+      pin.lng = ll.lng;
+      marker.setPopupContent(`
+        <div style="min-width:160px;">
+          <b style="font-size:14px;">${escHtml(pin.name)}</b><br>
+          <span style="color:#666; font-size:12px;">${pin.radius}km radius</span><br>
+          <button onclick="renamePin(${id})" style="margin-top:8px; padding:4px 10px; background:#1B3A26; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px;">Rename</button>
+          <button onclick="removePin(${id})" style="margin-top:8px; padding:4px 10px; background:#c53030; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px;">Remove</button>
+        </div>
+      `);
+      renderPinList();
+    }
+  });
 
   state.pins.push({ id, name, lat, lng, radius, marker, circle });
   renderPinList();
+
+  // Pan to pin smoothly
+  map.panTo([lat, lng], { animate: true, duration: 0.5 });
 }
 
 function removePin(id) {
@@ -562,10 +610,41 @@ function removePin(id) {
   renderPinList();
 }
 
+function renamePin(id) {
+  const pin = state.pins.find(p => p.id === id);
+  if (!pin) return;
+  map.closePopup();
+  const newName = prompt('Rename pin:', pin.name);
+  if (!newName || !newName.trim()) return;
+  pin.name = newName.trim();
+  pin.marker.setPopupContent(`
+    <div style="min-width:160px;">
+      <b style="font-size:14px;">${escHtml(pin.name)}</b><br>
+      <span style="color:#666; font-size:12px;">${pin.radius}km radius</span><br>
+      <button onclick="renamePin(${id})" style="margin-top:8px; padding:4px 10px; background:#1B3A26; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px;">Rename</button>
+      <button onclick="removePin(${id})" style="margin-top:8px; padding:4px 10px; background:#c53030; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px;">Remove</button>
+    </div>
+  `);
+  renderPinList();
+}
+
 function clearPins() {
   state.pins.forEach(p => { map.removeLayer(p.marker); map.removeLayer(p.circle); });
   state.pins = [];
   renderPinList();
+}
+
+function fitMapToPins() {
+  if (state.pins.length === 0) return;
+  const group = L.featureGroup(state.pins.map(p => p.circle));
+  map.fitBounds(group.getBounds().pad(0.15), { animate: true });
+}
+
+function locatePin(id) {
+  const pin = state.pins.find(p => p.id === id);
+  if (!pin) return;
+  map.setView([pin.lat, pin.lng], 13, { animate: true });
+  pin.marker.openPopup();
 }
 
 function renderPinList() {
@@ -581,12 +660,13 @@ function renderPinList() {
   empty.style.display = 'none';
   list.innerHTML = state.pins.map(p => `
     <div class="pin-item">
-      <i class="fa-solid fa-map-pin pin-icon"></i>
-      <div class="pin-info">
+      <i class="fa-solid fa-map-pin pin-icon" style="cursor:pointer;" onclick="locatePin(${p.id})" title="Go to pin"></i>
+      <div class="pin-info" style="cursor:pointer;" onclick="locatePin(${p.id})">
         <div class="pin-name" title="${escHtml(p.name)}">${escHtml(p.name)}</div>
-        <div class="pin-coords">${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}</div>
+        <div class="pin-coords">${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</div>
       </div>
       <span class="pin-radius">${p.radius}km</span>
+      <button class="pin-del" onclick="renamePin(${p.id})" title="Rename" style="color:#aac; font-size:13px;"><i class="fa-solid fa-pen"></i></button>
       <button class="pin-del" onclick="removePin(${p.id})" title="Remove"><i class="fa-solid fa-xmark"></i></button>
     </div>
   `).join('');
