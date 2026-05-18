@@ -794,9 +794,11 @@ function escHtml(s) {
 }
 
 // ── Init ──────────────────────────────────────────────────────
-// Auto-detect API URL when served from the VPS
+// Auto-detect API URL when served from the VPS.
+// nginx routes: /api/* → FastAPI, so when served at /api/ui/ use origin + /api
 if (!localStorage.getItem('kp_api_url') && !location.origin.startsWith('file')) {
-  localStorage.setItem('kp_api_url', location.origin);
+  const base = location.pathname.startsWith('/api/') ? location.origin + '/api' : location.origin;
+  localStorage.setItem('kp_api_url', base);
 }
 
 // Hide the map hint after 8s
