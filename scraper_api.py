@@ -528,7 +528,6 @@ def google_coverage(payload: GoogleCoverageRequest, x_api_key: str | None = Head
     }
 
 
-<<<<<<< HEAD
 @app.post("/foursquare-coverage")
 def foursquare_coverage(payload: FoursquareCoverageRequest, x_api_key: str | None = Header(default=None)) -> dict:
     verify_api_key(x_api_key)
@@ -543,7 +542,14 @@ def foursquare_coverage(payload: FoursquareCoverageRequest, x_api_key: str | Non
     rows = fetch_foursquare_nearby_restaurants(pin_lat=pin_lat, pin_lng=pin_lng, radius_km=float(payload.radius_km))
     return {
         "ok": True,
-=======
+        "count": len(rows),
+        "records": rows,
+        "pin_lat": pin_lat,
+        "pin_lng": pin_lng,
+        "radius_km": float(payload.radius_km),
+    }
+
+
 class AreaScrapeRequest(BaseModel):
     pin_lat: float = Field(default=25.1865, description="Search center latitude")
     pin_lng: float = Field(default=55.2642, description="Search center longitude")
@@ -563,12 +569,7 @@ async def scrape_area(
     request: Request,
     x_api_key: str | None = Header(default=None),
 ) -> dict:
-    """
-    Scrape Talabat vendor listings for an area using __NEXT_DATA__ pagination (no Playwright).
-
-    Resolves the nearest registered area for the given pin, fetches all pages,
-    and returns vendors within radius_km filtered by actual restaurant coordinates.
-    """
+    """Scrape Talabat vendor listings for an area using __NEXT_DATA__ pagination (no Playwright)."""
     request_id = getattr(request.state, "request_id", "") or uuid.uuid4().hex
     verify_api_key(x_api_key)
 
@@ -587,10 +588,8 @@ async def scrape_area(
         if resolved is None:
             raise HTTPException(status_code=400, detail="area_id/area_slug required — area registry is empty.")
         _key, area_id, area_slug, dist_km = resolved
-        logger.info(
-            "scrape_area resolved area_id=%d slug=%s dist_to_pin=%.2fkm request_id=%s",
-            area_id, area_slug, dist_km, request_id,
-        )
+        logger.info("scrape_area resolved area_id=%d slug=%s dist_to_pin=%.2fkm request_id=%s",
+                    area_id, area_slug, dist_km, request_id)
 
     scrape_do = (payload.scrape_do_token or os.getenv("SCRAPE_DO_TOKEN", "")).strip() or None
     wall_sec = float(os.getenv("SCRAPER_WALL_CLOCK_SEC", "600"))
@@ -601,11 +600,8 @@ async def scrape_area(
             loop.run_in_executor(
                 None,
                 lambda: _area_scrape_vendors_near_pin(
-                    pin_lat,
-                    pin_lng,
-                    float(payload.radius_km),
-                    area_id=area_id,
-                    area_slug=area_slug,
+                    pin_lat, pin_lng, float(payload.radius_km),
+                    area_id=area_id, area_slug=area_slug,
                     country=payload.country,
                     page_delay=float(payload.page_delay),
                     max_pages=payload.max_pages,
@@ -615,17 +611,13 @@ async def scrape_area(
             timeout=wall_sec,
         )
     except TimeoutError:
-        raise HTTPException(
-            status_code=504,
-            detail=f"Area scrape exceeded {wall_sec:.0f}s — lower max_pages or raise SCRAPER_WALL_CLOCK_SEC.",
-        ) from None
+        raise HTTPException(status_code=504,
+            detail=f"Area scrape exceeded {wall_sec:.0f}s — lower max_pages or raise SCRAPER_WALL_CLOCK_SEC.") from None
     except Exception as exc:
         logger.error("scrape_area_failed request_id=%s error=%s\n%s", request_id, exc, traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Area scrape failed: {exc}") from exc
 
     rows = [vendor_to_row(v, pin_lat=pin_lat, pin_lng=pin_lng) for v in vendors]
-
-    # Apply status filter
     if payload.status_filter == "live":
         rows = [r for r in rows if str(r.get("status") or "").lower() not in ("closed", "offline")]
     elif payload.status_filter == "closed":
@@ -634,19 +626,15 @@ async def scrape_area(
     return {
         "ok": True,
         "request_id": request_id,
->>>>>>> 02ba302 (Add map UI, /analyze endpoint, checkpoint scraping, Wafi fix)
         "count": len(rows),
         "records": rows,
         "pin_lat": pin_lat,
         "pin_lng": pin_lng,
         "radius_km": float(payload.radius_km),
-<<<<<<< HEAD
-=======
         "area_id": area_id,
         "area_slug": area_slug,
         "status_filter": payload.status_filter,
         "meta": meta,
->>>>>>> 02ba302 (Add map UI, /analyze endpoint, checkpoint scraping, Wafi fix)
     }
 
 
