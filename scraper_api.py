@@ -1103,36 +1103,61 @@ def _run_analyze_job(job_id: str) -> None:
                         job_id, i + 1, len(pins), name, lat, lng)
 
             try:
-                resolved = find_nearest_registry_area(lat, lng)
-                if resolved is None:
-                    raise ValueError("No areas in registry")
-                _key, area_id, area_slug, dist_km = resolved
-                if dist_km > 40:
-                    logger.warning("analyze_job nearest area %.1fkm away for pin %r", dist_km, name)
-
-                # Scrape all vendors in the area, then filter:
-                # - vendors WITH coordinates → keep only those within radius_km
-                # - vendors WITHOUT coordinates → keep all (area membership is enough)
                 from geo_utils import haversine_km as _hav
-                all_vendors, meta = _scrape_area_vendors(area_id, area_slug, page_delay=0.5)
-                vendors = []
-                for v in all_vendors:
-                    try:
-                        vlat = float(v.get("latitude") or 0)
-                        vlng = float(v.get("longitude") or 0)
-                    except (TypeError, ValueError):
-                        vlat = vlng = 0.0
-                    if vlat == 0.0 and vlng == 0.0:
-                        vendors.append(v)  # no coords — include, can't filter
-                    elif _hav(lat, lng, vlat, vlng) <= radius_km:
-                        v["_distance_km"] = round(_hav(lat, lng, vlat, vlng), 3)
-                        vendors.append(v)
 
-                meta["vendors_in_radius"] = len(vendors)
+                # Find ALL Talabat areas whose centre is within radius_km of the pin
+                areas_in_radius = []
+                for _akey, (_aid, _aslug, _alat, _alng) in UAE_AREA_REGISTRY.items():
+                    if _hav(lat, lng, _alat, _alng) <= radius_km:
+                        areas_in_radius.append((_aid, _aslug))
+
+                if not areas_in_radius:
+                    # Fallback: use nearest area regardless of distance
+                    resolved = find_nearest_registry_area(lat, lng)
+                    if resolved is None:
+                        raise ValueError("No areas in registry")
+                    _, _aid, _aslug, _ = resolved
+                    areas_in_radius = [(_aid, _aslug)]
+
+                logger.info("analyze_job pin=%r scraping %d areas: %s",
+                            name, len(areas_in_radius),
+                            [s for _, s in areas_in_radius])
+
+                seen_branch_ids: set = set()
+                vendors: list = []
+                total_area_vendors = 0
+                last_meta: dict = {}
+
+                for _aid, _aslug in areas_in_radius:
+                    with _ANALYZE_JOBS_LOCK:
+                        job["progress"]["current_pin"] = f"{name} ({_aslug})"
+                    area_vendors, last_meta = _scrape_area_vendors(_aid, _aslug, page_delay=0.5)
+                    total_area_vendors += len(area_vendors)
+                    for v in area_vendors:
+                        bid = v.get("branchId") or v.get("branch_id")
+                        if bid and bid in seen_branch_ids:
+                            continue
+                        if bid:
+                            seen_branch_ids.add(bid)
+                        try:
+                            vlat = float(v.get("latitude") or 0)
+                            vlng = float(v.get("longitude") or 0)
+                        except (TypeError, ValueError):
+                            vlat = vlng = 0.0
+                        if vlat == 0.0 and vlng == 0.0:
+                            vendors.append(v)  # no coords — include, area membership is enough
+                        elif _hav(lat, lng, vlat, vlng) <= radius_km:
+                            v["_distance_km"] = round(_hav(lat, lng, vlat, vlng), 3)
+                            vendors.append(v)
+
+                meta = {**last_meta,
+                        "areas_scraped": [s for _, s in areas_in_radius],
+                        "vendors_in_radius": len(vendors),
+                        "total_vendors_reported": total_area_vendors}
                 facility_vendors[name] = vendors
                 facility_meta[name] = meta
-                logger.info("analyze_job pin=%r done vendors_in_radius=%d total_area=%d",
-                            name, len(vendors), len(all_vendors))
+                logger.info("analyze_job pin=%r done areas=%d unique_vendors=%d",
+                            name, len(areas_in_radius), len(vendors))
             except Exception as exc:
                 logger.error("analyze_job pin=%r failed: %s", name, exc)
                 facility_vendors[name] = []
