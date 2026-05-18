@@ -4,13 +4,19 @@ import asyncio
 import logging
 import os
 import sys
+import threading
+import time as _time
 import traceback
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
 
 import requests
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from google_coverage import fetch_google_nearby_restaurants, google_coverage_enabled
@@ -21,13 +27,19 @@ from scrape_network import outbound_proxy_source
 from scrape_job_store import job_store_dir, load_job_record, persist_job_record
 from scrape_engine import run_area_scrape
 from uae_cities import resolve_city
+from area_page_scraper import (
+    scrape_vendors_near_pin as _area_scrape_vendors_near_pin,
+    vendor_to_row,
+    UAE_AREA_REGISTRY,
+    find_nearest_registry_area,
+)
 
 _AREA_INTEL_LOG_HANDLER_ATTR = "_talabat_area_intel_stderr"
 
 
 @asynccontextmanager
 async def _app_lifespan(app: FastAPI):
-    """Ensure ``talabat_area_intel.*`` INFO lines reach Docker logs (uvicorn often leaves root at WARNING)."""
+    """Ensure ``talabat_area_intel.*`` INFO lines reach Docker logs."""
     talabat = logging.getLogger("talabat_area_intel")
     talabat.setLevel(logging.INFO)
     if not any(getattr(h, _AREA_INTEL_LOG_HANDLER_ATTR, False) for h in talabat.handlers):
@@ -41,6 +53,23 @@ async def _app_lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Talabat Area Scraper API", version="1.0.0", lifespan=_app_lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+_STATIC_DIR = Path(__file__).parent / "static"
+_STATIC_DIR.mkdir(exist_ok=True)
+app.mount("/ui", StaticFiles(directory=str(_STATIC_DIR), html=True), name="static")
+
+_ANALYZE_JOBS: dict[str, dict] = {}
+_ANALYZE_JOBS_LOCK = threading.Lock()
+_ANALYZE_JOBS_DIR = Path(__file__).parent / "analyze_jobs"
+_ANALYZE_JOBS_DIR.mkdir(exist_ok=True)
 logger = logging.getLogger("talabat_area_intel.api")
 _JOB_RESULTS: dict[str, dict] = {}
 _JOB_LOCK = asyncio.Lock()
@@ -499,6 +528,7 @@ def google_coverage(payload: GoogleCoverageRequest, x_api_key: str | None = Head
     }
 
 
+<<<<<<< HEAD
 @app.post("/foursquare-coverage")
 def foursquare_coverage(payload: FoursquareCoverageRequest, x_api_key: str | None = Header(default=None)) -> dict:
     verify_api_key(x_api_key)
@@ -513,11 +543,110 @@ def foursquare_coverage(payload: FoursquareCoverageRequest, x_api_key: str | Non
     rows = fetch_foursquare_nearby_restaurants(pin_lat=pin_lat, pin_lng=pin_lng, radius_km=float(payload.radius_km))
     return {
         "ok": True,
+=======
+class AreaScrapeRequest(BaseModel):
+    pin_lat: float = Field(default=25.1865, description="Search center latitude")
+    pin_lng: float = Field(default=55.2642, description="Search center longitude")
+    radius_km: float = Field(default=10.0, ge=1.0, le=30.0)
+    area_id: int | None = Field(default=None, description="Talabat area ID (auto-resolved from registry if omitted)")
+    area_slug: str | None = Field(default=None, description="Talabat area slug e.g. 'business-bay' (required if area_id set)")
+    country: str = Field(default="uae", description="Talabat country path: uae, egypt, etc.")
+    page_delay: float = Field(default=0.4, ge=0.0, le=5.0, description="Delay (seconds) between page fetches")
+    max_pages: int | None = Field(default=None, ge=1, description="Cap page count (default: scrape all pages)")
+    status_filter: str = Field(default="live", description="live | all | closed")
+    scrape_do_token: str | None = Field(default=None, description="Optional scrape.do / proxy token")
+
+
+@app.post("/scrape-area")
+async def scrape_area(
+    payload: AreaScrapeRequest,
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+) -> dict:
+    """
+    Scrape Talabat vendor listings for an area using __NEXT_DATA__ pagination (no Playwright).
+
+    Resolves the nearest registered area for the given pin, fetches all pages,
+    and returns vendors within radius_km filtered by actual restaurant coordinates.
+    """
+    request_id = getattr(request.state, "request_id", "") or uuid.uuid4().hex
+    verify_api_key(x_api_key)
+
+    if payload.status_filter not in {"all", "live", "closed"}:
+        raise HTTPException(status_code=400, detail="status_filter must be one of: all, live, closed")
+
+    pin_lat, pin_lng = validate_scrape_pin(payload.pin_lat, payload.pin_lng)
+    area_id = payload.area_id
+    area_slug = payload.area_slug
+
+    if (area_id is None) != (area_slug is None):
+        raise HTTPException(status_code=400, detail="Provide both area_id and area_slug, or neither (auto-resolve).")
+
+    if area_id is None:
+        resolved = find_nearest_registry_area(pin_lat, pin_lng)
+        if resolved is None:
+            raise HTTPException(status_code=400, detail="area_id/area_slug required — area registry is empty.")
+        _key, area_id, area_slug, dist_km = resolved
+        logger.info(
+            "scrape_area resolved area_id=%d slug=%s dist_to_pin=%.2fkm request_id=%s",
+            area_id, area_slug, dist_km, request_id,
+        )
+
+    scrape_do = (payload.scrape_do_token or os.getenv("SCRAPE_DO_TOKEN", "")).strip() or None
+    wall_sec = float(os.getenv("SCRAPER_WALL_CLOCK_SEC", "600"))
+
+    try:
+        loop = asyncio.get_running_loop()
+        vendors, meta = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: _area_scrape_vendors_near_pin(
+                    pin_lat,
+                    pin_lng,
+                    float(payload.radius_km),
+                    area_id=area_id,
+                    area_slug=area_slug,
+                    country=payload.country,
+                    page_delay=float(payload.page_delay),
+                    max_pages=payload.max_pages,
+                    scrape_do_token=scrape_do,
+                ),
+            ),
+            timeout=wall_sec,
+        )
+    except TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Area scrape exceeded {wall_sec:.0f}s — lower max_pages or raise SCRAPER_WALL_CLOCK_SEC.",
+        ) from None
+    except Exception as exc:
+        logger.error("scrape_area_failed request_id=%s error=%s\n%s", request_id, exc, traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Area scrape failed: {exc}") from exc
+
+    rows = [vendor_to_row(v, pin_lat=pin_lat, pin_lng=pin_lng) for v in vendors]
+
+    # Apply status filter
+    if payload.status_filter == "live":
+        rows = [r for r in rows if str(r.get("status") or "").lower() not in ("closed", "offline")]
+    elif payload.status_filter == "closed":
+        rows = [r for r in rows if str(r.get("status") or "").lower() in ("closed", "offline")]
+
+    return {
+        "ok": True,
+        "request_id": request_id,
+>>>>>>> 02ba302 (Add map UI, /analyze endpoint, checkpoint scraping, Wafi fix)
         "count": len(rows),
         "records": rows,
         "pin_lat": pin_lat,
         "pin_lng": pin_lng,
         "radius_km": float(payload.radius_km),
+<<<<<<< HEAD
+=======
+        "area_id": area_id,
+        "area_slug": area_slug,
+        "status_filter": payload.status_filter,
+        "meta": meta,
+>>>>>>> 02ba302 (Add map UI, /analyze endpoint, checkpoint scraping, Wafi fix)
     }
 
 
@@ -808,3 +937,187 @@ async def _execute_scrape(payload: ScrapeRequest, *, request_id: str) -> dict:
             traceback.format_exc(),
         )
         raise HTTPException(status_code=500, detail=f"Scrape failed: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# /analyze — multi-pin whitespace analysis with background job + Excel export
+# ---------------------------------------------------------------------------
+
+class AnalyzePinRequest(BaseModel):
+    name: str = Field(description="Label for this pin (e.g. 'Business Bay')")
+    lat: float
+    lng: float
+    radius_km: float = Field(default=10.0, ge=1.0, le=30.0)
+
+
+class AnalyzeRequest(BaseModel):
+    pins: list[AnalyzePinRequest]
+
+
+@app.post("/analyze")
+def submit_analyze(
+    payload: AnalyzeRequest,
+    x_api_key: str | None = Header(default=None),
+) -> dict:
+    verify_api_key(x_api_key)
+    if not payload.pins:
+        raise HTTPException(status_code=400, detail="pins list cannot be empty")
+
+    job_id = uuid.uuid4().hex
+    job: dict = {
+        "job_id": job_id,
+        "status": "queued",
+        "pins": [p.dict() for p in payload.pins],
+        "progress": {"current": 0, "total": len(payload.pins), "current_pin": None},
+        "created_at": datetime.now().isoformat(),
+        "output_file": None,
+        "result_summary": None,
+        "error": None,
+    }
+    with _ANALYZE_JOBS_LOCK:
+        _ANALYZE_JOBS[job_id] = job
+
+    t = threading.Thread(target=_run_analyze_job, args=(job_id,), daemon=True)
+    t.start()
+
+    return {"ok": True, "job_id": job_id, "total_pins": len(payload.pins)}
+
+
+@app.get("/analyze/{job_id}")
+def get_analyze_job(
+    job_id: str,
+    x_api_key: str | None = Header(default=None),
+) -> dict:
+    verify_api_key(x_api_key)
+    with _ANALYZE_JOBS_LOCK:
+        job = dict(_ANALYZE_JOBS.get(job_id) or {})
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "status": job["status"],
+        "progress": job["progress"],
+        "created_at": job.get("created_at"),
+        "result_summary": job.get("result_summary"),
+        "error": job.get("error"),
+    }
+
+
+@app.get("/analyze/{job_id}/download")
+def download_analyze(
+    job_id: str,
+    x_api_key: str | None = Header(default=None),
+) -> FileResponse:
+    verify_api_key(x_api_key)
+    with _ANALYZE_JOBS_LOCK:
+        job = dict(_ANALYZE_JOBS.get(job_id) or {})
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job["status"] != "complete":
+        raise HTTPException(status_code=400, detail=f"Job not complete yet: {job['status']}")
+    output_file = job.get("output_file") or ""
+    if not output_file or not Path(output_file).exists():
+        raise HTTPException(status_code=404, detail="Output file not found")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    return FileResponse(
+        path=output_file,
+        filename=f"kp_whitespace_{timestamp}.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+def _run_analyze_job(job_id: str) -> None:
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent))
+    from whitespace_analysis import build_matrix, export_excel, FACILITIES
+
+    with _ANALYZE_JOBS_LOCK:
+        job = _ANALYZE_JOBS[job_id]
+        job["status"] = "running"
+
+    pins = job["pins"]
+    facility_vendors: dict[str, list[dict]] = {}
+    facility_meta: dict[str, dict] = {}
+
+    try:
+        for i, pin in enumerate(pins):
+            name = pin["name"]
+            lat = float(pin["lat"])
+            lng = float(pin["lng"])
+            radius_km = float(pin.get("radius_km", 10.0))
+
+            with _ANALYZE_JOBS_LOCK:
+                job["progress"]["current"] = i
+                job["progress"]["current_pin"] = name
+
+            logger.info("analyze_job job_id=%s pin=%d/%d name=%r lat=%.5f lng=%.5f",
+                        job_id, i + 1, len(pins), name, lat, lng)
+
+            try:
+                resolved = find_nearest_registry_area(lat, lng)
+                if resolved is None:
+                    raise ValueError("No areas in registry")
+                _key, area_id, area_slug, dist_km = resolved
+                if dist_km > 40:
+                    logger.warning("analyze_job nearest area %.1fkm away for pin %r — results may be 0", dist_km, name)
+
+                vendors, meta = _area_scrape_vendors_near_pin(
+                    lat, lng, radius_km,
+                    area_id=area_id,
+                    area_slug=area_slug,
+                    page_delay=0.5,
+                )
+                facility_vendors[name] = vendors
+                facility_meta[name] = meta
+                logger.info("analyze_job pin=%r done vendors_in_radius=%d", name, len(vendors))
+            except Exception as exc:
+                logger.error("analyze_job pin=%r failed: %s", name, exc)
+                facility_vendors[name] = []
+                facility_meta[name] = {"error": str(exc)}
+
+            if i < len(pins) - 1:
+                _time.sleep(15)
+
+        with _ANALYZE_JOBS_LOCK:
+            job["progress"]["current"] = len(pins)
+            job["progress"]["current_pin"] = "Building report..."
+
+        facilities_meta_list = [
+            {"name": p["name"], "emirate": "UAE", "go_live": "Live",
+             "lat": p["lat"], "lng": p["lng"]}
+            for p in pins
+        ]
+
+        matrix_df, raw_df = build_matrix(facility_vendors)
+
+        if not matrix_df.empty:
+            fac_cols = [c for c in matrix_df.columns if c not in ("restaurant_id", "brand_name", "cuisine")]
+            matrix_df["_tb"] = matrix_df[fac_cols].sum(axis=1)
+            matrix_df["_tf"] = (matrix_df[fac_cols] > 0).sum(axis=1)
+            matrix_df = (
+                matrix_df
+                .sort_values(["_tf", "_tb", "brand_name"], ascending=[False, False, True])
+                .drop(columns=["_tb", "_tf"])
+                .reset_index(drop=True)
+            )
+
+        output_file = str(_ANALYZE_JOBS_DIR / f"analysis_{job_id}.xlsx")
+        export_excel(matrix_df, raw_df, facilities_meta_list, facility_meta, output_file, radius_km=10.0)
+
+        with _ANALYZE_JOBS_LOCK:
+            job["status"] = "complete"
+            job["output_file"] = output_file
+            job["progress"]["current_pin"] = None
+            job["result_summary"] = {
+                "brands": len(matrix_df),
+                "raw_rows": len(raw_df),
+                "pins": len(pins),
+            }
+        logger.info("analyze_job complete job_id=%s brands=%d raw=%d", job_id, len(matrix_df), len(raw_df))
+
+    except Exception as exc:
+        logger.error("analyze_job failed job_id=%s: %s\n%s", job_id, exc, traceback.format_exc())
+        with _ANALYZE_JOBS_LOCK:
+            job["status"] = "failed"
+            job["error"] = str(exc)
