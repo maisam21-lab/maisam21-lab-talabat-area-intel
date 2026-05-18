@@ -381,6 +381,23 @@
       <div id="search-hint">Press Enter or click search, then click map to drop a pin</div>
     </div>
 
+    <!-- Manual coordinates -->
+    <div class="sidebar-section">
+      <h3><i class="fa-solid fa-crosshairs"></i> Add by Coordinates</h3>
+      <div style="display:flex; gap:6px; margin-bottom:8px;">
+        <input id="coord-lat" type="number" step="any" placeholder="Latitude" title="Latitude"
+          style="flex:1; padding:8px 10px; border:1px solid #d0d8e4; border-radius:8px; font-size:13px; outline:none;"
+          onkeydown="if(event.key==='Enter') addPinFromCoords()" />
+        <input id="coord-lng" type="number" step="any" placeholder="Longitude" title="Longitude"
+          style="flex:1; padding:8px 10px; border:1px solid #d0d8e4; border-radius:8px; font-size:13px; outline:none;"
+          onkeydown="if(event.key==='Enter') addPinFromCoords()" />
+      </div>
+      <button onclick="addPinFromCoords()" style="width:100%; padding:8px; background:var(--kp-mid); color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer;">
+        <i class="fa-solid fa-map-pin"></i> Add Pin at Coordinates
+      </button>
+      <div id="coord-hint" style="font-size:11px; color:#9aabb8; margin-top:6px;">e.g. 25.1972, 55.2744</div>
+    </div>
+
     <!-- Radius -->
     <div class="sidebar-section">
       <h3><i class="fa-solid fa-circle-dot"></i> Scrape Radius</h3>
@@ -502,10 +519,10 @@ let pinIdSeq = 0;
 // ── Map init ──────────────────────────────────────────────────
 const map = L.map('map', { center: [25.2048, 55.2708], zoom: 11 });
 
-L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-  subdomains: 'abcd',
-  maxZoom: 19,
+L.tileLayer('https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+  attribution: '&copy; <a href="https://maps.google.com">Google Maps</a>',
+  subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
+  maxZoom: 20,
 }).addTo(map);
 
 // Click on map → open name modal (only if not dragging)
@@ -685,6 +702,28 @@ function confirmPin() {
 function cancelPin() {
   state.pendingLatLng = null;
   document.getElementById('pin-name-modal').classList.remove('open');
+}
+
+function addPinFromCoords() {
+  const latVal = document.getElementById('coord-lat').value.trim();
+  const lngVal = document.getElementById('coord-lng').value.trim();
+  const hint   = document.getElementById('coord-hint');
+  const lat = parseFloat(latVal);
+  const lng = parseFloat(lngVal);
+  if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    hint.style.color = '#c53030';
+    hint.textContent = 'Enter valid lat (−90→90) and lng (−180→180)';
+    return;
+  }
+  hint.style.color = '#9aabb8';
+  hint.textContent = 'e.g. 25.1972, 55.2744';
+  state.pendingLatLng = { lat, lng };
+  const input = document.getElementById('pin-name-input');
+  input.value = '';
+  document.getElementById('pin-name-modal').classList.add('open');
+  setTimeout(() => input.focus(), 100);
+  document.getElementById('coord-lat').value = '';
+  document.getElementById('coord-lng').value = '';
 }
 
 // ── Search ────────────────────────────────────────────────────
