@@ -9,6 +9,10 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
+  <!-- Google Maps API (English) + Mutant plugin for Leaflet -->
+  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyA-wBQ5OlhNcqLet2OM6kJLBRInSXEtijw&language=en&region=AE"></script>
+  <script src="https://unpkg.com/leaflet.gridlayer.googlemutant@0.14.0/dist/Leaflet.GoogleMutant.js"></script>
+
   <!-- Icons -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
 
@@ -519,11 +523,7 @@ let pinIdSeq = 0;
 // ── Map init ──────────────────────────────────────────────────
 const map = L.map('map', { center: [25.2048, 55.2708], zoom: 11 });
 
-L.tileLayer('https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
-  attribution: '&copy; <a href="https://maps.google.com">Google Maps</a>',
-  subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
-  maxZoom: 20,
-}).addTo(map);
+L.gridLayer.googleMutant({ type: 'roadmap', maxZoom: 21 }).addTo(map);
 
 // Click on map → open name modal (only if not dragging)
 map.on('click', (e) => {
