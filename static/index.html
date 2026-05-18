@@ -265,6 +265,28 @@
       box-shadow: 0 2px 8px rgba(0,0,0,.35);
     }
 
+    /* KP layer toggle */
+    #kp-toggle {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 800;
+      background: #fff;
+      border: 2px solid #1B3A26;
+      color: #1B3A26;
+      border-radius: 8px;
+      padding: 7px 13px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,.2);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: background .2s, color .2s;
+    }
+    #kp-toggle.active { background: #1B3A26; color: #fff; }
+
     /* Click hint */
     #map-hint {
       position: absolute;
@@ -463,7 +485,11 @@
   </div>
 
   <!-- Map -->
-  <div id="map"></div>
+  <div id="map" style="position:relative;">
+    <button id="kp-toggle" class="active" onclick="toggleKpLayer()" title="Show/hide KP facilities">
+      <i class="fa-solid fa-building"></i> KP Facilities
+    </button>
+  </div>
 </div>
 
 <!-- Click hint -->
@@ -504,6 +530,35 @@
 </div>
 
 <script>
+// ── KP Facilities data ────────────────────────────────────────
+const KP_FACILITIES = [
+  {name:"Business Bay 1",  emirate:"Dubai",     status:"Live",   lat:25.1894021, lng:55.2892571},
+  {name:"JLT (1)",         emirate:"Dubai",     status:"Live",   lat:25.0802475, lng:55.1512831},
+  {name:"Motor City",      emirate:"Dubai",     status:"Live",   lat:25.0469210, lng:55.2303106},
+  {name:"Arjan",           emirate:"Dubai",     status:"Live",   lat:25.0645000, lng:55.2393000},
+  {name:"DSO 1",           emirate:"Dubai",     status:"Live",   lat:25.1282034, lng:55.3922505},
+  {name:"Bur Dubai",       emirate:"Dubai",     status:"Live",   lat:25.2460615, lng:55.2759454},
+  {name:"IMPZ (1)",        emirate:"Dubai",     status:"Live",   lat:25.0383700, lng:55.1861500},
+  {name:"COL",             emirate:"Abu Dhabi", status:"Live",   lat:24.4989329, lng:54.4031167},
+  {name:"Mirdif",          emirate:"Dubai",     status:"Live",   lat:25.2347469, lng:55.4310875},
+  {name:"Sufouh",          emirate:"Dubai",     status:"Live",   lat:25.1103251, lng:55.1780541},
+  {name:"Deira",           emirate:"Dubai",     status:"Live",   lat:25.2698737, lng:55.3323663},
+  {name:"Wafi",            emirate:"Dubai",     status:"Live",   lat:25.2297643, lng:55.3189516},
+  {name:"Quoz (1)",        emirate:"Dubai",     status:"Live",   lat:25.1403704, lng:55.2446225},
+  {name:"Arjan (3) - EK",  emirate:"Dubai",     status:"Live",   lat:25.0656802, lng:55.2354685},
+  {name:"Hessa (2) - EK",  emirate:"Dubai",     status:"Live",   lat:25.0831785, lng:55.2018668},
+  {name:"Raha (1) - EK",   emirate:"Abu Dhabi", status:"Live",   lat:24.4389739, lng:54.5742641},
+  {name:"Sharjah Centre",  emirate:"Sharjah",   status:"Live",   lat:25.3376961, lng:55.4008590},
+  {name:"Muwaileh - EK",   emirate:"Sharjah",   status:"Live",   lat:25.3045405, lng:55.4698694},
+  {name:"DIC",             emirate:"Dubai",     status:"Future", lat:25.0930000, lng:55.1528000},
+  {name:"Jabal Ali",       emirate:"Dubai",     status:"Future", lat:24.9903930, lng:55.1427240},
+  {name:"Warsan",          emirate:"Dubai",     status:"Future", lat:25.1651944, lng:55.4281111},
+  {name:"Al Nahyan",       emirate:"Abu Dhabi", status:"Future", lat:24.4640062, lng:54.3792994},
+  {name:"Shamkha (2)",     emirate:"Abu Dhabi", status:"Future", lat:24.3293056, lng:54.6898333},
+  {name:"Jimi",            emirate:"Al Ain",    status:"Future", lat:24.2604203, lng:55.7209785},
+  {name:"Falah",           emirate:"Sharjah",   status:"Future", lat:25.3261944, lng:55.4719167},
+];
+
 // ── Config ────────────────────────────────────────────────────
 const cfg = {
   get url() { return localStorage.getItem('kp_api_url') || (location.origin.startsWith('file') ? 'http://178.105.56.187:8000' : location.origin); },
@@ -539,6 +594,55 @@ document.getElementById('pin-name-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') confirmPin();
   if (e.key === 'Escape') cancelPin();
 });
+
+// ── KP Facility layer ─────────────────────────────────────────
+const kpLayerGroup = L.layerGroup().addTo(map);
+
+function makeKpIcon(status) {
+  const color  = status === 'Live' ? '#1B3A26' : '#9aabb8';
+  const border = status === 'Live' ? '#fff'    : '#ccd6e0';
+  return L.divIcon({
+    className: '',
+    html: `<div style="
+      width:22px; height:22px;
+      background:${color}; border:3px solid ${border};
+      border-radius:4px; transform:rotate(45deg);
+      box-shadow:0 2px 8px rgba(0,0,0,.4);
+    "></div>`,
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+    popupAnchor: [0, -14],
+  });
+}
+
+KP_FACILITIES.forEach(fac => {
+  const marker = L.marker([fac.lat, fac.lng], { icon: makeKpIcon(fac.status) });
+  marker.bindPopup(`
+    <div style="min-width:170px;">
+      <div style="font-weight:700; font-size:14px; color:#1B3A26;">${escHtml(fac.name)}</div>
+      <div style="font-size:12px; color:#666; margin-top:2px;">${fac.emirate}</div>
+      <div style="margin-top:6px;">
+        <span style="
+          background:${fac.status==='Live'?'#C6DDD0':'#e9eef4'};
+          color:${fac.status==='Live'?'#1B3A26':'#7a8899'};
+          padding:2px 8px; border-radius:10px; font-size:11px; font-weight:700;
+        ">${fac.status === 'Live' ? '● Live' : '○ Future'}</span>
+      </div>
+    </div>
+  `);
+  kpLayerGroup.addLayer(marker);
+});
+
+function toggleKpLayer() {
+  const btn = document.getElementById('kp-toggle');
+  if (map.hasLayer(kpLayerGroup)) {
+    map.removeLayer(kpLayerGroup);
+    btn.classList.remove('active');
+  } else {
+    map.addLayer(kpLayerGroup);
+    btn.classList.add('active');
+  }
+}
 
 // ── Pin management ────────────────────────────────────────────
 function makePinIcon(color) {

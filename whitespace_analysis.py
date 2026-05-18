@@ -214,7 +214,9 @@ def export_excel(
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         # ── Sheet 1: Matrix ───────────────────────────────────────────────────
         if not matrix_df.empty:
-            facility_cols = [c for c in matrix_df.columns if c not in ("restaurant_id", "brand_name", "cuisine")]
+            _kp_extra = [c for c in ("kp_tenant", "kp_facilities", "opportunity") if c in matrix_df.columns]
+            _fixed = ["restaurant_id", "brand_name", "cuisine"] + _kp_extra
+            facility_cols = [c for c in matrix_df.columns if c not in _fixed]
 
             # Replace counts with ✓ / blank for readability (keep counts as tooltips via cell value)
             display_df = matrix_df.copy()
@@ -247,16 +249,62 @@ def export_excel(
             ws.column_dimensions["A"].width = 10   # restaurant_id
             ws.column_dimensions["B"].width = 30   # brand_name
             ws.column_dimensions["C"].width = 22   # cuisine
-            for i, col in enumerate(facility_cols, start=4):
+            # KP extra columns
+            from openpyxl.styles import PatternFill as _PF, Font as _F
+            _kp_green_fill = _PF(start_color="1B3A26", end_color="1B3A26", fill_type="solid")
+            _kp_opp_fill   = _PF(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+            for i, col_name in enumerate(_kp_extra, start=4):
+                col_letter = ws.cell(row=1, column=i).column_letter
+                ws.column_dimensions[col_letter].width = 18
+                ws.cell(row=1, column=i).fill = _kp_green_fill
+                ws.cell(row=1, column=i).font = _F(color="FFFFFF", bold=True)
+            # Opportunity column: highlight cells
+            if "opportunity" in _kp_extra:
+                opp_col_idx = _fixed.index("opportunity") + 1
+                for row in ws.iter_rows(min_row=2, min_col=opp_col_idx, max_col=opp_col_idx):
+                    for cell in row:
+                        if cell.value and "Opportunity" in str(cell.value):
+                            cell.fill = _kp_opp_fill
+            for i, col in enumerate(facility_cols, start=4 + len(_kp_extra)):
                 col_letter = ws.cell(row=1, column=i).column_letter
                 ws.column_dimensions[col_letter].width = 14
-            ws.freeze_panes = "D2"
+            ws.freeze_panes = ws.cell(row=2, column=4 + len(_kp_extra)).coordinate
 
-        # ── Sheet 2: Raw Records ──────────────────────────────────────────────
+        # ── Sheet 2: KP Whitespace (opportunity brands) ──────────────────────
+        if not matrix_df.empty and "opportunity" in matrix_df.columns:
+            from openpyxl.styles import PatternFill, Font, Alignment
+            opp_df = matrix_df[matrix_df["opportunity"] == "⭐ Opportunity"].copy()
+            opp_cols = ["brand_name", "cuisine", "opportunity", "kp_facilities"] + \
+                       [c for c in matrix_df.columns if c not in
+                        ("restaurant_id", "brand_name", "cuisine", "kp_tenant", "kp_facilities", "opportunity")]
+            opp_cols = [c for c in opp_cols if c in opp_df.columns]
+            opp_display = opp_df[opp_cols].copy()
+            # Show branch counts (not ✓) in opportunity sheet so it's more informative
+            opp_display.to_excel(writer, sheet_name="KP Whitespace", index=False)
+            ws2 = writer.sheets["KP Whitespace"]
+            opp_fill  = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+            head_fill = PatternFill(start_color="1B3A26", end_color="1B3A26", fill_type="solid")
+            head_font = Font(color="FFFFFF", bold=True)
+            for cell in ws2[1]:
+                cell.fill = head_fill
+                cell.font = head_font
+                cell.alignment = Alignment(horizontal="center", wrap_text=True)
+            for row in ws2.iter_rows(min_row=2):
+                for cell in row:
+                    if cell.value == "⭐ Opportunity":
+                        cell.fill = opp_fill
+            ws2.column_dimensions["A"].width = 30
+            ws2.column_dimensions["B"].width = 22
+            ws2.freeze_panes = "A2"
+
+        # ── Sheet 3: Matrix ── now moved after whitespace ─────────────────────
+        # (Matrix sheet already written above as Sheet 1; this comment is a placeholder)
+
+        # ── Sheet 4: Raw Records ──────────────────────────────────────────────
         if not raw_df.empty:
             raw_df.to_excel(writer, sheet_name="Raw Records", index=False)
 
-        # ── Sheet 3: Facilities ───────────────────────────────────────────────
+        # ── Sheet 5: Facilities ───────────────────────────────────────────────
         fac_rows = []
         for f in facilities:
             meta = facility_meta.get(f["name"], {})

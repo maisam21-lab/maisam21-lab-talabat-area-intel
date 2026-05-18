@@ -1015,6 +1015,65 @@ def download_analyze(
     )
 
 
+KP_TENANT_RADIUS_KM = 1.5  # vendor within this distance from a KP facility = KP tenant
+
+
+def _enrich_kp_proximity(
+    matrix_df: "pd.DataFrame",
+    raw_df: "pd.DataFrame",
+    facilities: list[dict],
+) -> tuple["pd.DataFrame", "pd.DataFrame"]:
+    """
+    Add KP-presence columns to both dataframes.
+
+    raw_df  → kp_nearest_facility, kp_nearest_km, kp_tenant (Yes/No)
+    matrix_df → kp_tenant (Yes/No), kp_facilities (comma-sep list), opportunity (Yes = not a KP tenant)
+    """
+    import pandas as pd
+    from geo_utils import haversine_series_km_from_pin
+
+    live_facs = [f for f in facilities if str(f.get("go_live", "")).lower() == "live"]
+    if raw_df.empty or not live_facs:
+        return matrix_df, raw_df
+
+    lat_col = pd.to_numeric(raw_df.get("latitude", pd.Series()), errors="coerce")
+    lng_col = pd.to_numeric(raw_df.get("longitude", pd.Series()), errors="coerce")
+
+    # Distance matrix: one column per KP facility
+    dist_cols = {}
+    for fac in live_facs:
+        d = haversine_series_km_from_pin(fac["lat"], fac["lng"], lat_col, lng_col)
+        dist_cols[fac["name"]] = d
+
+    dist_df = pd.DataFrame(dist_cols, index=raw_df.index)
+    raw_df = raw_df.copy()
+    raw_df["kp_nearest_facility"] = dist_df.idxmin(axis=1)
+    raw_df["kp_nearest_km"]       = dist_df.min(axis=1).round(2)
+    raw_df["kp_tenant"]           = (dist_df.min(axis=1) <= KP_TENANT_RADIUS_KM).map({True: "Yes", False: "No"})
+
+    # Aggregate to matrix level using restaurant_id
+    if matrix_df.empty:
+        return matrix_df, raw_df
+
+    rid_col = "restaurant_id"
+    if rid_col not in raw_df.columns:
+        return matrix_df, raw_df
+
+    # For each brand (restaurant_id), collect KP facilities where at least one branch is a tenant
+    tenant_rows = raw_df[raw_df["kp_tenant"] == "Yes"]
+    brand_kp: dict = {}
+    for rid, grp in tenant_rows.groupby(rid_col, dropna=False):
+        facs_for_brand = sorted(set(grp["kp_nearest_facility"].dropna().tolist()))
+        brand_kp[rid] = ", ".join(facs_for_brand)
+
+    matrix_df = matrix_df.copy()
+    matrix_df["kp_tenant"]     = matrix_df[rid_col].map(lambda r: "Yes" if r in brand_kp else "No")
+    matrix_df["kp_facilities"] = matrix_df[rid_col].map(lambda r: brand_kp.get(r, ""))
+    matrix_df["opportunity"]   = matrix_df["kp_tenant"].map({"No": "⭐ Opportunity", "Yes": ""})
+
+    return matrix_df, raw_df
+
+
 def _run_analyze_job(job_id: str) -> None:
     import sys
     sys.path.insert(0, str(Path(__file__).parent))
@@ -1089,6 +1148,9 @@ def _run_analyze_job(job_id: str) -> None:
                 .drop(columns=["_tb", "_tf"])
                 .reset_index(drop=True)
             )
+
+        # ── KP facility proximity enrichment ─────────────────────────────────
+        matrix_df, raw_df = _enrich_kp_proximity(matrix_df, raw_df, FACILITIES)
 
         output_file = str(_ANALYZE_JOBS_DIR / f"analysis_{job_id}.xlsx")
         export_excel(matrix_df, raw_df, facilities_meta_list, facility_meta, output_file, radius_km=10.0)
