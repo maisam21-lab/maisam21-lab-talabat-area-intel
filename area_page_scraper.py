@@ -209,6 +209,7 @@ def scrape_area_vendors(
     max_pages: int | None = None,
     scrape_do_token: str | None = None,
     timeout: float = 30.0,
+    session: "requests.Session | None" = None,
 ) -> tuple[list[dict], dict]:
     """
     Fetch all vendors for a Talabat area by iterating ?page=N.
@@ -217,7 +218,7 @@ def scrape_area_vendors(
     - vendors: flat list of raw vendor dicts (all pages combined)
     - meta: {area_id, area_slug, total_vendors, pages_fetched, area_info}
     """
-    session = _make_session(scrape_do_token)
+    session = session or _make_session(scrape_do_token)
     all_vendors: list[dict] = []
     area_info: dict | None = None
     total_vendors = 0
@@ -251,17 +252,29 @@ def scrape_area_vendors(
         area_id, area_slug, total_vendors, total_pages,
     )
 
+    consecutive_empty = 0
     for page in range(2, total_pages + 1):
         if page_delay > 0:
             time.sleep(page_delay)
         nd = fetch_area_page(area_id, area_slug, page, country=country, session=session, timeout=timeout)
         if nd is None:
-            logger.warning("area=%s/%s page=%d fetch failed — stopping early", area_id, area_slug, page)
-            break
+            consecutive_empty += 1
+            logger.warning("area=%s/%s page=%d fetch failed (empty=%d)", area_id, area_slug, page, consecutive_empty)
+            if consecutive_empty >= 3:
+                logger.warning("area=%s/%s stopping after %d consecutive failures", area_id, area_slug, consecutive_empty)
+                break
+            time.sleep(5 * consecutive_empty)  # back off before retry
+            continue
         page_vendors, _ = _extract_vendors_from_next_data(nd)
         if not page_vendors:
-            logger.info("area=%s/%s page=%d returned 0 vendors — stopping", area_id, area_slug, page)
-            break
+            consecutive_empty += 1
+            logger.info("area=%s/%s page=%d returned 0 vendors (empty=%d)", area_id, area_slug, page, consecutive_empty)
+            if consecutive_empty >= 3:
+                logger.info("area=%s/%s stopping after %d consecutive empty pages", area_id, area_slug, consecutive_empty)
+                break
+            time.sleep(5 * consecutive_empty)
+            continue
+        consecutive_empty = 0
         all_vendors.extend(page_vendors)
         if page % 20 == 0 or page == total_pages:
             logger.info(

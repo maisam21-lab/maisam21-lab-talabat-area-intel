@@ -1088,6 +1088,16 @@ def _run_analyze_job(job_id: str) -> None:
     facility_vendors: dict[str, list[dict]] = {}
     facility_meta: dict[str, dict] = {}
 
+    # One shared session with proxy for the whole job — avoids per-area rate-limit resets
+    import requests as _requests
+    from scrape_network import requests_proxies_from_env as _proxies_from_env
+    _job_session = _requests.Session()
+    _job_session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+    _proxies = _proxies_from_env()
+    if _proxies:
+        _job_session.proxies.update(_proxies)
+        logger.info("analyze_job using proxy: %s", list(_proxies.keys()))
+
     try:
         for i, pin in enumerate(pins):
             name = pin["name"]
@@ -1131,7 +1141,7 @@ def _run_analyze_job(job_id: str) -> None:
                 for _aid, _aslug in areas_in_radius:
                     with _ANALYZE_JOBS_LOCK:
                         job["progress"]["current_pin"] = f"{name} ({_aslug})"
-                    area_vendors, last_meta = _scrape_area_vendors(_aid, _aslug, page_delay=0.5)
+                    area_vendors, last_meta = _scrape_area_vendors(_aid, _aslug, page_delay=0.5, session=_job_session)
                     total_area_vendors += len(area_vendors)
                     for v in area_vendors:
                         bid = v.get("branchId") or v.get("branch_id")
