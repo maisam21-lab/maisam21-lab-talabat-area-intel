@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>KP Market Intelligence</title>
+  <title>NAMAA Market Intelligence</title>
 
   <!-- Leaflet map -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -16,11 +16,11 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --kp-blue:    #1F4E79;
-      --kp-mid:     #2E75B6;
-      --kp-light:   #BDD7EE;
-      --kp-green:   #375623;
-      --kp-green-bg:#E2EFDA;
+      --kp-blue:    #1B3A26;
+      --kp-mid:     #2D5C3C;
+      --kp-light:   #C6DDD0;
+      --kp-green:   #1B3A26;
+      --kp-green-bg:#EAF3EE;
       --sidebar-w:  340px;
       --header-h:   56px;
     }
@@ -352,10 +352,14 @@
 
 <!-- ── Header ──────────────────────────────────────────────── -->
 <header>
-  <i class="fa-solid fa-chart-simple" style="font-size:20px;"></i>
+  <!-- NAMAA gear logo mark -->
+  <svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="18" cy="18" r="18" fill="#2D5C3C"/>
+    <path d="M18 10.5a1.5 1.5 0 0 1 1.5 1.5v1.07a6.01 6.01 0 0 1 2.18 1.26l.93-.54a1.5 1.5 0 1 1 1.5 2.6l-.93.53a6 6 0 0 1 0 2.52l.93.54a1.5 1.5 0 1 1-1.5 2.6l-.93-.54A6.01 6.01 0 0 1 19.5 23v1.07a1.5 1.5 0 1 1-3 0V23a6.01 6.01 0 0 1-2.18-1.26l-.93.54a1.5 1.5 0 1 1-1.5-2.6l.93-.54a6 6 0 0 1 0-2.52l-.93-.53a1.5 1.5 0 1 1 1.5-2.6l.93.54A6.01 6.01 0 0 1 16.5 13V12a1.5 1.5 0 0 1 1.5-1.5zm0 5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z" fill="white"/>
+  </svg>
   <div>
-    <div class="logo">KP Market Intelligence</div>
-    <div class="sub">Talabat Whitespace Analysis</div>
+    <div class="logo">NAMAA <span style="font-size:14px; opacity:.7; font-weight:400;">نماء</span></div>
+    <div class="sub">Market Intelligence · Whitespace Analysis</div>
   </div>
   <div class="spacer"></div>
   <button class="settings-btn" onclick="openSettings()"><i class="fa-solid fa-gear"></i> Settings</button>
