@@ -45,7 +45,7 @@
     /* ────────────────── HEADER ────────────────── */
     header {
       height: var(--header-h);
-      background: linear-gradient(105deg, #0a0a0a 0%, #0f1a12 40%, var(--brand) 100%);
+      background: linear-gradient(100deg, #080d08 0%, #0d1a10 35%, #122018 60%, var(--brand) 100%);
       display: flex;
       align-items: center;
       padding: 0 24px;
@@ -56,14 +56,14 @@
       overflow: hidden;
     }
 
-    /* Subtle figure line-art on right side of header (matches banner) */
+    /* Figures line-art — right side of header, matching the banner */
     header::after {
       content: '';
       position: absolute;
       right: 0; top: 0; bottom: 0;
-      width: 320px;
-      background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 320 68' fill='none'%3E%3Cpath d='M240 10 Q260 8 270 20 Q280 32 265 42 Q250 52 235 48 Q220 44 218 30 Q216 16 240 10Z' stroke='%232d5c3c' stroke-width='1.5' fill='none'/%3E%3Cpath d='M268 42 Q278 52 285 65' stroke='%232d5c3c' stroke-width='1.5' fill='none'/%3E%3Cpath d='M265 42 Q255 56 252 68' stroke='%232d5c3c' stroke-width='1.5' fill='none'/%3E%3Cpath d='M238 30 Q220 36 210 48 Q200 60 208 68' stroke='%232d5c3c' stroke-width='1.5' fill='none'/%3E%3Cpath d='M240 10 Q248 0 262 2' stroke='%232d5c3c' stroke-width='1.5' fill='none'/%3E%3Cpath d='M290 20 Q305 18 310 30 Q315 42 300 48' stroke='%232d5c3c' stroke-width='1.5' fill='none'/%3E%3C/svg%3E") no-repeat right center / contain;
-      opacity: .6;
+      width: 380px;
+      background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 380 68' fill='none'%3E%3Cg stroke='%232d5c3c' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3C!-- figure 1: runner left --%3E%3Ccircle cx='210' cy='12' r='7'/%3E%3Cpath d='M210 19 Q205 28 200 34 Q194 40 188 46'/%3E%3Cpath d='M200 34 Q208 38 215 44 Q220 50 218 58'/%3E%3Cpath d='M210 19 Q218 26 224 32'/%3E%3Cpath d='M205 26 Q196 30 190 36'/%3E%3C!-- figure 2: runner right --%3E%3Ccircle cx='280' cy='8' r='7'/%3E%3Cpath d='M280 15 Q276 25 270 32 Q265 38 260 46 Q256 54 258 62'/%3E%3Cpath d='M270 32 Q278 36 285 42 Q292 50 290 60'/%3E%3Cpath d='M280 15 Q290 20 296 28'/%3E%3Cpath d='M275 22 Q266 28 262 36'/%3E%3C!-- figure 3: delivery person --%3E%3Ccircle cx='340' cy='14' r='7'/%3E%3Cpath d='M340 21 Q336 30 332 38 Q328 46 330 56 Q332 64 338 68'/%3E%3Cpath d='M332 38 Q340 42 347 48 Q352 54 350 62'/%3E%3Cpath d='M340 21 Q350 24 356 32 Q360 40 355 46'/%3E%3Cpath d='M336 29 Q326 34 320 42'/%3E%3C/g%3E%3C/svg%3E") no-repeat right center / auto 90%;
+      opacity: .55;
       pointer-events: none;
     }
 
@@ -497,46 +497,33 @@
 
 <!-- ── Header ─────────────────────────────────────────── -->
 <header>
-  <!-- NAMAA logo mark: molecular network structure matching brand -->
+  <!-- NAMAA logo: thick rounded capsule strokes, 8-node irregular network -->
   <div class="namaa-logo-mark">
-    <svg width="30" height="30" viewBox="0 0 30 30" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <!-- outer ring nodes -->
-      <circle cx="15" cy="3.5"  r="1.8" fill="white"/>
-      <circle cx="26" cy="9.5"  r="1.8" fill="white"/>
-      <circle cx="26" cy="20.5" r="1.8" fill="white"/>
-      <circle cx="15" cy="26.5" r="1.8" fill="white"/>
-      <circle cx="4"  cy="20.5" r="1.8" fill="white"/>
-      <circle cx="4"  cy="9.5"  r="1.8" fill="white"/>
-      <!-- inner ring nodes -->
-      <circle cx="15" cy="9"   r="1.4" fill="white" opacity=".85"/>
-      <circle cx="21" cy="12.5" r="1.4" fill="white" opacity=".85"/>
-      <circle cx="21" cy="17.5" r="1.4" fill="white" opacity=".85"/>
-      <circle cx="15" cy="21"  r="1.4" fill="white" opacity=".85"/>
-      <circle cx="9"  cy="17.5" r="1.4" fill="white" opacity=".85"/>
-      <circle cx="9"  cy="12.5" r="1.4" fill="white" opacity=".85"/>
-      <!-- centre -->
-      <circle cx="15" cy="15" r="1.8" fill="white"/>
-      <!-- outer spokes -->
-      <line x1="15" y1="3.5"  x2="15" y2="9"   stroke="white" stroke-width="1" opacity=".7"/>
-      <line x1="26" y1="9.5"  x2="21" y2="12.5" stroke="white" stroke-width="1" opacity=".7"/>
-      <line x1="26" y1="20.5" x2="21" y2="17.5" stroke="white" stroke-width="1" opacity=".7"/>
-      <line x1="15" y1="26.5" x2="15" y2="21"  stroke="white" stroke-width="1" opacity=".7"/>
-      <line x1="4"  y1="20.5" x2="9"  y2="17.5" stroke="white" stroke-width="1" opacity=".7"/>
-      <line x1="4"  y1="9.5"  x2="9"  y2="12.5" stroke="white" stroke-width="1" opacity=".7"/>
-      <!-- inner ring connections -->
-      <line x1="15" y1="9"   x2="21" y2="12.5" stroke="white" stroke-width="1" opacity=".55"/>
-      <line x1="21" y1="12.5" x2="21" y2="17.5" stroke="white" stroke-width="1" opacity=".55"/>
-      <line x1="21" y1="17.5" x2="15" y2="21"  stroke="white" stroke-width="1" opacity=".55"/>
-      <line x1="15" y1="21"  x2="9"  y2="17.5" stroke="white" stroke-width="1" opacity=".55"/>
-      <line x1="9"  y1="17.5" x2="9"  y2="12.5" stroke="white" stroke-width="1" opacity=".55"/>
-      <line x1="9"  y1="12.5" x2="15" y2="9"   stroke="white" stroke-width="1" opacity=".55"/>
-      <!-- inner to centre -->
-      <line x1="15" y1="9"   x2="15" y2="15" stroke="white" stroke-width=".8" opacity=".4"/>
-      <line x1="21" y1="12.5" x2="15" y2="15" stroke="white" stroke-width=".8" opacity=".4"/>
-      <line x1="21" y1="17.5" x2="15" y2="15" stroke="white" stroke-width=".8" opacity=".4"/>
-      <line x1="15" y1="21"  x2="15" y2="15" stroke="white" stroke-width=".8" opacity=".4"/>
-      <line x1="9"  y1="17.5" x2="15" y2="15" stroke="white" stroke-width=".8" opacity=".4"/>
-      <line x1="9"  y1="12.5" x2="15" y2="15" stroke="white" stroke-width=".8" opacity=".4"/>
+    <svg width="36" height="36" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <g stroke="white" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+        <!-- perimeter segments -->
+        <line x1="48" y1="6"  x2="76" y2="14"/>
+        <line x1="76" y1="14" x2="90" y2="42"/>
+        <line x1="52" y1="88" x2="22" y2="80"/>
+        <line x1="22" y1="80" x2="8"  y2="50"/>
+        <line x1="8"  y1="50" x2="20" y2="20"/>
+        <!-- crossing diagonals — star-like negative space -->
+        <line x1="76" y1="14" x2="22" y2="80"/>
+        <line x1="48" y1="6"  x2="80" y2="70"/>
+        <line x1="90" y1="42" x2="20" y2="20"/>
+        <line x1="80" y1="70" x2="8"  y2="50"/>
+        <line x1="52" y1="88" x2="20" y2="20"/>
+      </g>
+      <g fill="white">
+        <circle cx="48" cy="6"  r="5.5"/>
+        <circle cx="76" cy="14" r="5.5"/>
+        <circle cx="90" cy="42" r="5.5"/>
+        <circle cx="80" cy="70" r="5.5"/>
+        <circle cx="52" cy="88" r="5.5"/>
+        <circle cx="22" cy="80" r="5.5"/>
+        <circle cx="8"  cy="50" r="5.5"/>
+        <circle cx="20" cy="20" r="5.5"/>
+      </g>
     </svg>
   </div>
 
