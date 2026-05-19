@@ -1178,7 +1178,18 @@ def _run_analyze_job(job_id: str) -> None:
                 for _aid, _aslug in areas_in_radius:
                     with _ANALYZE_JOBS_LOCK:
                         job["progress"]["current_pin"] = f"{name} ({_aslug})"
-                    area_vendors, last_meta = _scrape_area_vendors(_aid, _aslug, page_delay=0.5, session=_job_session)
+                        job["progress"]["area_page"] = 0
+                        job["progress"]["area_pages_total"] = 0
+                        job["progress"]["vendors_collected"] = 0
+
+                    def _page_cb(page: int, total_pages: int, vendors_so_far: int,
+                                 _job=job, _aslug=_aslug) -> None:
+                        with _ANALYZE_JOBS_LOCK:
+                            _job["progress"]["area_page"] = page
+                            _job["progress"]["area_pages_total"] = total_pages
+                            _job["progress"]["vendors_collected"] = vendors_so_far
+
+                    area_vendors, last_meta = _scrape_area_vendors(_aid, _aslug, page_delay=0.5, session=_job_session, page_cb=_page_cb)
                     total_area_vendors += len(area_vendors)
                     for v in area_vendors:
                         bid = v.get("branchId") or v.get("branch_id")

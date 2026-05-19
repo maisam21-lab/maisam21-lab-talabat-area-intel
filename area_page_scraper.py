@@ -17,7 +17,7 @@ import logging
 import math
 import re
 import time
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -210,6 +210,7 @@ def scrape_area_vendors(
     scrape_do_token: str | None = None,
     timeout: float = 30.0,
     session: "requests.Session | None" = None,
+    page_cb: "Callable[[int, int, int], None] | None" = None,
 ) -> tuple[list[dict], dict]:
     """
     Fetch all vendors for a Talabat area by iterating ?page=N.
@@ -276,6 +277,11 @@ def scrape_area_vendors(
             continue
         consecutive_empty = 0
         all_vendors.extend(page_vendors)
+        if page_cb:
+            try:
+                page_cb(page, total_pages, len(all_vendors))
+            except Exception:
+                pass
         if page % 20 == 0 or page == total_pages:
             logger.info(
                 "area_scrape_progress area=%s/%s page=%d/%d vendors_so_far=%d",
