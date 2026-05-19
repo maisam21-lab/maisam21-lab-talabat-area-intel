@@ -71,6 +71,40 @@ _ANALYZE_JOBS: dict[str, dict] = {}
 _ANALYZE_JOBS_LOCK = threading.Lock()
 _ANALYZE_JOBS_DIR = Path(__file__).parent / "analyze_jobs"
 _ANALYZE_JOBS_DIR.mkdir(exist_ok=True)
+
+
+def _persist_job(job_id: str, job: dict) -> None:
+    """Write job state to disk so it survives container restarts."""
+    try:
+        import json
+        data = {k: v for k, v in job.items()}
+        (_ANALYZE_JOBS_DIR / f"job_{job_id}.json").write_text(
+            json.dumps(data, default=str), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def _load_persisted_jobs() -> None:
+    """On startup reload completed/failed jobs; mark interrupted ones as failed."""
+    import json
+    for p in _ANALYZE_JOBS_DIR.glob("job_*.json"):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            job_id = data.get("job_id")
+            if not job_id:
+                continue
+            if data.get("status") in ("running", "queued"):
+                data["status"] = "failed"
+                data["error"] = "Server restarted while job was running — please submit again."
+                p.write_text(json.dumps(data, default=str), encoding="utf-8")
+            with _ANALYZE_JOBS_LOCK:
+                _ANALYZE_JOBS[job_id] = data
+        except Exception:
+            pass
+
+
+_load_persisted_jobs()
 logger = logging.getLogger("talabat_area_intel.api")
 _JOB_RESULTS: dict[str, dict] = {}
 _JOB_LOCK = asyncio.Lock()
@@ -965,6 +999,7 @@ def submit_analyze(
     }
     with _ANALYZE_JOBS_LOCK:
         _ANALYZE_JOBS[job_id] = job
+    _persist_job(job_id, job)
 
     t = threading.Thread(target=_run_analyze_job, args=(job_id,), daemon=True)
     t.start()
@@ -1084,6 +1119,7 @@ def _run_analyze_job(job_id: str) -> None:
     with _ANALYZE_JOBS_LOCK:
         job = _ANALYZE_JOBS[job_id]
         job["status"] = "running"
+    _persist_job(job_id, job)
 
     pins = job["pins"]
     facility_vendors: dict[str, list[dict]] = {}
@@ -1237,6 +1273,7 @@ def _run_analyze_job(job_id: str) -> None:
                 "raw_rows": len(raw_df),
                 "pins": len(pins),
             }
+        _persist_job(job_id, job)
         logger.info("analyze_job complete job_id=%s brands=%d raw=%d", job_id, len(matrix_df), len(raw_df))
 
     except Exception as exc:
@@ -1244,3 +1281,4 @@ def _run_analyze_job(job_id: str) -> None:
         with _ANALYZE_JOBS_LOCK:
             job["status"] = "failed"
             job["error"] = str(exc)
+        _persist_job(job_id, job)
