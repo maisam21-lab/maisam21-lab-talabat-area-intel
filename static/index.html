@@ -5,106 +5,213 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>NAMAA Market Intelligence</title>
 
-  <!-- Leaflet map -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
-  <!-- Google Maps API (English) + Mutant plugin for Leaflet -->
   <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyA-wBQ5OlhNcqLet2OM6kJLBRInSXEtijw&language=en&region=AE"></script>
   <script src="https://unpkg.com/leaflet.gridlayer.googlemutant@0.14.0/dist/Leaflet.GoogleMutant.js"></script>
-
-  <!-- Icons -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" />
 
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --kp-blue:    #1B3A26;
-      --kp-mid:     #2D5C3C;
-      --kp-light:   #C6DDD0;
-      --kp-green:   #1B3A26;
-      --kp-green-bg:#EAF3EE;
-      --sidebar-w:  340px;
-      --header-h:   56px;
+      --n0:  #060f09;
+      --n1:  #0d1f14;
+      --n2:  #122618;
+      --n3:  #1b3a26;
+      --n4:  #2d5c3c;
+      --n5:  #3d7a50;
+      --accent:  #4eca78;
+      --accent2: #2ecc5f;
+      --light: #c6ddd0;
+      --muted: #5a7a66;
+      --text:  #e8f4ee;
+      --text2: #96b8a4;
+      --sidebar-w: 340px;
+      --header-h:  64px;
     }
 
-    body { font-family: 'Segoe UI', Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; background: #f4f6f9; }
+    body {
+      font-family: 'Inter', 'Segoe UI', sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: var(--n0);
+      color: var(--text);
+      overflow: hidden;
+    }
 
-    /* ── Header ──────────────────────────────── */
+    /* ── Header ─────────────────────────────────────────── */
     header {
       height: var(--header-h);
-      background: var(--kp-blue);
-      color: #fff;
+      background: var(--n1);
       display: flex;
       align-items: center;
       padding: 0 20px;
-      gap: 14px;
-      box-shadow: 0 2px 8px rgba(0,0,0,.3);
+      gap: 16px;
       flex-shrink: 0;
       z-index: 1000;
+      border-bottom: 1px solid rgba(78,202,120,.15);
+      position: relative;
     }
-    header .logo { font-size: 22px; font-weight: 700; letter-spacing: .5px; }
-    header .sub  { font-size: 13px; opacity: .75; }
-    header .spacer { flex: 1; }
-    header button.settings-btn {
-      background: rgba(255,255,255,.15);
-      border: 1px solid rgba(255,255,255,.3);
-      color: #fff;
-      padding: 6px 14px;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 13px;
-      transition: background .2s;
+    header::after {
+      content: '';
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--accent), transparent);
+      opacity: .4;
     }
-    header button.settings-btn:hover { background: rgba(255,255,255,.25); }
 
-    /* ── Main layout ─────────────────────────── */
+    .header-logo {
+      width: 40px; height: 40px;
+      flex-shrink: 0;
+    }
+
+    .header-brand {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .header-brand .brand-name {
+      font-size: 18px;
+      font-weight: 800;
+      color: #fff;
+      letter-spacing: .3px;
+      line-height: 1;
+    }
+    .header-brand .brand-name span {
+      font-weight: 300;
+      font-size: 14px;
+      opacity: .6;
+      margin-left: 6px;
+    }
+    .header-brand .brand-sub {
+      font-size: 11px;
+      color: var(--text2);
+      font-weight: 400;
+      letter-spacing: .5px;
+    }
+
+    .header-divider {
+      width: 1px;
+      height: 28px;
+      background: rgba(255,255,255,.1);
+      flex-shrink: 0;
+    }
+
+    .header-tagline {
+      font-size: 12px;
+      color: var(--accent);
+      font-weight: 500;
+      letter-spacing: .3px;
+      opacity: .9;
+    }
+
+    .header-spacer { flex: 1; }
+
+    .header-stats {
+      display: flex;
+      gap: 20px;
+      align-items: center;
+      padding-right: 8px;
+    }
+    .hstat {
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .hstat .hval {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--accent);
+      line-height: 1;
+    }
+    .hstat .hlbl {
+      font-size: 9px;
+      color: var(--text2);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+
+    .settings-btn {
+      background: rgba(78,202,120,.1);
+      border: 1px solid rgba(78,202,120,.25);
+      color: var(--accent);
+      padding: 7px 15px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all .2s;
+      font-family: inherit;
+    }
+    .settings-btn:hover {
+      background: rgba(78,202,120,.2);
+      border-color: var(--accent);
+    }
+
+    /* ── Main layout ─────────────────────────────────────── */
     #main {
       flex: 1;
       display: flex;
       overflow: hidden;
     }
 
-    /* ── Sidebar ─────────────────────────────── */
+    /* ── Sidebar ─────────────────────────────────────────── */
     #sidebar {
       width: var(--sidebar-w);
-      background: #fff;
+      background: var(--n1);
       display: flex;
       flex-direction: column;
-      border-right: 1px solid #dde3ea;
+      border-right: 1px solid rgba(78,202,120,.1);
       overflow: hidden;
       flex-shrink: 0;
     }
 
     .sidebar-section {
       padding: 14px 16px;
-      border-bottom: 1px solid #eef1f5;
+      border-bottom: 1px solid rgba(255,255,255,.05);
     }
 
-    .sidebar-section h3 {
-      font-size: 11px;
-      font-weight: 700;
+    .section-label {
+      font-size: 10px;
+      font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: .8px;
-      color: #7a8899;
+      letter-spacing: 1px;
+      color: var(--muted);
       margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
+    .section-label i { color: var(--accent); font-size: 9px; }
 
     /* Search */
     #search-wrap { display: flex; gap: 8px; }
     #search-input {
       flex: 1;
       padding: 9px 12px;
-      border: 1px solid #d0d8e4;
+      background: var(--n2);
+      border: 1px solid rgba(255,255,255,.08);
       border-radius: 8px;
       font-size: 13px;
+      color: var(--text);
       outline: none;
       transition: border .2s;
+      font-family: inherit;
     }
-    #search-input:focus { border-color: var(--kp-mid); }
+    #search-input::placeholder { color: var(--muted); }
+    #search-input:focus { border-color: rgba(78,202,120,.5); background: var(--n2); }
+
     #search-btn {
-      background: var(--kp-mid);
+      background: var(--n4);
       color: #fff;
       border: none;
       border-radius: 8px;
@@ -113,320 +220,602 @@
       font-size: 14px;
       transition: background .2s;
     }
-    #search-btn:hover { background: var(--kp-blue); }
-    #search-hint { font-size: 11px; color: #9aabb8; margin-top: 6px; }
+    #search-btn:hover { background: var(--n5); }
+    #search-hint { font-size: 10px; color: var(--muted); margin-top: 5px; }
 
-    /* Radius control */
-    #radius-wrap { display: flex; align-items: center; gap: 10px; }
-    #radius-wrap label { font-size: 13px; color: #4a5568; flex: 1; }
-    #radius-input {
-      width: 70px;
-      padding: 6px 10px;
-      border: 1px solid #d0d8e4;
-      border-radius: 6px;
-      font-size: 13px;
-      text-align: center;
+    /* Coords */
+    .coord-row { display: flex; gap: 6px; margin-bottom: 8px; }
+    .coord-input {
+      flex: 1;
+      padding: 8px 10px;
+      background: var(--n2);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 8px;
+      font-size: 12px;
+      color: var(--text);
+      outline: none;
+      font-family: inherit;
+      transition: border .2s;
     }
-    #radius-wrap span { font-size: 12px; color: #7a8899; }
+    .coord-input::placeholder { color: var(--muted); }
+    .coord-input:focus { border-color: rgba(78,202,120,.5); }
+
+    /* Radius */
+    #radius-wrap { display: flex; align-items: center; gap: 10px; }
+    #radius-wrap label { font-size: 12px; color: var(--text2); flex: 1; }
+    #radius-input {
+      width: 68px;
+      padding: 7px 10px;
+      background: var(--n2);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--text);
+      text-align: center;
+      outline: none;
+      font-family: inherit;
+      transition: border .2s;
+    }
+    #radius-input:focus { border-color: rgba(78,202,120,.5); }
+    #radius-wrap span { font-size: 11px; color: var(--muted); }
 
     /* Pin list */
-    #pin-list-wrap { flex: 1; overflow-y: auto; min-height: 0; }
-    #pin-list-empty {
-      padding: 24px 16px;
-      text-align: center;
-      color: #aab5c3;
-      font-size: 13px;
+    #pin-list-wrap {
+      flex: 1;
+      overflow-y: auto;
+      min-height: 0;
     }
-    #pin-list-empty i { font-size: 28px; display: block; margin-bottom: 8px; }
+    #pin-list-empty {
+      padding: 28px 16px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    #pin-list-empty .empty-icon {
+      font-size: 32px;
+      margin-bottom: 10px;
+      opacity: .3;
+      display: block;
+    }
 
     .pin-item {
       display: flex;
       align-items: center;
       gap: 10px;
       padding: 10px 16px;
-      border-bottom: 1px solid #f0f3f7;
+      border-bottom: 1px solid rgba(255,255,255,.04);
       transition: background .15s;
+      cursor: pointer;
     }
-    .pin-item:hover { background: #f8fafc; }
-    .pin-item .pin-icon { color: var(--kp-mid); font-size: 16px; flex-shrink: 0; }
-    .pin-item .pin-info { flex: 1; min-width: 0; }
-    .pin-item .pin-name {
+    .pin-item:hover { background: rgba(78,202,120,.05); }
+    .pin-icon-wrap {
+      width: 32px; height: 32px;
+      background: rgba(78,202,120,.12);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent);
+      font-size: 13px;
+      flex-shrink: 0;
+    }
+    .pin-info { flex: 1; min-width: 0; }
+    .pin-name {
       font-size: 13px;
       font-weight: 600;
-      color: #1e2d3d;
+      color: var(--text);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .pin-item .pin-coords { font-size: 11px; color: #9aabb8; }
-    .pin-item .pin-radius {
-      font-size: 11px;
-      background: var(--kp-light);
-      color: var(--kp-blue);
-      padding: 2px 7px;
-      border-radius: 10px;
-      flex-shrink: 0;
+    .pin-coords { font-size: 10px; color: var(--muted); margin-top: 1px; }
+    .pin-radius-badge {
+      font-size: 10px;
       font-weight: 600;
+      background: rgba(78,202,120,.15);
+      color: var(--accent);
+      padding: 2px 8px;
+      border-radius: 20px;
+      flex-shrink: 0;
+      border: 1px solid rgba(78,202,120,.2);
     }
-    .pin-item .pin-del {
+    .pin-del {
       background: none;
       border: none;
-      color: #ccd6e0;
+      color: rgba(255,255,255,.2);
       cursor: pointer;
-      font-size: 15px;
-      padding: 2px 4px;
+      font-size: 13px;
+      padding: 3px 5px;
       border-radius: 4px;
       transition: color .2s;
+      flex-shrink: 0;
     }
-    .pin-item .pin-del:hover { color: #e53e3e; }
+    .pin-del:hover { color: #e55; }
 
-    /* Action area */
+    /* ── Action area ──────────────────────────────────────── */
     #action-wrap {
       padding: 14px 16px;
-      border-top: 1px solid #eef1f5;
+      border-top: 1px solid rgba(255,255,255,.06);
       display: flex;
       flex-direction: column;
       gap: 10px;
     }
 
     #run-btn {
-      background: var(--kp-blue);
+      background: linear-gradient(135deg, var(--n4) 0%, var(--n5) 100%);
       color: #fff;
       border: none;
-      border-radius: 8px;
-      padding: 13px;
+      border-radius: 10px;
+      padding: 14px;
       font-size: 14px;
-      font-weight: 600;
+      font-weight: 700;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
       gap: 8px;
-      transition: background .2s, transform .1s;
+      transition: all .2s;
+      font-family: inherit;
+      letter-spacing: .3px;
+      box-shadow: 0 4px 20px rgba(45,92,60,.4);
+      position: relative;
+      overflow: hidden;
     }
-    #run-btn:hover:not(:disabled) { background: var(--kp-mid); }
-    #run-btn:active:not(:disabled) { transform: scale(.98); }
-    #run-btn:disabled { opacity: .5; cursor: not-allowed; }
+    #run-btn::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, rgba(78,202,120,.2) 0%, transparent 100%);
+      opacity: 0;
+      transition: opacity .2s;
+    }
+    #run-btn:hover:not(:disabled)::before { opacity: 1; }
+    #run-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 28px rgba(45,92,60,.55); }
+    #run-btn:active:not(:disabled) { transform: translateY(0); }
+    #run-btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
 
     /* Progress */
     #progress-wrap { display: none; }
-    #progress-label { font-size: 12px; color: #4a5568; margin-bottom: 6px; display: flex; justify-content: space-between; }
-    #progress-bar-bg { background: #e9eef4; border-radius: 6px; height: 8px; overflow: hidden; }
-    #progress-bar { height: 100%; background: var(--kp-mid); border-radius: 6px; transition: width .4s; width: 0%; }
+    #progress-label {
+      font-size: 11px;
+      color: var(--text2);
+      margin-bottom: 7px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    #progress-pct {
+      font-weight: 700;
+      color: var(--accent);
+      font-size: 12px;
+    }
+    #progress-bar-bg {
+      background: rgba(255,255,255,.06);
+      border-radius: 100px;
+      height: 6px;
+      overflow: hidden;
+    }
+    #progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, var(--n4), var(--accent));
+      border-radius: 100px;
+      transition: width .5s cubic-bezier(.4,0,.2,1);
+      width: 0%;
+      position: relative;
+    }
+    #progress-bar::after {
+      content: '';
+      position: absolute;
+      right: 0; top: 0; bottom: 0;
+      width: 40px;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.35));
+      animation: shimmer 1.2s infinite;
+    }
+    @keyframes shimmer {
+      0% { opacity: 0; }
+      50% { opacity: 1; }
+      100% { opacity: 0; }
+    }
+
+    /* Result stats */
+    #result-summary {
+      display: none;
+    }
+    .result-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .result-card {
+      background: rgba(78,202,120,.08);
+      border: 1px solid rgba(78,202,120,.15);
+      border-radius: 10px;
+      padding: 10px 12px;
+      text-align: center;
+    }
+    .result-card .rc-val {
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--accent);
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+    .result-card .rc-lbl {
+      font-size: 10px;
+      color: var(--text2);
+      margin-top: 3px;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
 
     /* Download */
     #download-btn {
       display: none;
-      background: var(--kp-green);
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      padding: 13px;
-      font-size: 14px;
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid rgba(78,202,120,.35);
+      border-radius: 10px;
+      padding: 12px;
+      font-size: 13px;
       font-weight: 600;
       cursor: pointer;
       align-items: center;
       justify-content: center;
       gap: 8px;
-      transition: background .2s;
+      transition: all .2s;
+      font-family: inherit;
     }
-    #download-btn:hover { background: #2d4a1e; }
-
-    #result-summary {
-      display: none;
-      background: var(--kp-green-bg);
-      border: 1px solid #b5d4a0;
-      border-radius: 8px;
-      padding: 10px 14px;
-      font-size: 12px;
-      color: var(--kp-green);
+    #download-btn:hover {
+      background: rgba(78,202,120,.1);
+      border-color: var(--accent);
+      transform: translateY(-1px);
     }
-    #result-summary strong { font-size: 18px; display: block; }
 
     #error-box {
       display: none;
-      background: #fff5f5;
-      border: 1px solid #feb2b2;
+      background: rgba(229,57,53,.1);
+      border: 1px solid rgba(229,57,53,.3);
       border-radius: 8px;
       padding: 10px 14px;
       font-size: 12px;
-      color: #c53030;
+      color: #ff8a80;
     }
 
-    /* ── Map ─────────────────────────────────── */
+    /* ── Map ──────────────────────────────────────────────── */
     #map { flex: 1; }
 
-    /* Leaflet custom marker */
-    .kp-pin-marker {
-      background: var(--kp-blue);
-      border: 3px solid #fff;
-      border-radius: 50% 50% 50% 0;
-      transform: rotate(-45deg);
-      box-shadow: 0 2px 8px rgba(0,0,0,.35);
+    /* Map overlay controls */
+    #map-controls {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      z-index: 800;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
     }
 
-    /* KP layer toggle */
     #kp-toggle {
-      position: absolute;
-      top: 12px;
-      right: 12px;
-      z-index: 800;
-      background: #fff;
-      border: 2px solid #1B3A26;
-      color: #1B3A26;
-      border-radius: 8px;
-      padding: 7px 13px;
+      background: rgba(13,31,20,.88);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(78,202,120,.3);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 8px 14px;
       font-size: 12px;
-      font-weight: 700;
+      font-weight: 600;
       cursor: pointer;
-      box-shadow: 0 2px 8px rgba(0,0,0,.2);
       display: flex;
       align-items: center;
-      gap: 6px;
-      transition: background .2s, color .2s;
+      gap: 7px;
+      transition: all .2s;
+      font-family: inherit;
+      box-shadow: 0 4px 16px rgba(0,0,0,.4);
     }
-    #kp-toggle.active { background: #1B3A26; color: #fff; }
+    #kp-toggle:hover { border-color: var(--accent); }
+    #kp-toggle .kp-dot {
+      width: 8px; height: 8px;
+      border-radius: 2px;
+      transform: rotate(45deg);
+      background: var(--muted);
+      transition: background .2s;
+    }
+    #kp-toggle.active .kp-dot { background: var(--accent); }
+    #kp-toggle.active { border-color: rgba(78,202,120,.5); }
 
     /* Click hint */
     #map-hint {
       position: absolute;
-      bottom: 30px;
-      left: calc(var(--sidebar-w) + 16px);
-      background: rgba(31,78,121,.85);
-      color: #fff;
-      padding: 8px 16px;
-      border-radius: 20px;
+      bottom: 32px;
+      left: calc(var(--sidebar-w) + 18px);
+      background: rgba(10,26,15,.9);
+      color: var(--text);
+      padding: 9px 18px;
+      border-radius: 30px;
       font-size: 12px;
+      font-weight: 500;
       pointer-events: none;
       z-index: 900;
-      backdrop-filter: blur(4px);
-      transition: opacity .4s;
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(78,202,120,.2);
+      transition: opacity .6s;
+      display: flex;
+      align-items: center;
+      gap: 7px;
     }
+    #map-hint i { color: var(--accent); }
 
-    /* ── Settings modal ──────────────────────── */
+    /* ── Modals ───────────────────────────────────────────── */
     .modal-overlay {
       display: none;
       position: fixed;
       inset: 0;
-      background: rgba(0,0,0,.45);
+      background: rgba(0,0,0,.6);
       z-index: 9000;
       align-items: center;
       justify-content: center;
+      backdrop-filter: blur(4px);
     }
     .modal-overlay.open { display: flex; }
+
     .modal {
-      background: #fff;
-      border-radius: 12px;
+      background: var(--n2);
+      border: 1px solid rgba(78,202,120,.15);
+      border-radius: 16px;
       padding: 28px;
       width: 460px;
       max-width: 95vw;
-      box-shadow: 0 20px 60px rgba(0,0,0,.25);
+      box-shadow: 0 24px 64px rgba(0,0,0,.6), 0 0 0 1px rgba(78,202,120,.05);
     }
-    .modal h2 { font-size: 17px; color: var(--kp-blue); margin-bottom: 20px; }
+    #pin-name-modal .modal { width: 360px; }
+
+    .modal h2 {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .modal h2 i { color: var(--accent); }
+
     .form-row { margin-bottom: 16px; }
-    .form-row label { display: block; font-size: 12px; font-weight: 600; color: #4a5568; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .5px; }
+    .form-row label {
+      display: block;
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--muted);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: .7px;
+    }
     .form-row input {
       width: 100%;
       padding: 10px 12px;
-      border: 1px solid #d0d8e4;
+      background: var(--n1);
+      border: 1px solid rgba(255,255,255,.08);
       border-radius: 8px;
       font-size: 13px;
+      color: var(--text);
       outline: none;
+      font-family: inherit;
+      transition: border .2s;
     }
-    .form-row input:focus { border-color: var(--kp-mid); }
-    .form-row .hint { font-size: 11px; color: #9aabb8; margin-top: 4px; }
-    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+    .form-row input:focus { border-color: rgba(78,202,120,.5); }
+    .form-row input::placeholder { color: var(--muted); }
+    .form-row .hint { font-size: 10px; color: var(--muted); margin-top: 4px; }
+
+    #pin-name-input {
+      width: 100%;
+      padding: 11px 14px;
+      background: var(--n1);
+      border: 1px solid rgba(78,202,120,.3);
+      border-radius: 10px;
+      font-size: 14px;
+      color: var(--text);
+      margin-top: 8px;
+      outline: none;
+      font-family: inherit;
+    }
+    #pin-name-input:focus { border-color: var(--accent); }
+
+    .modal-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      margin-top: 20px;
+    }
+
     .btn-secondary {
-      background: #f4f6f9;
-      border: 1px solid #d0d8e4;
-      color: #4a5568;
+      background: transparent;
+      border: 1px solid rgba(255,255,255,.12);
+      color: var(--text2);
       padding: 9px 18px;
       border-radius: 8px;
       cursor: pointer;
       font-size: 13px;
+      font-family: inherit;
+      transition: all .2s;
     }
+    .btn-secondary:hover { border-color: rgba(255,255,255,.25); color: var(--text); }
+
     .btn-primary {
-      background: var(--kp-blue);
+      background: var(--n4);
       color: #fff;
       border: none;
-      padding: 9px 18px;
+      padding: 9px 20px;
       border-radius: 8px;
       cursor: pointer;
       font-size: 13px;
       font-weight: 600;
+      font-family: inherit;
+      transition: all .2s;
+      box-shadow: 0 2px 12px rgba(45,92,60,.4);
+    }
+    .btn-primary:hover { background: var(--n5); transform: translateY(-1px); }
+
+    /* Pin count badge */
+    #pin-count {
+      background: rgba(78,202,120,.15);
+      color: var(--accent);
+      padding: 1px 7px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      border: 1px solid rgba(78,202,120,.2);
     }
 
-    /* Pin name modal */
-    #pin-name-modal .modal { width: 360px; }
-    #pin-name-input {
-      width: 100%;
-      padding: 10px 12px;
-      border: 1px solid var(--kp-mid);
-      border-radius: 8px;
-      font-size: 14px;
-      margin-top: 8px;
-      outline: none;
+    /* Clear button */
+    #clear-btn {
+      background: none;
+      border: none;
+      color: rgba(255,255,255,.2);
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      float: right;
+      transition: color .2s;
     }
+    #clear-btn:hover { color: #e55; }
+
+    /* Coord hint */
+    #coord-hint { font-size: 10px; color: var(--muted); margin-top: 5px; }
 
     /* Scrollbar */
-    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar { width: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: #ccd6e0; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb { background: rgba(78,202,120,.2); border-radius: 2px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(78,202,120,.4); }
+
+    /* Add pin from coords button */
+    .coord-add-btn {
+      width: 100%;
+      padding: 8px;
+      background: rgba(78,202,120,.12);
+      color: var(--accent);
+      border: 1px solid rgba(78,202,120,.2);
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all .2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    .coord-add-btn:hover { background: rgba(78,202,120,.2); border-color: var(--accent); }
+
+    /* Pulse animation for running state */
+    @keyframes pulse-glow {
+      0%, 100% { box-shadow: 0 4px 20px rgba(45,92,60,.4); }
+      50% { box-shadow: 0 4px 32px rgba(78,202,120,.5); }
+    }
+    #run-btn.running { animation: pulse-glow 2s ease-in-out infinite; }
+
+    /* Leaflet popup dark theme */
+    .leaflet-popup-content-wrapper {
+      background: var(--n2) !important;
+      border: 1px solid rgba(78,202,120,.2) !important;
+      color: var(--text) !important;
+      border-radius: 10px !important;
+      box-shadow: 0 8px 32px rgba(0,0,0,.5) !important;
+    }
+    .leaflet-popup-tip { background: var(--n2) !important; }
+    .leaflet-popup-close-button { color: var(--text2) !important; }
   </style>
 </head>
 <body>
 
 <!-- ── Header ──────────────────────────────────────────────── -->
 <header>
-  <!-- NAMAA gear logo mark -->
-  <svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="18" cy="18" r="18" fill="#2D5C3C"/>
-    <path d="M18 10.5a1.5 1.5 0 0 1 1.5 1.5v1.07a6.01 6.01 0 0 1 2.18 1.26l.93-.54a1.5 1.5 0 1 1 1.5 2.6l-.93.53a6 6 0 0 1 0 2.52l.93.54a1.5 1.5 0 1 1-1.5 2.6l-.93-.54A6.01 6.01 0 0 1 19.5 23v1.07a1.5 1.5 0 1 1-3 0V23a6.01 6.01 0 0 1-2.18-1.26l-.93.54a1.5 1.5 0 1 1-1.5-2.6l.93-.54a6 6 0 0 1 0-2.52l-.93-.53a1.5 1.5 0 1 1 1.5-2.6l.93.54A6.01 6.01 0 0 1 16.5 13V12a1.5 1.5 0 0 1 1.5-1.5zm0 5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z" fill="white"/>
+  <!-- NAMAA logo mark -->
+  <svg class="header-logo" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="20" cy="20" r="20" fill="#1B3A26"/>
+    <!-- outer ring nodes -->
+    <circle cx="20" cy="6"  r="3" fill="#4eca78"/>
+    <circle cx="34" cy="13" r="3" fill="#4eca78"/>
+    <circle cx="34" cy="27" r="3" fill="#4eca78"/>
+    <circle cx="20" cy="34" r="3" fill="#4eca78"/>
+    <circle cx="6"  cy="27" r="3" fill="#4eca78"/>
+    <circle cx="6"  cy="13" r="3" fill="#4eca78"/>
+    <!-- spokes -->
+    <line x1="20" y1="6"  x2="20" y2="20" stroke="#4eca78" stroke-width="1.5" stroke-opacity=".7"/>
+    <line x1="34" y1="13" x2="20" y2="20" stroke="#4eca78" stroke-width="1.5" stroke-opacity=".7"/>
+    <line x1="34" y1="27" x2="20" y2="20" stroke="#4eca78" stroke-width="1.5" stroke-opacity=".7"/>
+    <line x1="20" y1="34" x2="20" y2="20" stroke="#4eca78" stroke-width="1.5" stroke-opacity=".7"/>
+    <line x1="6"  cy="27" x2="20" y2="20" stroke="#4eca78" stroke-width="1.5" stroke-opacity=".7"/>
+    <line x1="6"  y1="13" x2="20" y2="20" stroke="#4eca78" stroke-width="1.5" stroke-opacity=".7"/>
+    <!-- centre node -->
+    <circle cx="20" cy="20" r="4" fill="#4eca78"/>
   </svg>
-  <div>
-    <div class="logo">NAMAA <span style="font-size:14px; opacity:.7; font-weight:400;">نماء</span></div>
-    <div class="sub">Market Intelligence · Whitespace Analysis</div>
+
+  <div class="header-brand">
+    <div class="brand-name">NAMAA <span>نماء</span></div>
+    <div class="brand-sub">Market Intelligence · Whitespace Analysis</div>
   </div>
-  <div class="spacer"></div>
-  <button class="settings-btn" onclick="openSettings()"><i class="fa-solid fa-gear"></i> Settings</button>
+
+  <div class="header-divider"></div>
+  <div class="header-tagline">Infrastructure for better food.</div>
+
+  <div class="header-spacer"></div>
+
+  <div class="header-stats" id="header-stats" style="display:none;">
+    <div class="hstat">
+      <div class="hval" id="hstat-brands">–</div>
+      <div class="hlbl">Brands</div>
+    </div>
+    <div class="header-divider"></div>
+    <div class="hstat">
+      <div class="hval" id="hstat-records">–</div>
+      <div class="hlbl">Records</div>
+    </div>
+    <div class="header-divider"></div>
+  </div>
+
+  <button class="settings-btn" onclick="openSettings()">
+    <i class="fa-solid fa-gear"></i> Settings
+  </button>
 </header>
 
 <!-- ── Main ────────────────────────────────────────────────── -->
 <div id="main">
 
-  <!-- Sidebar -->
+  <!-- ── Sidebar ─────────────────────────────────────────── -->
   <div id="sidebar">
 
     <!-- Search -->
     <div class="sidebar-section">
-      <h3><i class="fa-solid fa-magnifying-glass"></i> Search Location</h3>
+      <div class="section-label"><i class="fa-solid fa-circle-dot"></i> Search Location</div>
       <div id="search-wrap">
         <input id="search-input" type="text" placeholder="e.g. Business Bay, Dubai" />
         <button id="search-btn" onclick="searchLocation()"><i class="fa-solid fa-search"></i></button>
       </div>
-      <div id="search-hint">Press Enter or click search, then click map to drop a pin</div>
+      <div id="search-hint">Press Enter or search, then click map to drop a pin</div>
     </div>
 
-    <!-- Manual coordinates -->
+    <!-- Coordinates -->
     <div class="sidebar-section">
-      <h3><i class="fa-solid fa-crosshairs"></i> Add by Coordinates</h3>
-      <div style="display:flex; gap:6px; margin-bottom:8px;">
-        <input id="coord-lat" type="number" step="any" placeholder="Latitude" title="Latitude"
-          style="flex:1; padding:8px 10px; border:1px solid #d0d8e4; border-radius:8px; font-size:13px; outline:none;"
+      <div class="section-label"><i class="fa-solid fa-circle-dot"></i> Add by Coordinates</div>
+      <div class="coord-row">
+        <input class="coord-input" id="coord-lat" type="number" step="any" placeholder="Latitude"
           onkeydown="if(event.key==='Enter') addPinFromCoords()" />
-        <input id="coord-lng" type="number" step="any" placeholder="Longitude" title="Longitude"
-          style="flex:1; padding:8px 10px; border:1px solid #d0d8e4; border-radius:8px; font-size:13px; outline:none;"
+        <input class="coord-input" id="coord-lng" type="number" step="any" placeholder="Longitude"
           onkeydown="if(event.key==='Enter') addPinFromCoords()" />
       </div>
-      <button onclick="addPinFromCoords()" style="width:100%; padding:8px; background:var(--kp-mid); color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer;">
+      <button class="coord-add-btn" onclick="addPinFromCoords()">
         <i class="fa-solid fa-map-pin"></i> Add Pin at Coordinates
       </button>
-      <div id="coord-hint" style="font-size:11px; color:#9aabb8; margin-top:6px;">e.g. 25.1972, 55.2744</div>
+      <div id="coord-hint">e.g. 25.1972, 55.2744</div>
     </div>
 
     <!-- Radius -->
     <div class="sidebar-section">
-      <h3><i class="fa-solid fa-circle-dot"></i> Scrape Radius</h3>
+      <div class="section-label"><i class="fa-solid fa-circle-dot"></i> Scrape Radius</div>
       <div id="radius-wrap">
         <label>Radius around each pin</label>
         <input id="radius-input" type="number" value="10" min="1" max="30" />
@@ -436,17 +825,17 @@
 
     <!-- Pin list -->
     <div class="sidebar-section" style="flex:1; min-height:0; display:flex; flex-direction:column; padding-bottom:0;">
-      <h3 style="flex-shrink:0;">
-        <i class="fa-solid fa-map-pin"></i> Pins
-        <span id="pin-count" style="margin-left:6px; background:#e9eef4; padding:2px 8px; border-radius:10px; font-size:10px; color:#7a8899;">0</span>
-        <button onclick="clearPins()" title="Clear all" style="margin-left:auto; background:none; border:none; color:#ccd6e0; cursor:pointer; font-size:13px; padding:2px 6px; float:right;" id="clear-btn">
+      <div class="section-label" style="flex-shrink:0;">
+        <i class="fa-solid fa-circle-dot"></i> Pins
+        <span id="pin-count">0</span>
+        <button id="clear-btn" onclick="clearPins()" title="Clear all pins">
           <i class="fa-solid fa-trash"></i>
         </button>
-      </h3>
+      </div>
       <div id="pin-list-wrap">
         <div id="pin-list-empty">
-          <i class="fa-solid fa-map-pin"></i>
-          Click on the map to drop pins,<br>or search for a location above
+          <i class="fa-solid fa-map-pin empty-icon"></i>
+          Click anywhere on the map to drop a pin,<br>or search for a location above
         </div>
         <div id="pin-list"></div>
       </div>
@@ -455,7 +844,10 @@
     <!-- Actions -->
     <div id="action-wrap">
 
-      <div id="error-box"><i class="fa-solid fa-triangle-exclamation"></i> <span id="error-msg"></span></div>
+      <div id="error-box">
+        <i class="fa-solid fa-triangle-exclamation"></i>
+        <span id="error-msg"></span>
+      </div>
 
       <div id="progress-wrap">
         <div id="progress-label">
@@ -466,10 +858,15 @@
       </div>
 
       <div id="result-summary">
-        <strong id="result-brands">–</strong>
-        unique brands found
-        <div style="margin-top:4px; color:#4a7a30;">
-          <span id="result-rows">–</span> raw records across <span id="result-pins">–</span> pins
+        <div class="result-grid">
+          <div class="result-card">
+            <div class="rc-val" id="result-brands">–</div>
+            <div class="rc-lbl">Unique Brands</div>
+          </div>
+          <div class="result-card">
+            <div class="rc-val" id="result-rows">–</div>
+            <div class="rc-lbl">Raw Records</div>
+          </div>
         </div>
       </div>
 
@@ -486,14 +883,19 @@
 
   <!-- Map -->
   <div id="map" style="position:relative;">
-    <button id="kp-toggle" class="active" onclick="toggleKpLayer()" title="Show/hide KP facilities">
-      <i class="fa-solid fa-building"></i> KP Facilities
-    </button>
+    <div id="map-controls">
+      <button id="kp-toggle" class="active" onclick="toggleKpLayer()">
+        <span class="kp-dot"></span> KP Facilities
+      </button>
+    </div>
   </div>
 </div>
 
 <!-- Click hint -->
-<div id="map-hint"><i class="fa-solid fa-hand-pointer"></i> Click anywhere on the map to drop a pin</div>
+<div id="map-hint">
+  <i class="fa-solid fa-hand-pointer"></i>
+  Click anywhere on the map to drop a pin
+</div>
 
 <!-- ── Settings Modal ───────────────────────────────────────── -->
 <div class="modal-overlay" id="settings-modal">
@@ -501,17 +903,17 @@
     <h2><i class="fa-solid fa-gear"></i> API Settings</h2>
     <div class="form-row">
       <label>API Server URL</label>
-      <input id="cfg-url" type="text" placeholder="http://178.105.56.187:8000" />
+      <input id="cfg-url" type="text" placeholder="https://178.105.56.187/api" />
       <div class="hint">The URL of your Talabat scraper API server</div>
     </div>
     <div class="form-row">
       <label>API Key</label>
       <input id="cfg-key" type="password" placeholder="Your API key" />
-      <div class="hint">Leave blank if authentication is disabled</div>
+      <div class="hint">Required to authenticate with the API</div>
     </div>
     <div class="modal-actions">
       <button class="btn-secondary" onclick="closeSettings()">Cancel</button>
-      <button class="btn-primary" onclick="saveSettings()">Save</button>
+      <button class="btn-primary" onclick="saveSettings()">Save Settings</button>
     </div>
   </div>
 </div>
@@ -519,8 +921,8 @@
 <!-- ── Pin Name Modal ───────────────────────────────────────── -->
 <div class="modal-overlay" id="pin-name-modal">
   <div class="modal">
-    <h2><i class="fa-solid fa-map-pin" style="color:var(--kp-mid)"></i> Name this pin</h2>
-    <p style="font-size:13px; color:#7a8899; margin-bottom:4px;">Give this location a label for the report</p>
+    <h2><i class="fa-solid fa-map-pin"></i> Name this pin</h2>
+    <p style="font-size:12px; color:var(--text2);">Give this location a label for the report</p>
     <input id="pin-name-input" type="text" placeholder="e.g. Business Bay" />
     <div class="modal-actions" style="margin-top:16px;">
       <button class="btn-secondary" onclick="cancelPin()">Cancel</button>
@@ -530,7 +932,7 @@
 </div>
 
 <script>
-// ── KP Facilities data ────────────────────────────────────────
+// ── KP Facilities ─────────────────────────────────────────────
 const KP_FACILITIES = [
   {name:"Business Bay 1",  emirate:"Dubai",     status:"Live",   lat:25.1894021, lng:55.2892571},
   {name:"JLT (1)",         emirate:"Dubai",     status:"Live",   lat:25.0802475, lng:55.1512831},
@@ -566,21 +968,14 @@ const cfg = {
 };
 
 // ── State ─────────────────────────────────────────────────────
-const state = {
-  pins: [],
-  pendingLatLng: null,
-  jobId: null,
-  pollTimer: null,
-  dragging: false,
-};
+const state = { pins: [], pendingLatLng: null, jobId: null, pollTimer: null, dragging: false };
 let pinIdSeq = 0;
 
 // ── Map init ──────────────────────────────────────────────────
-const map = L.map('map', { center: [25.2048, 55.2708], zoom: 11 });
-
+const map = L.map('map', { center: [25.2048, 55.2708], zoom: 11, zoomControl: false });
+L.control.zoom({ position: 'bottomright' }).addTo(map);
 L.gridLayer.googleMutant({ type: 'roadmap', maxZoom: 21 }).addTo(map);
 
-// Click on map → open name modal (only if not dragging)
 map.on('click', (e) => {
   if (state.dragging) return;
   state.pendingLatLng = e.latlng;
@@ -595,42 +990,42 @@ document.getElementById('pin-name-input').addEventListener('keydown', (e) => {
   if (e.key === 'Escape') cancelPin();
 });
 
-// ── KP Facility layer ─────────────────────────────────────────
+// ── KP layer ──────────────────────────────────────────────────
 const kpLayerGroup = L.layerGroup().addTo(map);
 
 function makeKpIcon(status) {
-  const color  = status === 'Live' ? '#1B3A26' : '#9aabb8';
-  const border = status === 'Live' ? '#fff'    : '#ccd6e0';
+  const live = status === 'Live';
   return L.divIcon({
     className: '',
     html: `<div style="
-      width:22px; height:22px;
-      background:${color}; border:3px solid ${border};
-      border-radius:4px; transform:rotate(45deg);
-      box-shadow:0 2px 8px rgba(0,0,0,.4);
+      width:20px; height:20px;
+      background:${live ? '#4eca78' : '#5a7a66'};
+      border:2px solid ${live ? '#fff' : '#96b8a4'};
+      border-radius:3px; transform:rotate(45deg);
+      box-shadow:0 2px 10px rgba(0,0,0,.5);
+      ${live ? 'box-shadow:0 2px 10px rgba(78,202,120,.4);' : ''}
     "></div>`,
-    iconSize: [22, 22],
-    iconAnchor: [11, 11],
-    popupAnchor: [0, -14],
+    iconSize: [20, 20], iconAnchor: [10, 10], popupAnchor: [0, -14],
   });
 }
 
 KP_FACILITIES.forEach(fac => {
-  const marker = L.marker([fac.lat, fac.lng], { icon: makeKpIcon(fac.status) });
-  marker.bindPopup(`
-    <div style="min-width:170px;">
-      <div style="font-weight:700; font-size:14px; color:#1B3A26;">${escHtml(fac.name)}</div>
-      <div style="font-size:12px; color:#666; margin-top:2px;">${fac.emirate}</div>
-      <div style="margin-top:6px;">
-        <span style="
-          background:${fac.status==='Live'?'#C6DDD0':'#e9eef4'};
-          color:${fac.status==='Live'?'#1B3A26':'#7a8899'};
-          padding:2px 8px; border-radius:10px; font-size:11px; font-weight:700;
-        ">${fac.status === 'Live' ? '● Live' : '○ Future'}</span>
+  const m = L.marker([fac.lat, fac.lng], { icon: makeKpIcon(fac.status) });
+  m.bindPopup(`
+    <div style="min-width:160px; font-family:Inter,sans-serif;">
+      <div style="font-weight:700; font-size:14px; color:#4eca78;">${escHtml(fac.name)}</div>
+      <div style="font-size:12px; color:#96b8a4; margin-top:2px;">${fac.emirate}</div>
+      <div style="margin-top:8px;">
+        <span style="background:${fac.status==='Live'?'rgba(78,202,120,.15)':'rgba(90,122,102,.15)'};
+          color:${fac.status==='Live'?'#4eca78':'#96b8a4'};
+          border:1px solid ${fac.status==='Live'?'rgba(78,202,120,.3)':'rgba(90,122,102,.3)'};
+          padding:2px 9px; border-radius:20px; font-size:11px; font-weight:700;">
+          ${fac.status === 'Live' ? '● Live' : '○ Future'}
+        </span>
       </div>
     </div>
   `);
-  kpLayerGroup.addLayer(marker);
+  kpLayerGroup.addLayer(m);
 });
 
 function toggleKpLayer() {
@@ -645,88 +1040,70 @@ function toggleKpLayer() {
 }
 
 // ── Pin management ────────────────────────────────────────────
-function makePinIcon(color) {
+function makePinIcon() {
   return L.divIcon({
     className: '',
     html: `<div style="
-      width:26px; height:26px;
-      background:${color}; border:3px solid #fff;
+      width:28px; height:28px;
+      background:linear-gradient(135deg,#2d5c3c,#4eca78);
+      border:3px solid #fff;
       border-radius:50% 50% 50% 0; transform:rotate(-45deg);
-      box-shadow:0 3px 10px rgba(0,0,0,.45);
-      cursor:grab; transition:transform .15s;
+      box-shadow:0 3px 14px rgba(78,202,120,.45);
+      cursor:grab;
     "></div>`,
-    iconSize: [26, 26],
-    iconAnchor: [13, 26],
-    popupAnchor: [0, -26],
+    iconSize: [28, 28], iconAnchor: [14, 28], popupAnchor: [0, -28],
   });
 }
 
 function addPin(lat, lng, name) {
   const id = ++pinIdSeq;
   const radius = parseFloat(document.getElementById('radius-input').value) || 10;
+  const marker = L.marker([lat, lng], { icon: makePinIcon(), draggable: true, autoPan: true }).addTo(map);
 
-  const marker = L.marker([lat, lng], {
-    icon: makePinIcon('#1B3A26'),
-    draggable: true,
-    autoPan: true,
-  }).addTo(map);
-
-  marker.bindPopup(`
-    <div style="min-width:160px;">
-      <b style="font-size:14px;">${escHtml(name)}</b><br>
-      <span style="color:#666; font-size:12px;">${radius}km radius</span><br>
-      <button onclick="renamePin(${id})" style="margin-top:8px; padding:4px 10px; background:#1B3A26; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px;">Rename</button>
-      <button onclick="removePin(${id})" style="margin-top:8px; padding:4px 10px; background:#c53030; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px;">Remove</button>
+  const popupHtml = (n, r) => `
+    <div style="min-width:160px; font-family:Inter,sans-serif;">
+      <b style="font-size:14px; color:#e8f4ee;">${escHtml(n)}</b><br>
+      <span style="color:#96b8a4; font-size:12px;">${r}km radius</span><br>
+      <div style="display:flex; gap:6px; margin-top:10px;">
+        <button onclick="renamePin(${id})" style="flex:1; padding:5px; background:rgba(78,202,120,.15); color:#4eca78; border:1px solid rgba(78,202,120,.3); border-radius:6px; cursor:pointer; font-size:11px; font-weight:600;">Rename</button>
+        <button onclick="removePin(${id})" style="flex:1; padding:5px; background:rgba(229,57,53,.15); color:#ff8a80; border:1px solid rgba(229,57,53,.3); border-radius:6px; cursor:pointer; font-size:11px; font-weight:600;">Remove</button>
+      </div>
     </div>
-  `);
+  `;
+  marker.bindPopup(popupHtml(name, radius));
 
   const circle = L.circle([lat, lng], {
     radius: radius * 1000,
-    color: '#2D5C3C',
-    fillColor: '#C6DDD0',
-    fillOpacity: 0.18,
-    weight: 2,
-    dashArray: '7 5',
+    color: '#4eca78',
+    fillColor: '#2d5c3c',
+    fillOpacity: 0.1,
+    weight: 1.5,
+    dashArray: '8 6',
   }).addTo(map);
 
-  // Track drag state so map click doesn't fire after drag
   marker.on('dragstart', () => { state.dragging = true; });
-  marker.on('drag', (e) => {
-    const ll = e.target.getLatLng();
-    circle.setLatLng(ll);
-  });
+  marker.on('drag', (e) => { circle.setLatLng(e.target.getLatLng()); });
   marker.on('dragend', (e) => {
     setTimeout(() => { state.dragging = false; }, 200);
     const ll = e.target.getLatLng();
     const pin = state.pins.find(p => p.id === id);
     if (pin) {
-      pin.lat = ll.lat;
-      pin.lng = ll.lng;
-      marker.setPopupContent(`
-        <div style="min-width:160px;">
-          <b style="font-size:14px;">${escHtml(pin.name)}</b><br>
-          <span style="color:#666; font-size:12px;">${pin.radius}km radius</span><br>
-          <button onclick="renamePin(${id})" style="margin-top:8px; padding:4px 10px; background:#1B3A26; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px;">Rename</button>
-          <button onclick="removePin(${id})" style="margin-top:8px; padding:4px 10px; background:#c53030; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px;">Remove</button>
-        </div>
-      `);
+      pin.lat = ll.lat; pin.lng = ll.lng;
+      marker.setPopupContent(popupHtml(pin.name, pin.radius));
       renderPinList();
     }
   });
 
   state.pins.push({ id, name, lat, lng, radius, marker, circle });
   renderPinList();
-
-  // Pan to pin smoothly
   map.panTo([lat, lng], { animate: true, duration: 0.5 });
 }
 
 function removePin(id) {
   const idx = state.pins.findIndex(p => p.id === id);
   if (idx === -1) return;
-  const pin = state.pins[idx];
-  map.removeLayer(pin.marker);
-  map.removeLayer(pin.circle);
+  map.removeLayer(state.pins[idx].marker);
+  map.removeLayer(state.pins[idx].circle);
   state.pins.splice(idx, 1);
   renderPinList();
 }
@@ -739,11 +1116,9 @@ function renamePin(id) {
   if (!newName || !newName.trim()) return;
   pin.name = newName.trim();
   pin.marker.setPopupContent(`
-    <div style="min-width:160px;">
-      <b style="font-size:14px;">${escHtml(pin.name)}</b><br>
-      <span style="color:#666; font-size:12px;">${pin.radius}km radius</span><br>
-      <button onclick="renamePin(${id})" style="margin-top:8px; padding:4px 10px; background:#1B3A26; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px;">Rename</button>
-      <button onclick="removePin(${id})" style="margin-top:8px; padding:4px 10px; background:#c53030; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px;">Remove</button>
+    <div style="min-width:160px; font-family:Inter,sans-serif;">
+      <b style="font-size:14px; color:#e8f4ee;">${escHtml(pin.name)}</b><br>
+      <span style="color:#96b8a4; font-size:12px;">${pin.radius}km radius</span>
     </div>
   `);
   renderPinList();
@@ -755,12 +1130,6 @@ function clearPins() {
   renderPinList();
 }
 
-function fitMapToPins() {
-  if (state.pins.length === 0) return;
-  const group = L.featureGroup(state.pins.map(p => p.circle));
-  map.fitBounds(group.getBounds().pad(0.15), { animate: true });
-}
-
 function locatePin(id) {
   const pin = state.pins.find(p => p.id === id);
   if (!pin) return;
@@ -769,7 +1138,7 @@ function locatePin(id) {
 }
 
 function renderPinList() {
-  const list = document.getElementById('pin-list');
+  const list  = document.getElementById('pin-list');
   const empty = document.getElementById('pin-list-empty');
   const count = document.getElementById('pin-count');
   count.textContent = state.pins.length;
@@ -780,22 +1149,21 @@ function renderPinList() {
   }
   empty.style.display = 'none';
   list.innerHTML = state.pins.map(p => `
-    <div class="pin-item">
-      <i class="fa-solid fa-map-pin pin-icon" style="cursor:pointer;" onclick="locatePin(${p.id})" title="Go to pin"></i>
-      <div class="pin-info" style="cursor:pointer;" onclick="locatePin(${p.id})">
+    <div class="pin-item" onclick="locatePin(${p.id})">
+      <div class="pin-icon-wrap"><i class="fa-solid fa-map-pin"></i></div>
+      <div class="pin-info">
         <div class="pin-name" title="${escHtml(p.name)}">${escHtml(p.name)}</div>
         <div class="pin-coords">${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</div>
       </div>
-      <span class="pin-radius">${p.radius}km</span>
-      <button class="pin-del" onclick="renamePin(${p.id})" title="Rename" style="color:#aac; font-size:13px;"><i class="fa-solid fa-pen"></i></button>
-      <button class="pin-del" onclick="removePin(${p.id})" title="Remove"><i class="fa-solid fa-xmark"></i></button>
+      <span class="pin-radius-badge">${p.radius}km</span>
+      <button class="pin-del" onclick="event.stopPropagation(); renamePin(${p.id})" title="Rename" style="color:rgba(78,202,120,.4)"><i class="fa-solid fa-pen"></i></button>
+      <button class="pin-del" onclick="event.stopPropagation(); removePin(${p.id})" title="Remove"><i class="fa-solid fa-xmark"></i></button>
     </div>
   `).join('');
 }
 
 function confirmPin() {
-  const name = document.getElementById('pin-name-input').value.trim()
-    || `Pin ${pinIdSeq + 1}`;
+  const name = document.getElementById('pin-name-input').value.trim() || `Pin ${pinIdSeq + 1}`;
   document.getElementById('pin-name-modal').classList.remove('open');
   if (state.pendingLatLng) {
     addPin(state.pendingLatLng.lat, state.pendingLatLng.lng, name);
@@ -809,17 +1177,15 @@ function cancelPin() {
 }
 
 function addPinFromCoords() {
-  const latVal = document.getElementById('coord-lat').value.trim();
-  const lngVal = document.getElementById('coord-lng').value.trim();
-  const hint   = document.getElementById('coord-hint');
-  const lat = parseFloat(latVal);
-  const lng = parseFloat(lngVal);
+  const lat = parseFloat(document.getElementById('coord-lat').value);
+  const lng = parseFloat(document.getElementById('coord-lng').value);
+  const hint = document.getElementById('coord-hint');
   if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-    hint.style.color = '#c53030';
+    hint.style.color = '#ff8a80';
     hint.textContent = 'Enter valid lat (−90→90) and lng (−180→180)';
     return;
   }
-  hint.style.color = '#9aabb8';
+  hint.style.color = '';
   hint.textContent = 'e.g. 25.1972, 55.2744';
   state.pendingLatLng = { lat, lng };
   const input = document.getElementById('pin-name-input');
@@ -830,10 +1196,8 @@ function addPinFromCoords() {
   document.getElementById('coord-lng').value = '';
 }
 
-// ── Search ────────────────────────────────────────────────────
-document.getElementById('search-input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') searchLocation();
-});
+// ── Search ─────────────────────────────────────────────────────
+document.getElementById('search-input').addEventListener('keydown', e => { if (e.key === 'Enter') searchLocation(); });
 
 async function searchLocation() {
   const q = document.getElementById('search-input').value.trim();
@@ -845,40 +1209,28 @@ async function searchLocation() {
     if (res.ok && res.result) {
       const { lat, lng, formatted_address } = res.result;
       map.setView([lat, lng], 14);
-      hint.textContent = `Found: ${formatted_address} — click map to pin`;
-      state.pendingLatLng = null;
+      hint.textContent = `Found: ${formatted_address}`;
+      state.pendingLatLng = { lat, lng };
       const nameInput = document.getElementById('pin-name-input');
       nameInput.value = q;
       document.getElementById('pin-name-modal').classList.add('open');
-      state.pendingLatLng = { lat, lng };
       setTimeout(() => nameInput.select(), 100);
     } else {
       hint.textContent = res.error || 'Location not found';
     }
-  } catch (e) {
+  } catch {
     hint.textContent = 'Search failed — check API settings';
   }
 }
 
-// ── Run analysis ──────────────────────────────────────────────
+// ── Analysis ───────────────────────────────────────────────────
 async function runAnalysis() {
-  if (state.pins.length === 0) {
-    showError('Add at least one pin to the map first.');
-    return;
-  }
+  if (state.pins.length === 0) { showError('Add at least one pin to the map first.'); return; }
   clearError();
   resetResults();
-
-  const pins = state.pins.map(p => ({
-    name: p.name,
-    lat: p.lat,
-    lng: p.lng,
-    radius_km: p.radius,
-  }));
-
+  const pins = state.pins.map(p => ({ name: p.name, lat: p.lat, lng: p.lng, radius_km: p.radius }));
   setRunning(true);
   showProgress(0, pins.length, 'Submitting job…');
-
   try {
     const res = await apiFetch('/analyze', 'POST', { pins });
     if (!res.ok) throw new Error(res.detail || 'Failed to start job');
@@ -896,54 +1248,43 @@ function pollJob(jobId, totalPins) {
     try {
       const res = await apiFetch(`/analyze/${jobId}`, 'GET');
       if (!res.ok) return;
-
       const { status, progress, result_summary, error } = res;
-
       if (status === 'running' || status === 'queued') {
-        const curr = progress?.current || 0;
-        const label = progress?.current_pin
-          ? `Scraping: ${progress.current_pin}`
-          : (status === 'queued' ? 'Queued…' : 'Starting…');
+        const curr  = progress?.current || 0;
+        const label = progress?.current_pin ? `Scraping: ${progress.current_pin}` : (status === 'queued' ? 'Queued…' : 'Starting…');
         showProgress(curr, totalPins, label);
-
       } else if (status === 'complete') {
         clearInterval(state.pollTimer);
         showProgress(totalPins, totalPins, 'Done!');
         setRunning(false);
         showResults(result_summary);
-
       } else if (status === 'failed') {
         clearInterval(state.pollTimer);
         setRunning(false);
         showError(error || 'Analysis failed');
       }
-    } catch (e) { /* network blip, keep polling */ }
+    } catch { /* network blip */ }
   }, 5000);
 }
 
 function downloadResults() {
   if (!state.jobId) return;
-  const url = `${cfg.url}/analyze/${state.jobId}/download`;
-  const key = cfg.key;
-  // Download via fetch and trigger save (needed for auth header)
-  fetch(url, { headers: key ? { 'X-API-Key': key } : {} })
-    .then(r => {
-      if (!r.ok) throw new Error('Download failed');
-      return r.blob();
-    })
+  fetch(`${cfg.url}/analyze/${state.jobId}/download`, { headers: cfg.key ? { 'X-API-Key': cfg.key } : {} })
+    .then(r => { if (!r.ok) throw new Error('Download failed'); return r.blob(); })
     .then(blob => {
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = `kp_whitespace_${new Date().toISOString().slice(0,10)}.xlsx`;
+      a.download = `namaa_whitespace_${new Date().toISOString().slice(0,10)}.xlsx`;
       a.click();
     })
     .catch(e => showError('Download failed: ' + e.message));
 }
 
-// ── UI helpers ────────────────────────────────────────────────
+// ── UI helpers ─────────────────────────────────────────────────
 function setRunning(running) {
   const btn = document.getElementById('run-btn');
   btn.disabled = running;
+  btn.classList.toggle('running', running);
   btn.innerHTML = running
     ? '<i class="fa-solid fa-spinner fa-spin"></i> Analysing…'
     : '<i class="fa-solid fa-play"></i> Run Whitespace Analysis';
@@ -958,42 +1299,52 @@ function showProgress(current, total, label) {
   document.getElementById('progress-pct').textContent = pct + '%';
 }
 
+function animateCount(el, target) {
+  const duration = 800;
+  const start    = Date.now();
+  const from     = 0;
+  const tick = () => {
+    const t = Math.min(1, (Date.now() - start) / duration);
+    const ease = 1 - Math.pow(1 - t, 3);
+    el.textContent = Math.round(from + (target - from) * ease).toLocaleString();
+    if (t < 1) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
 function showResults(summary) {
   document.getElementById('progress-wrap').style.display = 'none';
+  const brands  = summary?.brands   || 0;
+  const rows    = summary?.raw_rows || 0;
   document.getElementById('result-summary').style.display = '';
-  document.getElementById('result-brands').textContent = (summary?.brands || 0).toLocaleString();
-  document.getElementById('result-rows').textContent = (summary?.raw_rows || 0).toLocaleString();
-  document.getElementById('result-pins').textContent = summary?.pins || 0;
-  const dl = document.getElementById('download-btn');
-  dl.style.display = 'flex';
+  animateCount(document.getElementById('result-brands'), brands);
+  animateCount(document.getElementById('result-rows'),   rows);
+  // Header stats
+  document.getElementById('header-stats').style.display = 'flex';
+  animateCount(document.getElementById('hstat-brands'),  brands);
+  animateCount(document.getElementById('hstat-records'), rows);
+  document.getElementById('download-btn').style.display = 'flex';
 }
 
 function resetResults() {
   document.getElementById('result-summary').style.display = 'none';
   document.getElementById('download-btn').style.display = 'none';
+  document.getElementById('header-stats').style.display = 'none';
 }
 
 function showError(msg) {
-  const box = document.getElementById('error-box');
   document.getElementById('error-msg').textContent = msg;
-  box.style.display = '';
+  document.getElementById('error-box').style.display = '';
 }
+function clearError() { document.getElementById('error-box').style.display = 'none'; }
 
-function clearError() {
-  document.getElementById('error-box').style.display = 'none';
-}
-
-// ── Settings ──────────────────────────────────────────────────
+// ── Settings ───────────────────────────────────────────────────
 function openSettings() {
   document.getElementById('cfg-url').value = cfg.url;
   document.getElementById('cfg-key').value = cfg.key;
   document.getElementById('settings-modal').classList.add('open');
 }
-
-function closeSettings() {
-  document.getElementById('settings-modal').classList.remove('open');
-}
-
+function closeSettings() { document.getElementById('settings-modal').classList.remove('open'); }
 function saveSettings() {
   const url = document.getElementById('cfg-url').value.trim().replace(/\/$/, '');
   const key = document.getElementById('cfg-key').value.trim();
@@ -1001,12 +1352,11 @@ function saveSettings() {
   if (key) localStorage.setItem('kp_api_key', key);
   closeSettings();
 }
-
-document.getElementById('settings-modal').addEventListener('click', (e) => {
+document.getElementById('settings-modal').addEventListener('click', e => {
   if (e.target === document.getElementById('settings-modal')) closeSettings();
 });
 
-// ── API helper ────────────────────────────────────────────────
+// ── API ────────────────────────────────────────────────────────
 async function apiFetch(path, method = 'GET', body = null) {
   const headers = { 'Content-Type': 'application/json' };
   if (cfg.key) headers['X-API-Key'] = cfg.key;
@@ -1020,22 +1370,13 @@ function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// ── Init ──────────────────────────────────────────────────────
-// Auto-detect API URL when served from the VPS.
-// nginx routes: /api/* → FastAPI, so when served at /api/ui/ use origin + /api
+// ── Init ───────────────────────────────────────────────────────
 if (!localStorage.getItem('kp_api_url') && !location.origin.startsWith('file')) {
   const base = location.pathname.startsWith('/api/') ? location.origin + '/api' : location.origin;
   localStorage.setItem('kp_api_url', base);
 }
 
-// Hide the map hint after 8s
 setTimeout(() => { document.getElementById('map-hint').style.opacity = 0; }, 8000);
-
-// Show settings prompt if no key configured
-if (!cfg.key && !cfg.url.includes('localhost')) {
-  // Don't block on first load — user will see Settings button
-}
-
 renderPinList();
 </script>
 </body>
