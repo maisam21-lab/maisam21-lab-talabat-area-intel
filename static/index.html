@@ -404,10 +404,68 @@
       100% { transform: scale(2.8); opacity: 0; }
     }
     .kp-marker-future {
-      width: 12px; height: 12px;
-      background: #3d5a48; border-radius: 50%;
-      border: 2px solid #4a6a58;
+      width: 14px; height: 14px;
+      background: rgba(255,255,255,.08);
+      border-radius: 50%;
+      border: 2px dashed rgba(255,255,255,.35);
       position: relative;
+    }
+    .kp-marker-future::after {
+      content: '';
+      position: absolute;
+      inset: -6px;
+      border: 1.5px dashed rgba(255,255,255,.15);
+      border-radius: 50%;
+      animation: future-spin 9s linear infinite;
+    }
+    @keyframes future-spin {
+      from { transform: rotate(0deg); }
+      to   { transform: rotate(360deg); }
+    }
+
+    /* ── KP hover card ── */
+    #kp-hover-card {
+      position: fixed;
+      z-index: 9999;
+      width: 240px;
+      background: #0d1610;
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 12px 40px rgba(0,0,0,.7), 0 2px 8px rgba(0,0,0,.4);
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(8px) scale(.96);
+      transition: opacity .18s ease, transform .18s ease;
+    }
+    #kp-hover-card.visible {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+    #kp-hover-card .kp-card-img {
+      width: 100%; height: 140px;
+      object-fit: cover; display: block;
+      background: linear-gradient(135deg, #0d1a10, #1B3A26);
+    }
+    #kp-hover-card .kp-card-img-placeholder {
+      width: 100%; height: 140px;
+      display: flex; align-items: center; justify-content: center;
+      background: linear-gradient(135deg, #0d1a10, #1B3A26);
+      color: rgba(255,255,255,.2); font-size: 32px;
+    }
+    #kp-hover-card .kp-card-body {
+      padding: 12px 14px 14px;
+    }
+    #kp-hover-card .kp-card-name {
+      font-size: 13px; font-weight: 700; color: #fff; margin-bottom: 2px;
+    }
+    #kp-hover-card .kp-card-emirate {
+      font-size: 11px; color: rgba(255,255,255,.5); margin-bottom: 8px;
+    }
+    #kp-hover-card .kp-card-coords {
+      font-size: 9.5px; color: rgba(255,255,255,.3);
+      font-family: monospace; margin-top: 6px;
+      letter-spacing: .3px;
     }
 
     /* ── Pin marker ── */
@@ -735,6 +793,9 @@ function makeKpIcon(status) {
 
 KP_FACILITIES.forEach(fac => {
   const m = L.marker([fac.lat, fac.lng], { icon: makeKpIcon(fac.status) });
+  m.on('mouseover', e => showKpCard(fac, e.originalEvent.pageX, e.originalEvent.pageY));
+  m.on('mousemove', e => moveKpCard(e.originalEvent.pageX, e.originalEvent.pageY));
+  m.on('mouseout',  () => hideKpCard());
   const facId = `kp_${fac.lat}_${fac.lng}`.replace(/\./g,'');
   m.bindPopup(`
     <div style="min-width:185px; font-family:Inter,sans-serif;">
@@ -765,6 +826,66 @@ KP_FACILITIES.forEach(fac => {
   `);
   kpLayerGroup.addLayer(m);
 });
+
+// ── KP hover card ──
+const _GMAPS_KEY = 'AIzaSyA-wBQ5OlhNcqLet2OM6kJLBRInSXEtijw';
+
+function _kpStreetViewUrl(lat, lng) {
+  return `https://maps.googleapis.com/maps/api/streetview?size=480x280&location=${lat},${lng}&fov=80&pitch=8&source=outdoor&key=${_GMAPS_KEY}`;
+}
+function _kpSatUrl(lat, lng) {
+  return `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=17&size=480x280&maptype=satellite&key=${_GMAPS_KEY}`;
+}
+
+function showKpCard(fac, pageX, pageY) {
+  const card = document.getElementById('kp-hover-card');
+  const img  = document.getElementById('kp-card-img');
+  const satUrl = _kpSatUrl(fac.lat, fac.lng);
+
+  img.onerror = function() { if (this.src !== satUrl) this.src = satUrl; };
+  img.src = _kpStreetViewUrl(fac.lat, fac.lng);
+
+  document.getElementById('kp-card-name').textContent = fac.name;
+  document.getElementById('kp-card-emirate').textContent = fac.emirate;
+
+  const live = fac.status === 'Live';
+  document.getElementById('kp-card-status').innerHTML = `
+    <span style="
+      background:${live ? 'rgba(90,184,122,.15)' : 'rgba(255,255,255,.07)'};
+      color:${live ? '#5ab87a' : 'rgba(255,255,255,.45)'};
+      border:1px solid ${live ? 'rgba(90,184,122,.3)' : 'rgba(255,255,255,.12)'};
+      padding:2px 9px; border-radius:20px; font-size:10px; font-weight:600;
+      display:inline-flex; align-items:center; gap:4px;
+    ">
+      <span style="width:5px;height:5px;border-radius:50%;background:currentColor;display:inline-block;${live ? 'box-shadow:0 0 5px currentColor;' : ''}"></span>
+      ${live ? 'Live' : 'Coming Soon'}
+    </span>`;
+
+  document.getElementById('kp-card-coords').textContent = `${fac.lat.toFixed(5)}, ${fac.lng.toFixed(5)}`;
+  _positionKpCard(card, pageX, pageY);
+  card.classList.add('visible');
+}
+
+function _positionKpCard(card, pageX, pageY) {
+  const W = window.innerWidth, H = window.innerHeight;
+  const cW = 240, cH = 230;
+  let x = pageX + 18;
+  let y = pageY - cH / 2;
+  if (x + cW > W - 12) x = pageX - cW - 18;
+  if (y < 10) y = 10;
+  if (y + cH > H - 10) y = H - cH - 10;
+  card.style.left = x + 'px';
+  card.style.top  = y + 'px';
+}
+
+function moveKpCard(pageX, pageY) {
+  const card = document.getElementById('kp-hover-card');
+  if (card.classList.contains('visible')) _positionKpCard(card, pageX, pageY);
+}
+
+function hideKpCard() {
+  document.getElementById('kp-hover-card').classList.remove('visible');
+}
 
 function setKpAsTarget(lat, lng, name) {
   map.closePopup();
@@ -1050,5 +1171,18 @@ if (!localStorage.getItem('kp_api_url') && !location.origin.startsWith('file')) 
 setTimeout(() => { document.getElementById('map-hint').style.opacity = 0; }, 8000);
 renderPinList();
 </script>
+
+<!-- KP facility hover card -->
+<div id="kp-hover-card">
+  <img id="kp-card-img" src="" alt="" class="kp-card-img" />
+  <div class="kp-card-body">
+    <div id="kp-card-name" class="kp-card-name"></div>
+    <div id="kp-card-emirate" class="kp-card-emirate"></div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      <span id="kp-card-status"></span>
+    </div>
+    <div id="kp-card-coords" class="kp-card-coords"></div>
+  </div>
+</div>
 </body>
 </html>
