@@ -290,12 +290,40 @@
     }
     #run-btn.running { animation: pulse-run 2s ease-in-out infinite; }
 
-    #progress-wrap { display: none; }
+    /* ── Scrape status card ── */
+    #progress-wrap {
+      background: rgba(255,255,255,.03);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 13px 14px 12px;
+    }
+    .ss-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 10px;
+    }
+    .ss-badge {
+      font-size: 9.5px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase;
+      padding: 3px 9px; border-radius: 20px;
+      display: inline-flex; align-items: center; gap: 5px;
+    }
+    .ss-idle     { background: rgba(255,255,255,.05); color: rgba(255,255,255,.3); }
+    .ss-queued   { background: rgba(255,200,50,.08); color: #ffc832; border: 1px solid rgba(255,200,50,.2); }
+    .ss-running  { background: rgba(90,184,122,.12); color: var(--accent); border: 1px solid rgba(90,184,122,.25); }
+    .ss-complete { background: rgba(90,184,122,.12); color: var(--accent); border: 1px solid rgba(90,184,122,.25); }
+    .ss-failed   { background: rgba(220,60,60,.08); color: #ff8a80; border: 1px solid rgba(220,60,60,.2); }
+    .ss-dot { width:6px; height:6px; border-radius:50%; background:currentColor; display:inline-block; }
+    .ss-dot.pulse { animation: kp-pulse 2s ease-out infinite; }
+    #ss-elapsed { font-size: 10px; color: var(--muted); font-family: monospace; }
+    #ss-area {
+      font-size: 11.5px; color: var(--text2); margin-bottom: 8px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: none;
+    }
+    #ss-idle-msg { font-size: 11px; color: rgba(255,255,255,.25); text-align: center; padding: 2px 0 0; }
     #progress-label {
-      font-size: 11px; color: var(--text2); margin-bottom: 7px;
+      font-size: 10.5px; color: var(--text2); margin-bottom: 6px;
       display: flex; justify-content: space-between; align-items: center;
     }
-    #progress-pct { font-weight: 700; color: var(--accent); font-size: 12px; }
+    #progress-pct { font-weight: 700; color: var(--accent); font-size: 11.5px; }
     #progress-bar-bg {
       background: rgba(255,255,255,.05); border-radius: 100px;
       height: 5px; overflow: hidden;
@@ -642,15 +670,23 @@
       </div>
 
       <div id="progress-wrap">
-        <div id="progress-label">
-          <span id="progress-text">Starting…</span>
-          <span id="progress-pct">0%</span>
+        <div class="ss-header">
+          <span id="ss-badge" class="ss-badge ss-idle"><span class="ss-dot"></span>Idle</span>
+          <span id="ss-elapsed"></span>
         </div>
-        <div id="progress-bar-bg"><div id="progress-bar"></div></div>
-        <div id="progress-sub" style="display:none; margin-top:7px; display:flex; justify-content:space-between; align-items:center;">
-          <span id="progress-pages" style="font-size:10px; color:var(--muted);"></span>
-          <span id="progress-vendors" style="font-size:10px; color:var(--accent); font-weight:600;"></span>
+        <div id="ss-area"></div>
+        <div id="ss-bar-wrap" style="display:none;">
+          <div id="progress-label">
+            <span id="progress-text"></span>
+            <span id="progress-pct">0%</span>
+          </div>
+          <div id="progress-bar-bg"><div id="progress-bar"></div></div>
+          <div id="progress-sub" style="margin-top:7px; display:flex; justify-content:space-between; align-items:center;">
+            <span id="progress-pages" style="font-size:10px; color:var(--muted);"></span>
+            <span id="progress-vendors" style="font-size:10px; color:var(--accent); font-weight:600;"></span>
+          </div>
         </div>
+        <div id="ss-idle-msg">No active scrape</div>
       </div>
 
       <div id="result-summary">
@@ -1058,39 +1094,83 @@ async function runAnalysis() {
     const res = await apiFetch('/analyze', 'POST', { pins });
     if (!res.ok) throw new Error(res.detail || 'Failed to start job');
     state.jobId = res.job_id;
-    pollJob(res.job_id, pins.length);
+    pollJob(res.job_id, pins.length, new Date().toISOString());
   } catch (e) { setRunning(false); showError(e.message); }
 }
 
-function pollJob(jobId, totalPins) {
+function pollJob(jobId, totalPins, createdAt) {
+  localStorage.setItem('last_job_id', jobId);
   if (state.pollTimer) clearInterval(state.pollTimer);
   state.pollTimer = setInterval(async () => {
     try {
       const res = await apiFetch(`/analyze/${jobId}`, 'GET');
       if (!res.ok) return;
-      const { status, progress, result_summary, error } = res;
+      const { status, progress, result_summary, error, created_at } = res;
+      const jobCreatedAt = createdAt || created_at;
       if (status === 'running' || status === 'queued') {
+        _setBadge(status, status === 'queued' ? 'Queued' : 'Running');
         const extra = {
-          area_page:        progress?.area_page        || 0,
-          area_pages_total: progress?.area_pages_total || 0,
-          vendors_collected:progress?.vendors_collected|| 0,
+          area_page:         progress?.area_page         || 0,
+          area_pages_total:  progress?.area_pages_total  || 0,
+          vendors_collected: progress?.vendors_collected || 0,
         };
-        const pageDetail = extra.area_pages_total > 0
-          ? ` · page ${extra.area_page}/${extra.area_pages_total}` : '';
-        const label = progress?.current_pin
-          ? `Scraping: ${progress.current_pin}${pageDetail}`
-          : (status === 'queued' ? 'Queued…' : 'Starting…');
-        showProgress(progress?.current || 0, totalPins, label, extra);
+        const label = progress?.current_pin || (status === 'queued' ? 'Queued…' : 'Starting…');
+        showProgress(progress?.current || 0, totalPins, label, extra, jobCreatedAt);
       } else if (status === 'complete') {
         clearInterval(state.pollTimer);
-        showProgress(totalPins, totalPins, 'Complete');
-        setRunning(false); showResults(result_summary);
+        if (_elapsedTimer) clearInterval(_elapsedTimer);
+        _setBadge('complete', 'Complete');
+        document.getElementById('ss-bar-wrap').style.display = 'none';
+        document.getElementById('ss-area').style.display = 'none';
+        document.getElementById('ss-idle-msg').style.display = 'none';
+        setRunning(false);
+        document.getElementById('run-btn').disabled = false;
+        document.getElementById('run-btn').classList.remove('running');
+        document.getElementById('run-btn').innerHTML = '<i class="fa-solid fa-play"></i> Run Whitespace Analysis';
+        showResults(result_summary);
       } else if (status === 'failed') {
         clearInterval(state.pollTimer);
-        setRunning(false); showError(error || 'Analysis failed');
+        if (_elapsedTimer) clearInterval(_elapsedTimer);
+        _setBadge('failed', 'Failed');
+        document.getElementById('ss-bar-wrap').style.display = 'none';
+        document.getElementById('ss-area').style.display = 'none';
+        document.getElementById('ss-idle-msg').style.display = '';
+        document.getElementById('ss-idle-msg').textContent = error || 'Analysis failed';
+        setRunning(false);
+        showError(error || 'Analysis failed');
+        localStorage.removeItem('last_job_id');
       }
     } catch { /* blip */ }
-  }, 5000);
+  }, 4000);
+}
+
+async function initScrapeStatus() {
+  try {
+    const list = await apiFetch('/analyze', 'GET');
+    if (!list.ok || !list.jobs?.length) return;
+    const active = list.jobs.find(j => j.status === 'running' || j.status === 'queued');
+    const savedId = localStorage.getItem('last_job_id');
+    const target = active || list.jobs.find(j => j.job_id === savedId);
+    if (!target) return;
+    state.jobId = target.job_id;
+    const totalPins = target.pins?.length || 1;
+    if (target.status === 'running' || target.status === 'queued') {
+      const btn = document.getElementById('run-btn');
+      btn.disabled = true; btn.classList.add('running');
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Analysing…';
+      pollJob(target.job_id, totalPins, target.created_at);
+    } else if (target.status === 'complete' && target.result_summary) {
+      _setBadge('complete', 'Complete');
+      document.getElementById('ss-idle-msg').style.display = 'none';
+      const s = Math.floor((Date.now() - new Date(target.created_at)) / 1000);
+      const m = Math.floor(s / 60), h = Math.floor(m / 60);
+      document.getElementById('ss-elapsed').textContent = h > 0 ? `${h}h ${m % 60}m ago` : `${m}m ago`;
+      showResults(target.result_summary);
+    } else if (target.status === 'failed') {
+      _setBadge('failed', 'Failed');
+      document.getElementById('ss-idle-msg').textContent = target.error || 'Last scrape failed';
+    }
+  } catch { /* no jobs yet */ }
 }
 
 function downloadResults() {
@@ -1106,11 +1186,47 @@ function setRunning(running) {
   btn.disabled = running;
   btn.classList.toggle('running', running);
   btn.innerHTML = running ? '<i class="fa-solid fa-spinner fa-spin"></i> Analysing…' : '<i class="fa-solid fa-play"></i> Run Whitespace Analysis';
-  document.getElementById('progress-wrap').style.display = running ? '' : 'none';
+  if (!running) setStatusIdle();
 }
 
-function showProgress(current, total, label, extra) {
-  document.getElementById('progress-wrap').style.display = '';
+function setStatusIdle() {
+  _setBadge('idle', 'Idle');
+  document.getElementById('ss-area').style.display = 'none';
+  document.getElementById('ss-bar-wrap').style.display = 'none';
+  document.getElementById('ss-idle-msg').style.display = '';
+  document.getElementById('ss-elapsed').textContent = '';
+  if (_elapsedTimer) { clearInterval(_elapsedTimer); _elapsedTimer = null; }
+}
+
+let _elapsedTimer = null;
+let _jobStartTime = null;
+
+function _setBadge(state, label) {
+  const el = document.getElementById('ss-badge');
+  el.className = `ss-badge ss-${state}`;
+  const pulse = state === 'running' || state === 'queued';
+  el.innerHTML = `<span class="ss-dot${pulse ? ' pulse' : ''}"></span>${label}`;
+}
+
+function _startElapsed(createdAt) {
+  if (_elapsedTimer) clearInterval(_elapsedTimer);
+  _jobStartTime = createdAt ? new Date(createdAt) : new Date();
+  const el = document.getElementById('ss-elapsed');
+  const tick = () => {
+    const s = Math.floor((Date.now() - _jobStartTime) / 1000);
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    el.textContent = h > 0
+      ? `${h}h ${String(m).padStart(2,'0')}m`
+      : `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+  };
+  tick();
+  _elapsedTimer = setInterval(tick, 1000);
+}
+
+function showProgress(current, total, label, extra, createdAt) {
+  document.getElementById('ss-idle-msg').style.display = 'none';
+  document.getElementById('ss-bar-wrap').style.display = '';
+
   let pct = 0;
   if (extra?.area_pages_total > 0) {
     pct = Math.round((extra.area_page / extra.area_pages_total) * 100);
@@ -1121,16 +1237,22 @@ function showProgress(current, total, label, extra) {
   document.getElementById('progress-text').textContent = label;
   document.getElementById('progress-pct').textContent = pct + '%';
 
-  const subEl    = document.getElementById('progress-sub');
-  const pagesEl  = document.getElementById('progress-pages');
-  const vendorsEl= document.getElementById('progress-vendors');
+  const areaEl = document.getElementById('ss-area');
+  const pagesEl = document.getElementById('progress-pages');
+  const vendorsEl = document.getElementById('progress-vendors');
   if (extra?.area_pages_total > 0) {
-    subEl.style.display = 'flex';
-    pagesEl.textContent  = `Page ${extra.area_page.toLocaleString()} / ${extra.area_pages_total.toLocaleString()}`;
-    vendorsEl.textContent= extra.vendors_collected > 0 ? `${extra.vendors_collected.toLocaleString()} vendors collected` : '';
+    areaEl.style.display = '';
+    areaEl.textContent = label;
+    document.getElementById('progress-text').textContent = '';
+    pagesEl.textContent = `Page ${extra.area_page.toLocaleString()} / ${extra.area_pages_total.toLocaleString()}`;
+    vendorsEl.textContent = extra.vendors_collected > 0 ? `${extra.vendors_collected.toLocaleString()} vendors` : '';
   } else {
-    subEl.style.display = 'none';
+    areaEl.style.display = 'none';
+    pagesEl.textContent = '';
+    vendorsEl.textContent = '';
   }
+
+  if (createdAt && !_elapsedTimer) _startElapsed(createdAt);
 }
 
 function animateCount(el, target) {
@@ -1199,6 +1321,7 @@ if (!localStorage.getItem('kp_api_url') && !location.origin.startsWith('file')) 
 
 setTimeout(() => { document.getElementById('map-hint').style.opacity = 0; }, 8000);
 renderPinList();
+initScrapeStatus();
 </script>
 
 <!-- KP facility hover card -->

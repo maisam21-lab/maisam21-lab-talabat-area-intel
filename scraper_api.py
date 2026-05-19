@@ -1007,6 +1007,30 @@ def submit_analyze(
     return {"ok": True, "job_id": job_id, "total_pins": len(payload.pins)}
 
 
+@app.get("/analyze")
+def list_analyze_jobs(
+    x_api_key: str | None = Header(default=None),
+) -> dict:
+    verify_api_key(x_api_key)
+    with _ANALYZE_JOBS_LOCK:
+        jobs = [
+            {
+                "job_id": jid,
+                "status": j["status"],
+                "created_at": j.get("created_at"),
+                "progress": j.get("progress"),
+                "result_summary": j.get("result_summary"),
+                "pins": j.get("pins", []),
+            }
+            for jid, j in sorted(
+                _ANALYZE_JOBS.items(),
+                key=lambda x: x[1].get("created_at", ""),
+                reverse=True,
+            )
+        ]
+    return {"ok": True, "jobs": jobs}
+
+
 @app.get("/analyze/{job_id}")
 def get_analyze_job(
     job_id: str,
