@@ -236,3 +236,146 @@ def enrich_records_with_google_places(records: list[RestaurantRecord], *, force:
 
         done += 1
         time.sleep(0.12)
+
+
+def enrich_df_with_google_places(
+    df: "pd.DataFrame",
+    fallback_lat: float,
+    fallback_lng: float,
+    *,
+    max_brands: int = 300,
+) -> "pd.DataFrame":
+    """
+    Enrich a raw-records DataFrame with Google Places data (phone, address, maps link, legal name).
+
+    Works at brand level (one API call per restaurant_id) to minimise cost.
+    Adds/fills columns: contact_phone, legal_name, google_address, google_maps_link, data_source.
+    Records without enrichment get data_source='Talabat'.
+    Enriched records get data_source='Talabat + Google Maps'.
+    """
+    import pandas as pd
+
+    key = (os.getenv("GOOGLE_MAPS_API_KEY") or "").strip()
+
+    # Always stamp the source column first
+    df = df.copy()
+    for col in ["contact_phone", "legal_name", "google_address", "google_maps_link", "data_source"]:
+        if col not in df.columns:
+            df[col] = ""
+    df["data_source"] = "Talabat"
+
+    if not key:
+        return df
+
+    session = requests.Session()
+    brand_cache: dict = {}  # restaurant_id → enrichment dict or None
+    done = 0
+
+    for idx in df.index:
+        row = df.loc[idx]
+        rid = row.get("restaurant_id")
+        name = str(row.get("name") or "").strip()
+        if not name or len(name) < 2:
+            continue
+
+        # Apply cached result for same brand
+        if rid is not None and rid in brand_cache:
+            result = brand_cache[rid]
+            if result:
+                for col, val in result.items():
+                    if val and not str(df.at[idx, col]).strip():
+                        df.at[idx, col] = val
+                df.at[idx, "data_source"] = "Talabat + Google Maps"
+            continue
+
+        if done >= max_brands:
+            continue
+
+        # Reference coordinates — use vendor coords if available, else pin fallback
+        try:
+            vlat = float(row.get("latitude") or 0)
+            vlng = float(row.get("longitude") or 0)
+        except (TypeError, ValueError):
+            vlat = vlng = 0.0
+        ref_lat = vlat if vlat != 0.0 else fallback_lat
+        ref_lng = vlng if vlng != 0.0 else fallback_lng
+
+        # Google Places Text Search
+        area_hint = str(row.get("area") or "").strip()
+        query = f"{name} {area_hint} UAE".strip()
+        params: dict = {
+            "query": query,
+            "key": key,
+            "language": "en",
+            "location": f"{ref_lat},{ref_lng}",
+            "radius": "6000",
+        }
+        try:
+            r = session.get(TEXT_SEARCH_URL, params=params, timeout=14)
+            r.raise_for_status()
+            payload = r.json()
+        except (requests.RequestException, ValueError):
+            time.sleep(0.2)
+            continue
+
+        if payload.get("status") not in ("OK", "ZERO_RESULTS"):
+            time.sleep(0.3)
+            continue
+
+        results = payload.get("results") or []
+        picked = _pick_closest_result(results, ref_lat, ref_lng, max_km=5.0)
+        if not picked:
+            brand_cache[rid] = None
+            time.sleep(0.1)
+            continue
+
+        place_id = (picked.get("place_id") or "").strip()
+        if not place_id:
+            brand_cache[rid] = None
+            time.sleep(0.1)
+            continue
+
+        # Google Places Details
+        fields = "place_id,name,international_phone_number,formatted_phone_number,formatted_address,website,url,types"
+        try:
+            dr = session.get(
+                DETAILS_URL,
+                params={"place_id": place_id, "fields": fields, "key": key, "language": "en"},
+                timeout=14,
+            )
+            dr.raise_for_status()
+            detail = dr.json()
+        except (requests.RequestException, ValueError):
+            done += 1
+            time.sleep(0.2)
+            continue
+
+        if detail.get("status") != "OK":
+            done += 1
+            brand_cache[rid] = None
+            time.sleep(0.2)
+            continue
+
+        res = detail.get("result") or {}
+        phone = (res.get("international_phone_number") or res.get("formatted_phone_number") or "").strip()
+        gname = (res.get("name") or "").strip()
+        faddr = (res.get("formatted_address") or "").strip()
+        maps_url = (res.get("url") or "").strip()
+
+        enrichment = {
+            "contact_phone": phone,
+            "legal_name": gname,
+            "google_address": faddr,
+            "google_maps_link": maps_url,
+        }
+        brand_cache[rid] = enrichment
+
+        for col, val in enrichment.items():
+            if val and not str(df.at[idx, col]).strip():
+                df.at[idx, col] = val
+        df.at[idx, "data_source"] = "Talabat + Google Maps"
+
+        done += 1
+        time.sleep(0.12)
+
+    return df

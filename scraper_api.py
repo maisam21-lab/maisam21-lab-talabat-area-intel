@@ -1079,6 +1079,7 @@ def _run_analyze_job(job_id: str) -> None:
     import sys
     sys.path.insert(0, str(Path(__file__).parent))
     from whitespace_analysis import build_matrix, export_excel, FACILITIES
+    from places_enrich import enrich_df_with_google_places
 
     with _ANALYZE_JOBS_LOCK:
         job = _ANALYZE_JOBS[job_id]
@@ -1201,6 +1202,28 @@ def _run_analyze_job(job_id: str) -> None:
 
         # ── KP facility proximity enrichment ─────────────────────────────────
         matrix_df, raw_df = _enrich_kp_proximity(matrix_df, raw_df, FACILITIES)
+
+        # ── Google Places enrichment (phone, address, legal name) ─────────────
+        with _ANALYZE_JOBS_LOCK:
+            job["progress"]["current_pin"] = "Enriching with Google Maps…"
+        pin_lats = [float(p["lat"]) for p in pins]
+        pin_lngs = [float(p["lng"]) for p in pins]
+        centre_lat = sum(pin_lats) / len(pin_lats)
+        centre_lng = sum(pin_lngs) / len(pin_lngs)
+        raw_df = enrich_df_with_google_places(raw_df, centre_lat, centre_lng)
+
+        # Propagate enrichment to matrix (first non-empty per brand)
+        if not matrix_df.empty and not raw_df.empty and "restaurant_id" in raw_df.columns:
+            for col in ["contact_phone", "legal_name", "google_address", "google_maps_link", "data_source"]:
+                if col in raw_df.columns:
+                    first_val = (
+                        raw_df[raw_df[col].astype(str).str.strip() != ""]
+                        .groupby("restaurant_id")[col]
+                        .first()
+                    )
+                    matrix_df[col] = matrix_df["restaurant_id"].map(first_val).fillna(
+                        "Talabat" if col == "data_source" else ""
+                    )
 
         output_file = str(_ANALYZE_JOBS_DIR / f"analysis_{job_id}.xlsx")
         export_excel(matrix_df, raw_df, facilities_meta_list, facility_meta, output_file, radius_km=10.0)
