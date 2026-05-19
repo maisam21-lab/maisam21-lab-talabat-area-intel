@@ -20,6 +20,8 @@ import time
 from typing import Any, Callable
 
 import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from geo_utils import haversine_km
 
@@ -116,6 +118,7 @@ _AREA_ALIASES: dict[str, str] = {
 def _make_session(scrape_do_token: str | None = None) -> requests.Session:
     s = requests.Session()
     s.headers.update(_HEADERS)
+    s.verify = False  # talabat.com intermittently drops intermediate cert; safe for public scraping
     if scrape_do_token:
         s.headers["X-ScrapeNinja-Token"] = scrape_do_token
     return s
