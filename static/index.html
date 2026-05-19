@@ -24,10 +24,10 @@
       --brand2:  #224a30;
       --accent:  #5ab87a;
       --accent2: #3d8a58;
-      --text:    #f0f7f3;
-      --text2:   #8aaa98;
-      --muted:   #3d5a48;
-      --border:  rgba(255,255,255,.06);
+      --text:    #ffffff;
+      --text2:   rgba(255,255,255,.75);
+      --muted:   rgba(255,255,255,.5);
+      --border:  rgba(255,255,255,.08);
       --sidebar-w: 340px;
       --header-h:  68px;
     }
@@ -86,11 +86,12 @@
     }
     .brand-name .arabic {
       font-weight: 300; font-size: 13px;
-      opacity: .55; margin-left: 6px;
+      opacity: .85; margin-left: 6px;
     }
     .brand-sub {
-      font-size: 10.5px; color: var(--text2);
+      font-size: 10.5px; color: #fff;
       font-weight: 400; letter-spacing: .4px;
+      opacity: .75;
     }
 
     .header-sep {
@@ -100,7 +101,7 @@
 
     .header-tagline {
       font-size: 12.5px; font-weight: 300;
-      color: rgba(255,255,255,.5);
+      color: rgba(255,255,255,.88);
       letter-spacing: .2px;
       font-style: italic;
     }
@@ -127,7 +128,7 @@
     .settings-btn {
       background: rgba(255,255,255,.08);
       border: 1px solid rgba(255,255,255,.13);
-      color: rgba(255,255,255,.75);
+      color: #fff;
       padding: 7px 15px; border-radius: 8px; cursor: pointer;
       font-size: 12px; font-weight: 500;
       display: flex; align-items: center; gap: 7px;
@@ -497,34 +498,28 @@
 
 <!-- ── Header ─────────────────────────────────────────── -->
 <header>
-  <!-- NAMAA logo: organic irregular network, thick rounded capsule strokes -->
+  <!-- NAMAA logo: K5 complete graph on irregular pentagon = dense organic network -->
   <div class="namaa-logo-mark">
     <svg width="36" height="36" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <g stroke="white" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
-        <!-- 8 nodes: irregular organic layout matching NAMAA brand -->
-        <!-- N1(38,5) N2(70,10) N3(90,36) N4(84,68) N5(54,90) N6(18,80) N7(5,50) N8(16,22) -->
-        <!-- outer partial ring (not closed — organic feel) -->
-        <line x1="38" y1="5"  x2="70" y2="10"/>
-        <line x1="70" y1="10" x2="90" y2="36"/>
-        <line x1="54" y1="90" x2="18" y2="80"/>
-        <line x1="18" y1="80" x2="5"  y2="50"/>
-        <line x1="5"  y1="50" x2="16" y2="22"/>
-        <!-- crossing diagonals creating the star negative space -->
-        <line x1="70" y1="10" x2="18" y2="80"/>
-        <line x1="38" y1="5"  x2="84" y2="68"/>
-        <line x1="90" y1="36" x2="16" y2="22"/>
-        <line x1="84" y1="68" x2="5"  y2="50"/>
-        <line x1="54" y1="90" x2="16" y2="22"/>
+      <!-- 5 nodes — A(40,4) B(90,30) C(72,86) D(16,86) E(2,30) -->
+      <g stroke="white" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="40" y1="4"  x2="90" y2="30"/>
+        <line x1="40" y1="4"  x2="72" y2="86"/>
+        <line x1="40" y1="4"  x2="16" y2="86"/>
+        <line x1="40" y1="4"  x2="2"  y2="30"/>
+        <line x1="90" y1="30" x2="72" y2="86"/>
+        <line x1="90" y1="30" x2="16" y2="86"/>
+        <line x1="90" y1="30" x2="2"  y2="30"/>
+        <line x1="72" y1="86" x2="16" y2="86"/>
+        <line x1="72" y1="86" x2="2"  y2="30"/>
+        <line x1="16" y1="86" x2="2"  y2="30"/>
       </g>
       <g fill="white">
-        <circle cx="38" cy="5"  r="6"/>
-        <circle cx="70" cy="10" r="6"/>
-        <circle cx="90" cy="36" r="6"/>
-        <circle cx="84" cy="68" r="6"/>
-        <circle cx="54" cy="90" r="6"/>
-        <circle cx="18" cy="80" r="6"/>
-        <circle cx="5"  cy="50" r="6"/>
-        <circle cx="16" cy="22" r="6"/>
+        <circle cx="40" cy="4"  r="5.5"/>
+        <circle cx="90" cy="30" r="5.5"/>
+        <circle cx="72" cy="86" r="5.5"/>
+        <circle cx="16" cy="86" r="5.5"/>
+        <circle cx="2"  cy="30" r="5.5"/>
       </g>
     </svg>
   </div>
