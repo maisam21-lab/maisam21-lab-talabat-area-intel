@@ -212,6 +212,24 @@ def export_excel(
 ) -> None:
     """Write the three-sheet Excel report."""
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        # ── Facilities sheet written FIRST — guaranteed anchor so the workbook
+        #    always has at least one visible sheet even if all other data is empty.
+        fac_rows = []
+        for f in facilities:
+            meta = facility_meta.get(f["name"], {})
+            fac_rows.append({
+                "Facility": f["name"],
+                "Emirate": f["emirate"],
+                "Go Live": f["go_live"],
+                "Latitude": f["lat"],
+                "Longitude": f["lng"],
+                "Talabat Area": meta.get("area_slug", ""),
+                "Vendors in Radius": meta.get("vendors_in_radius", ""),
+                "Total Area Vendors": meta.get("total_vendors_reported", ""),
+                "Radius (km)": radius_km,
+            })
+        pd.DataFrame(fac_rows).to_excel(writer, sheet_name="Facilities", index=False)
+
         # ── Sheet 1: Matrix ───────────────────────────────────────────────────
         if not matrix_df.empty:
             _kp_extra = [c for c in ("kp_tenant", "kp_facilities", "opportunity") if c in matrix_df.columns]
@@ -303,29 +321,19 @@ def export_excel(
             ws2.column_dimensions["B"].width = 22
             ws2.freeze_panes = "A2"
 
-        # ── Sheet 3: Matrix ── now moved after whitespace ─────────────────────
-        # (Matrix sheet already written above as Sheet 1; this comment is a placeholder)
-
-        # ── Sheet 4: Raw Records ──────────────────────────────────────────────
+        # ── Sheet 3: Raw Records ─────────────────────────────────────────────
         if not raw_df.empty:
             raw_df.to_excel(writer, sheet_name="Raw Records", index=False)
 
-        # ── Sheet 5: Facilities ───────────────────────────────────────────────
-        fac_rows = []
-        for f in facilities:
-            meta = facility_meta.get(f["name"], {})
-            fac_rows.append({
-                "Facility": f["name"],
-                "Emirate": f["emirate"],
-                "Go Live": f["go_live"],
-                "Latitude": f["lat"],
-                "Longitude": f["lng"],
-                "Talabat Area": meta.get("area_slug", ""),
-                "Vendors in Radius": meta.get("vendors_in_radius", ""),
-                "Total Area Vendors": meta.get("total_vendors_reported", ""),
-                "Radius (km)": radius_km,
-            })
-        pd.DataFrame(fac_rows).to_excel(writer, sheet_name="Facilities", index=False)
+        # Guard: openpyxl raises "At least one sheet must be visible" if every
+        # sheet in the workbook is hidden. Ensure Facilities (written above) is
+        # always visible, and remove any stale default empty "Sheet" entry.
+        wb = writer.book
+        for ws in list(wb.worksheets):
+            if ws.title == "Sheet" and ws.max_row == 1 and ws.max_column == 1:
+                wb.remove(ws)
+        if wb.worksheets:
+            wb.worksheets[0].sheet_state = "visible"
 
     logger.info("Saved: %s", output_path)
 
