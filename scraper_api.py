@@ -975,6 +975,7 @@ class AnalyzePinRequest(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     pins: list[AnalyzePinRequest]
+    just_landed_only: bool = Field(default=False, description="Restrict output to vendors tagged as new/just-landed by Talabat")
 
 
 @app.post("/analyze")
@@ -991,6 +992,7 @@ def submit_analyze(
         "job_id": job_id,
         "status": "queued",
         "pins": [p.dict() for p in payload.pins],
+        "just_landed_only": payload.just_landed_only,
         "progress": {"current": 0, "total": len(payload.pins), "current_pin": None},
         "created_at": datetime.now().isoformat(),
         "output_file": None,
@@ -1232,6 +1234,10 @@ def _run_analyze_job(job_id: str) -> None:
                             v["_distance_km"] = round(_hav(lat, lng, vlat, vlng), 3)
                             vendors.append(v)
 
+                # Apply Just Landed filter if requested
+                if job.get("just_landed_only"):
+                    vendors = [v for v in vendors if v.get("isNew")]
+
                 meta = {**last_meta,
                         "areas_scraped": [s for _, s in areas_in_radius],
                         "vendors_in_radius": len(vendors),
@@ -1299,6 +1305,15 @@ def _run_analyze_job(job_id: str) -> None:
         output_file = str(_ANALYZE_JOBS_DIR / f"analysis_{job_id}.xlsx")
         export_excel(matrix_df, raw_df, facilities_meta_list, facility_meta, output_file, radius_km=10.0)
 
+        # Build vendor coordinate list for frontend heatmap
+        vendor_coords: list = []
+        if not raw_df.empty and "latitude" in raw_df.columns and "longitude" in raw_df.columns:
+            coords = raw_df[["latitude", "longitude"]].dropna()
+            coords = coords[(coords["latitude"] != 0) & (coords["longitude"] != 0)]
+            vendor_coords = coords.values.tolist()
+
+        just_landed_count = int((raw_df["is_new"] == True).sum()) if not raw_df.empty and "is_new" in raw_df.columns else 0  # noqa: E712
+
         with _ANALYZE_JOBS_LOCK:
             job["status"] = "complete"
             job["output_file"] = output_file
@@ -1307,6 +1322,8 @@ def _run_analyze_job(job_id: str) -> None:
                 "brands": len(matrix_df),
                 "raw_rows": len(raw_df),
                 "pins": len(pins),
+                "just_landed_count": just_landed_count,
+                "vendor_coords": vendor_coords,
             }
         _persist_job(job_id, job)
         logger.info("analyze_job complete job_id=%s brands=%d raw=%d", job_id, len(matrix_df), len(raw_df))

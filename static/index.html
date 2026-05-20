@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" />
+  <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
 
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -350,6 +351,40 @@
     }
     .rc-val { font-size: 22px; font-weight: 800; color: #fff; line-height: 1; }
     .rc-lbl { font-size: 9px; color: var(--text2); margin-top: 3px; text-transform: uppercase; letter-spacing: .6px; }
+
+    /* ── Just Landed toggle ── */
+    #jl-toggle-wrap {
+      display: flex; cursor: pointer; user-select: none;
+      background: rgba(255,255,255,.03); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px 12px;
+      transition: border-color .2s, background .2s;
+    }
+    #jl-toggle-wrap:hover { border-color: rgba(255,255,255,.15); background: rgba(255,255,255,.05); }
+    #jl-toggle-ui { display: flex; align-items: center; gap: 8px; width: 100%; }
+    #jl-dot {
+      width: 32px; height: 18px; border-radius: 9px; flex-shrink: 0;
+      background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.15);
+      position: relative; transition: background .2s;
+    }
+    #jl-dot::after {
+      content: ''; position: absolute; left: 2px; top: 2px;
+      width: 12px; height: 12px; border-radius: 50%;
+      background: rgba(255,255,255,.4); transition: transform .2s, background .2s;
+    }
+    #just-landed-toggle:checked ~ #jl-toggle-ui #jl-dot,
+    .jl-active #jl-dot {
+      background: rgba(90,184,122,.3); border-color: rgba(90,184,122,.5);
+    }
+    #just-landed-toggle:checked ~ #jl-toggle-ui #jl-dot::after,
+    .jl-active #jl-dot::after {
+      transform: translateX(14px); background: var(--accent);
+    }
+    #jl-label { font-size: 12px; font-weight: 600; color: var(--text2); flex: 1; }
+    #jl-badge {
+      font-size: 9.5px; color: rgba(255,255,255,.35);
+      background: rgba(255,255,255,.05); border-radius: 20px;
+      padding: 2px 7px; border: 1px solid rgba(255,255,255,.08);
+    }
 
     #download-btn {
       display: none; background: transparent;
@@ -699,8 +734,21 @@
             <div class="rc-val" id="result-rows">–</div>
             <div class="rc-lbl">Raw Records</div>
           </div>
+          <div class="result-card" id="result-jl-card" style="display:none;">
+            <div class="rc-val" id="result-jl" style="color:#5ab87a;">–</div>
+            <div class="rc-lbl">Just Landed</div>
+          </div>
         </div>
       </div>
+
+      <label id="jl-toggle-wrap" title="Restrict results to restaurants tagged as new by Talabat">
+        <input type="checkbox" id="just-landed-toggle" style="display:none;" />
+        <div id="jl-toggle-ui">
+          <span id="jl-dot"></span>
+          <span id="jl-label">Just Landed only</span>
+          <span id="jl-badge">New restaurants</span>
+        </div>
+      </label>
 
       <button id="run-btn" onclick="runAnalysis()">
         <i class="fa-solid fa-play"></i> Run Whitespace Analysis
@@ -717,6 +765,9 @@
       <button id="kp-toggle" class="active" onclick="toggleKpLayer()">
         <span class="kp-dot-live"></span> KP Facilities
         <span id="kp-badge" style="margin-left:4px; font-size:10px; opacity:.7;">18 Live · 7 Future</span>
+      </button>
+      <button id="heatmap-toggle" onclick="toggleHeatmap()" style="display:none;">
+        <i class="fa-solid fa-fire" style="color:#ff7043;"></i> Vendor Heatmap
       </button>
     </div>
   </div>
@@ -1088,10 +1139,11 @@ async function runAnalysis() {
   if (state.pins.length === 0) { showError('Add at least one pin to the map first.'); return; }
   clearError(); resetResults();
   const pins = state.pins.map(p => ({ name: p.name, lat: p.lat, lng: p.lng, radius_km: p.radius }));
+  const just_landed_only = document.getElementById('just-landed-toggle').checked;
   setRunning(true);
   showProgress(0, pins.length, 'Submitting job…');
   try {
-    const res = await apiFetch('/analyze', 'POST', { pins });
+    const res = await apiFetch('/analyze', 'POST', { pins, just_landed_only });
     if (!res.ok) throw new Error(res.detail || 'Failed to start job');
     state.jobId = res.job_id;
     pollJob(res.job_id, pins.length, new Date().toISOString());
@@ -1267,21 +1319,66 @@ function animateCount(el, target) {
 }
 
 function showResults(summary) {
-  document.getElementById('progress-wrap').style.display = 'none';
   const brands = summary?.brands || 0, rows = summary?.raw_rows || 0;
+  const jlCount = summary?.just_landed_count || 0;
   document.getElementById('result-summary').style.display = '';
   animateCount(document.getElementById('result-brands'), brands);
   animateCount(document.getElementById('result-rows'), rows);
+  const jlCard = document.getElementById('result-jl-card');
+  if (jlCount > 0) {
+    jlCard.style.display = '';
+    animateCount(document.getElementById('result-jl'), jlCount);
+  } else {
+    jlCard.style.display = 'none';
+  }
   document.getElementById('header-stats').style.display = 'flex';
   animateCount(document.getElementById('hstat-brands'), brands);
   animateCount(document.getElementById('hstat-records'), rows);
   document.getElementById('download-btn').style.display = 'flex';
+
+  // Build heatmap if coordinates available
+  const coords = summary?.vendor_coords;
+  if (coords && coords.length > 0) {
+    buildHeatmap(coords);
+    document.getElementById('heatmap-toggle').style.display = '';
+  }
+}
+
+// ── Heatmap ──
+let _heatLayer = null;
+let _heatVisible = false;
+
+function buildHeatmap(coords) {
+  if (_heatLayer) { map.removeLayer(_heatLayer); _heatLayer = null; }
+  const points = coords.map(([lat, lng]) => [lat, lng, 1]);
+  _heatLayer = L.heatLayer(points, {
+    radius: 22, blur: 18, maxZoom: 14,
+    gradient: { 0.2: '#1B3A26', 0.4: '#2d7a45', 0.6: '#5ab87a', 0.8: '#ffd166', 1.0: '#ef476f' },
+  });
+  _heatVisible = false;
+}
+
+function toggleHeatmap() {
+  if (!_heatLayer) return;
+  const btn = document.getElementById('heatmap-toggle');
+  if (_heatVisible) {
+    map.removeLayer(_heatLayer);
+    _heatVisible = false;
+    btn.classList.remove('active');
+  } else {
+    _heatLayer.addTo(map);
+    _heatVisible = true;
+    btn.classList.add('active');
+  }
 }
 
 function resetResults() {
   document.getElementById('result-summary').style.display = 'none';
   document.getElementById('download-btn').style.display = 'none';
   document.getElementById('header-stats').style.display = 'none';
+  document.getElementById('heatmap-toggle').style.display = 'none';
+  document.getElementById('result-jl-card').style.display = 'none';
+  if (_heatLayer) { map.removeLayer(_heatLayer); _heatLayer = null; _heatVisible = false; }
 }
 
 function showError(msg) { document.getElementById('error-msg').textContent = msg; document.getElementById('error-box').style.display = 'flex'; }

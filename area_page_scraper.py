@@ -454,8 +454,10 @@ def vendor_to_row(v: dict, *, pin_lat: float = 0.0, pin_lng: float = 0.0) -> dic
     cuisines_raw = v.get("cuisines") or []
     cuisine_names = [c.get("name") or c.get("slug") or "" for c in cuisines_raw if isinstance(c, dict)]
 
+    branch_id_raw = v.get("branchId")
     row: dict[str, Any] = {
-        "branch_id":            v.get("branchId"),
+        "namaa_id":             f"NBT-{int(branch_id_raw):07d}" if branch_id_raw else None,
+        "branch_id":            branch_id_raw,
         "restaurant_id":        v.get("restaurantId"),
         "name":                 v.get("name"),
         "branch_name":          v.get("branchName"),
