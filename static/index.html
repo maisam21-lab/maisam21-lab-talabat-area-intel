@@ -396,6 +396,30 @@
     }
     #download-btn:hover { border-color: rgba(255,255,255,.2); color: var(--text); transform: translateY(-1px); }
 
+    /* ── User Manual ── */
+    .man-section {
+      border-left: 2px solid rgba(90,184,122,.25);
+      padding-left: 14px;
+    }
+    .man-step { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+    .man-num {
+      width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
+      background: rgba(90,184,122,.15); border: 1px solid rgba(90,184,122,.3);
+      color: var(--accent); font-size: 11px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .man-title { font-size: 13px; font-weight: 700; color: #fff; }
+    .man-body { font-size: 12px; color: rgba(255,255,255,.65); line-height: 1.6; }
+    .man-body strong { color: rgba(255,255,255,.9); }
+    .man-body em { color: var(--accent); font-style: normal; }
+    .man-body code {
+      background: rgba(255,255,255,.08); border-radius: 4px;
+      padding: 1px 5px; font-size: 11px; color: var(--accent);
+    }
+    .man-list { margin: 8px 0 0 16px; display: flex; flex-direction: column; gap: 5px; }
+    .man-list li { font-size: 12px; color: rgba(255,255,255,.6); line-height: 1.5; }
+    .man-list li strong { color: rgba(255,255,255,.85); }
+
     #error-box {
       display: none; background: rgba(200,50,50,.1);
       border: 1px solid rgba(200,50,50,.25);
@@ -643,6 +667,9 @@
     <div class="header-sep" style="margin:0 4px;"></div>
   </div>
 
+  <button class="settings-btn" onclick="openManual()" style="background:rgba(90,184,122,.12);border-color:rgba(90,184,122,.25);color:var(--accent);">
+    <i class="fa-solid fa-book-open"></i> User Manual
+  </button>
   <button class="settings-btn" onclick="openSettings()">
     <i class="fa-solid fa-gear"></i> Settings
   </button>
@@ -776,6 +803,67 @@
 <div id="map-hint">
   <i class="fa-solid fa-hand-pointer"></i>
   Click anywhere on the map to drop a pin
+</div>
+
+<!-- User Manual Modal -->
+<div class="modal-overlay" id="manual-modal">
+  <div class="modal" style="max-width:560px;max-height:85vh;overflow-y:auto;">
+    <h2><i class="fa-solid fa-book-open"></i> User Manual</h2>
+
+    <div style="display:flex;flex-direction:column;gap:18px;margin-top:4px;">
+
+      <div class="man-section">
+        <div class="man-step"><span class="man-num">1</span><span class="man-title">Drop a Pin</span></div>
+        <div class="man-body">Click anywhere on the map to place a scrape pin, or type a location name in the search bar. A dialog will ask you to name the pin (e.g. <em>"Business Bay"</em>). You can add multiple pins to compare several areas in one run. Drag a pin to reposition it.</div>
+      </div>
+
+      <div class="man-section">
+        <div class="man-step"><span class="man-num">2</span><span class="man-title">Set the Radius</span></div>
+        <div class="man-body">The <strong>Radius</strong> field controls how far around each pin we pull restaurants (1–30 km). All Talabat delivery areas whose centre falls within that circle are scraped. Smaller radius = faster run, more targeted data. Start with <strong>10 km</strong> for a typical kitchen park coverage zone.</div>
+      </div>
+
+      <div class="man-section">
+        <div class="man-step"><span class="man-num">3</span><span class="man-title">Just Landed (optional)</span></div>
+        <div class="man-body">Toggle <strong>Just Landed only</strong> to restrict results to restaurants Talabat has flagged as newly added. Useful for tracking new entrants in a target area without the noise of the full incumbent list. The result card will show a separate <em>Just Landed</em> count.</div>
+      </div>
+
+      <div class="man-section">
+        <div class="man-step"><span class="man-num">4</span><span class="man-title">Run the Analysis</span></div>
+        <div class="man-body">Click <strong>Run Whitespace Analysis</strong>. The job runs in the background — you can close the browser and come back. The status card in the sidebar shows live progress: current area, page X / Y, and vendor count. A scrape covering 9 areas typically takes 25–40 minutes.</div>
+      </div>
+
+      <div class="man-section">
+        <div class="man-step"><span class="man-num">5</span><span class="man-title">Download Results</span></div>
+        <div class="man-body">When complete, click <strong>Download Excel Report</strong>. The file has three sheets:
+          <ul class="man-list">
+            <li><strong>Matrix</strong> — brands as rows, your pins as columns, ✓ where the brand is present. Includes <em>legal name</em>, <em>phone</em>, <em>Google Maps link</em>, and KP tenant flag.</li>
+            <li><strong>Raw</strong> — every individual branch with full detail including the unique <code>namaa_id</code> (NBT-XXXXXXX), coordinates, rating, delivery time, and <em>is_new</em> flag.</li>
+            <li><strong>Facilities</strong> — KP facility metadata used in the run.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="man-section">
+        <div class="man-step"><span class="man-num">6</span><span class="man-title">Vendor Heatmap</span></div>
+        <div class="man-body">After a scrape completes, a <strong>🔥 Vendor Heatmap</strong> button appears in the top-left of the map. Click it to overlay restaurant density — green is sparse, yellow is moderate, red is dense. Click again to hide.</div>
+      </div>
+
+      <div class="man-section">
+        <div class="man-step"><span class="man-num">7</span><span class="man-title">KP Facilities Layer</span></div>
+        <div class="man-body">The <strong>KP Facilities</strong> toggle in the map shows all Kitchen Park locations. <span style="color:var(--accent);">●</span> Pulsing green = Live. <span style="color:rgba(255,255,255,.4);">◌</span> Spinning dashed = Coming Soon. Hover any marker for a Street View photo. Click a marker and hit <strong>Set as Scrape Target</strong> to instantly drop a pin at that facility.</div>
+      </div>
+
+      <div class="man-section">
+        <div class="man-step"><span class="man-num">8</span><span class="man-title">Understanding namaa_id</span></div>
+        <div class="man-body">Every branch row in the Excel carries a stable unique identifier in the format <code>NBT-0012345</code> (NAMAA Branch Talabat). Use this to track the same branch across multiple scrape runs and build a longitudinal database over time.</div>
+      </div>
+
+    </div>
+
+    <div class="modal-actions" style="margin-top:24px;">
+      <button class="btn-primary" onclick="closeManual()">Got it</button>
+    </div>
+  </div>
 </div>
 
 <!-- Settings Modal -->
@@ -1383,6 +1471,10 @@ function resetResults() {
 
 function showError(msg) { document.getElementById('error-msg').textContent = msg; document.getElementById('error-box').style.display = 'flex'; }
 function clearError() { document.getElementById('error-box').style.display = 'none'; }
+
+function openManual() { document.getElementById('manual-modal').classList.add('open'); }
+function closeManual() { document.getElementById('manual-modal').classList.remove('open'); }
+document.getElementById('manual-modal').addEventListener('click', e => { if (e.target === document.getElementById('manual-modal')) closeManual(); });
 
 function openSettings() {
   document.getElementById('cfg-url').value = cfg.url;
