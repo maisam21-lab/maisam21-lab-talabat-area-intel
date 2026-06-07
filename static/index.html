@@ -1942,7 +1942,7 @@ initScrapeStatus();
 (async () => {
   try {
     if (!localStorage.getItem('kp_api_key')) {
-      const configRes = await fetch(cfg.url + '/ui/config');
+      const configRes = await fetch(cfg.url + '/config');
       if (configRes.ok) {
         const config = await configRes.json();
         if (config.api_key) {

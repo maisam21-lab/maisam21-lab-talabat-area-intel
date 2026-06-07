@@ -361,7 +361,7 @@ def health() -> dict:
     return {"ok": True}
 
 
-@app.get("/ui/config")
+@app.get("/config")
 async def ui_config():
     """Public endpoint — returns bootstrap config for the NAMAA frontend (no auth required)."""
     key = os.getenv("SCRAPER_API_KEY", "").strip()
