@@ -1627,7 +1627,7 @@ async function initScrapeStatus() {
 
 function downloadResults() {
   if (!state.jobId) return;
-  fetch(`${cfg.url}/analyze/${state.jobId}/download`, { headers: {} })
+  fetch(`${cfg.url}/analyze/${state.jobId}/download`, { headers: { 'X-Session-ID': localStorage.getItem('namaa_session_id') || '' } })
     .then(r => { if (!r.ok) throw new Error('Download failed'); return r.blob(); })
     .then(blob => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `namaa_whitespace_${new Date().toISOString().slice(0,10)}.xlsx`; a.click(); })
     .catch(e => showError('Download failed: ' + e.message));
@@ -1925,6 +1925,8 @@ document.getElementById('settings-modal').addEventListener('click', e => { if (e
 async function apiFetch(path, method = 'GET', body = null) {
   // Key is injected by nginx — browser does not need to send it
   const headers = { 'Content-Type': 'application/json' };
+  const sid = localStorage.getItem('namaa_session_id');
+  if (sid) headers['X-Session-ID'] = sid;
   const opts = { method, headers };
   if (body) opts.body = JSON.stringify(body);
   return (await fetch(cfg.url + path, opts)).json();
@@ -1937,6 +1939,11 @@ function escHtml(s) {
 if (!localStorage.getItem('kp_api_url') && !location.origin.startsWith('file')) {
   const base = location.pathname.startsWith('/api/') ? location.origin + '/api' : location.origin;
   localStorage.setItem('kp_api_url', base);
+}
+
+// Generate a persistent session ID for this browser (isolates jobs per user)
+if (!localStorage.getItem('namaa_session_id')) {
+  localStorage.setItem('namaa_session_id', 'sess_' + crypto.randomUUID());
 }
 
 setTimeout(() => { document.getElementById('map-hint').style.opacity = 0; }, 8000);

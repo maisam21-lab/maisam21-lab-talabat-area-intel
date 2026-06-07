@@ -1001,15 +1001,28 @@ class AnalyzeRequest(BaseModel):
 def submit_analyze(
     payload: AnalyzeRequest,
     x_api_key: str | None = Header(default=None),
+    x_session_id: str | None = Header(default=None, alias="X-Session-ID"),
 ) -> dict:
     verify_api_key(x_api_key)
     if not payload.pins:
         raise HTTPException(status_code=400, detail="pins list cannot be empty")
 
+    # Per-session job limit: reject if this session already has a running job
+    session_id = x_session_id or "global"
+    if x_session_id:
+        with _ANALYZE_JOBS_LOCK:
+            running = [
+                j for j in _ANALYZE_JOBS.values()
+                if j.get("session_id") == session_id and j.get("status") in ("queued", "running")
+            ]
+        if running:
+            raise HTTPException(status_code=429, detail="You already have a job running. Wait for it to finish.")
+
     job_id = uuid.uuid4().hex
     job: dict = {
         "job_id": job_id,
         "status": "queued",
+        "session_id": session_id,
         "pins": [p.dict() for p in payload.pins],
         "just_landed_only": payload.just_landed_only,
         "progress": {"current": 0, "total": len(payload.pins), "current_pin": None},
@@ -1031,6 +1044,7 @@ def submit_analyze(
 @app.get("/analyze")
 def list_analyze_jobs(
     x_api_key: str | None = Header(default=None),
+    x_session_id: str | None = Header(default=None, alias="X-Session-ID"),
 ) -> dict:
     verify_api_key(x_api_key)
     with _ANALYZE_JOBS_LOCK:
@@ -1048,6 +1062,7 @@ def list_analyze_jobs(
                 key=lambda x: x[1].get("created_at", ""),
                 reverse=True,
             )
+            if not x_session_id or j.get("session_id") in (x_session_id, "global", None)
         ]
     return {"ok": True, "jobs": jobs}
 
