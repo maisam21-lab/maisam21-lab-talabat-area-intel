@@ -1543,6 +1543,7 @@ async function runAnalysis() {
     const res = await apiFetch('/analyze', 'POST', { pins, just_landed_only });
     if (!res.ok) throw new Error(res.detail || 'Failed to start job');
     state.jobId = res.job_id;
+    localStorage.setItem('last_job_id', res.job_id);
     pollJob(res.job_id, pins.length, new Date().toISOString());
   } catch (e) { setRunning(false); showError(e.message); }
 }
@@ -1599,9 +1600,9 @@ async function initScrapeStatus() {
   try {
     const list = await apiFetch('/analyze', 'GET');
     if (!list.ok || !list.jobs?.length) return;
-    const active = list.jobs.find(j => j.status === 'running' || j.status === 'queued');
     const savedId = localStorage.getItem('last_job_id');
-    const target = active || list.jobs.find(j => j.job_id === savedId);
+    // Only show YOUR job (matched by localStorage id). Never hijack another user's running job.
+    const target = list.jobs.find(j => j.job_id === savedId);
     if (!target) return;
     state.jobId = target.job_id;
     const totalPins = target.pins?.length || 1;
@@ -1679,10 +1680,14 @@ function showProgress(current, total, label, extra, createdAt) {
   document.getElementById('ss-bar-wrap').style.display = '';
 
   let pct = 0;
-  if (extra?.area_pages_total > 0) {
-    pct = Math.round((extra.area_page / extra.area_pages_total) * 100);
-  } else if (total > 0) {
-    pct = Math.round((current / total) * 100);
+  if (total > 0) {
+    // Completed pins contribute their full share; current pin uses page progress within its share
+    const pinShare = 1 / total;
+    const completedPct = (current / total) * 100;
+    const withinPinPct = (extra?.area_pages_total > 0)
+      ? (extra.area_page / extra.area_pages_total) * pinShare * 100
+      : 0;
+    pct = Math.min(99, Math.round(completedPct + withinPinPct));
   }
   document.getElementById('progress-bar').style.width = pct + '%';
   document.getElementById('progress-text').textContent = label;
