@@ -1626,7 +1626,7 @@ async function initScrapeStatus() {
 
 function downloadResults() {
   if (!state.jobId) return;
-  fetch(`${cfg.url}/analyze/${state.jobId}/download`, { headers: cfg.key ? { 'X-API-Key': cfg.key } : {} })
+  fetch(`${cfg.url}/analyze/${state.jobId}/download`, { headers: {} })
     .then(r => { if (!r.ok) throw new Error('Download failed'); return r.blob(); })
     .then(blob => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `namaa_whitespace_${new Date().toISOString().slice(0,10)}.xlsx`; a.click(); })
     .catch(e => showError('Download failed: ' + e.message));
@@ -1918,8 +1918,8 @@ function saveSettings() {
 document.getElementById('settings-modal').addEventListener('click', e => { if (e.target === document.getElementById('settings-modal')) closeSettings(); });
 
 async function apiFetch(path, method = 'GET', body = null) {
+  // Key is injected by nginx — browser does not need to send it
   const headers = { 'Content-Type': 'application/json' };
-  if (cfg.key) headers['X-API-Key'] = cfg.key;
   const opts = { method, headers };
   if (body) opts.body = JSON.stringify(body);
   return (await fetch(cfg.url + path, opts)).json();
@@ -1938,27 +1938,15 @@ setTimeout(() => { document.getElementById('map-hint').style.opacity = 0; }, 800
 renderPinList();
 initScrapeStatus();
 
-// Auto-bootstrap API key from server config (so all users work without manual Settings)
+// Key is injected by nginx — no need to fetch /config from the browser
 (async () => {
-  try {
-    if (!localStorage.getItem('kp_api_key')) {
-      const configRes = await fetch(cfg.url + '/config');
-      if (configRes.ok) {
-        const config = await configRes.json();
-        if (config.api_key) {
-          localStorage.setItem('kp_api_key', config.api_key);
-        }
-      }
-    }
-  } catch { /* no connection yet */ }
-  // Populate archive badge count silently on load
   try {
     const res = await apiFetch('/analyze', 'GET');
     if (res.ok) {
       const n = (res.jobs || []).filter(j => j.status === 'complete').length;
       _updateWHHeaderCount(n);
     }
-  } catch { /* no connection yet */ }
+  } catch {}
 })();
 
 // ── Warehouse ──────────────────────────────────────────────────────────────
@@ -2121,7 +2109,7 @@ async function whLoadMap(jobId) {
 
 function whDownload(jobId) {
   fetch(`${cfg.url}/analyze/${jobId}/download`, {
-    headers: cfg.key ? { 'X-API-Key': cfg.key } : {}
+    headers: {}
   }).then(r => {
     if (!r.ok) throw new Error();
     return r.blob();
