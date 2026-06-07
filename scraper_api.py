@@ -1006,14 +1006,6 @@ def submit_analyze(
     if not payload.pins:
         raise HTTPException(status_code=400, detail="pins list cannot be empty")
 
-    with _ANALYZE_JOBS_LOCK:
-        running = [j for j in _ANALYZE_JOBS.values() if j.get("status") == "running"]
-    if running:
-        raise HTTPException(
-            status_code=429,
-            detail="An analysis is already running. Please wait for it to complete before submitting a new one.",
-        )
-
     job_id = uuid.uuid4().hex
     job: dict = {
         "job_id": job_id,
