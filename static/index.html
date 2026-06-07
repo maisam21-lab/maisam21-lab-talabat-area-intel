@@ -428,6 +428,78 @@
       display: none; gap: 7px; align-items: flex-start;
     }
 
+    /* ── Talabat source badge ── */
+    .talabat-source {
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+      margin-top: 10px; padding: 7px 12px;
+      background: rgba(255,102,0,.06); border: 1px solid rgba(255,102,0,.15);
+      border-radius: 8px; font-size: 11px; color: rgba(255,255,255,.5);
+    }
+    .talabat-t {
+      width: 16px; height: 16px; border-radius: 4px;
+      background: #FF6600; display: inline-flex; align-items: center;
+      justify-content: center; font-size: 10px; font-weight: 900;
+      color: #fff; flex-shrink: 0; letter-spacing: -1px;
+    }
+
+    /* ── Vendor layer mode buttons ── */
+    #vendor-layer-btns {
+      display: none;
+      background: rgba(8,14,10,.88); backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,.12); border-radius: 10px;
+      overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,.5);
+      flex-direction: row;
+    }
+    .map-mode-btn {
+      background: transparent; border: none; color: var(--text2);
+      padding: 9px 14px; font-size: 11.5px; font-weight: 600;
+      cursor: pointer; font-family: inherit; display: flex;
+      align-items: center; gap: 6px; transition: all .18s;
+      border-right: 1px solid rgba(255,255,255,.08);
+    }
+    .map-mode-btn:last-child { border-right: none; }
+    .map-mode-btn:hover { background: rgba(255,255,255,.05); color: var(--text); }
+    .map-mode-btn.active { background: rgba(255,102,0,.12); color: #FF6600; }
+
+    /* ── Cuisine legend ── */
+    #cuisine-legend {
+      display: none; position: absolute; bottom: 50px;
+      right: 14px; z-index: 800;
+      background: rgba(8,14,10,.92); backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,.1); border-radius: 10px;
+      padding: 10px 14px; min-width: 140px;
+      box-shadow: 0 4px 20px rgba(0,0,0,.5);
+    }
+    .legend-title { font-size: 9.5px; font-weight: 700; color: var(--muted);
+      text-transform: uppercase; letter-spacing: .6px; margin-bottom: 8px; }
+    .legend-row { display: flex; align-items: center; gap: 7px;
+      font-size: 11px; color: var(--text2); padding: 2px 0; }
+    .legend-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+
+    /* ── Vendor popup (Talabat branded) ── */
+    .vendor-popup { min-width: 200px; max-width: 240px; }
+    .vp-header {
+      display: flex; align-items: center; gap: 6px;
+      margin-bottom: 8px; padding-bottom: 8px;
+      border-bottom: 1px solid rgba(255,255,255,.07);
+    }
+    .vp-talabat-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      background: rgba(255,102,0,.1); border: 1px solid rgba(255,102,0,.25);
+      border-radius: 5px; padding: 2px 7px;
+      font-size: 10px; font-weight: 700; color: #FF6600; letter-spacing: .3px;
+    }
+    .vp-name { font-size: 13px; font-weight: 700; color: #fff; margin-bottom: 3px; }
+    .vp-cuisine { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+    .vp-stats { font-size: 11px; color: var(--text2); margin-bottom: 8px; }
+    .vp-link {
+      display: block; text-align: center; background: #FF6600;
+      color: #fff; text-decoration: none; padding: 6px 10px;
+      border-radius: 7px; font-size: 12px; font-weight: 600;
+      transition: background .15s;
+    }
+    .vp-link:hover { background: #e55500; }
+
     /* ────────────────── MAP ────────────────── */
     #map { flex: 1; }
 
@@ -555,6 +627,169 @@
       letter-spacing: .3px;
     }
 
+    /* ── Warehouse drawer ── */
+    #wh-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,.55); z-index: 8500;
+      backdrop-filter: blur(3px);
+    }
+    #wh-overlay.open { display: block; }
+    #warehouse-drawer {
+      position: fixed; top: 0; right: -480px; bottom: 0;
+      width: 460px; z-index: 8600;
+      background: #0a110c;
+      border-left: 1px solid rgba(255,255,255,.08);
+      display: flex; flex-direction: column;
+      transition: right .3s cubic-bezier(.4,0,.2,1);
+      box-shadow: -10px 0 50px rgba(0,0,0,.7);
+    }
+    #warehouse-drawer.open { right: 0; }
+    #wh-header {
+      padding: 20px 20px 16px;
+      border-bottom: 1px solid rgba(255,255,255,.06);
+      display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+    }
+    #wh-header h3 {
+      font-size: 14px; font-weight: 700; color: #fff; flex: 1;
+      display: flex; align-items: center; gap: 8px;
+    }
+    #wh-header h3 i { color: var(--accent); }
+    #wh-count-badge {
+      background: rgba(90,184,122,.12); color: var(--accent);
+      border: 1px solid rgba(90,184,122,.2);
+      padding: 2px 9px; border-radius: 20px;
+      font-size: 10px; font-weight: 700;
+    }
+    #wh-close-btn {
+      background: none; border: none; color: var(--muted);
+      font-size: 16px; cursor: pointer; padding: 4px 8px;
+      border-radius: 6px; transition: color .15s;
+    }
+    #wh-close-btn:hover { color: var(--text); }
+    #wh-search {
+      padding: 12px 20px; flex-shrink: 0;
+      border-bottom: 1px solid rgba(255,255,255,.05);
+    }
+    #wh-search input {
+      width: 100%; background: rgba(255,255,255,.04);
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 9px 12px; font-size: 12px; color: var(--text);
+      font-family: inherit; outline: none; transition: border .2s;
+    }
+    #wh-search input:focus { border-color: rgba(90,184,122,.3); }
+    #wh-search input::placeholder { color: var(--muted); }
+    #wh-list { flex: 1; overflow-y: auto; padding: 12px 16px; }
+    #wh-empty {
+      text-align: center; padding: 50px 20px;
+      color: var(--muted); font-size: 12px;
+    }
+    #wh-empty i { font-size: 32px; display: block; margin-bottom: 12px; opacity: .2; }
+    .wh-card {
+      background: rgba(255,255,255,.03);
+      border: 1px solid rgba(255,255,255,.06);
+      border-radius: 12px; padding: 14px 16px;
+      margin-bottom: 10px; transition: border-color .15s;
+    }
+    .wh-card:hover { border-color: rgba(255,255,255,.12); }
+    .wh-card.wh-selected {
+      border-color: rgba(90,184,122,.35);
+      background: rgba(90,184,122,.04);
+    }
+    .wh-card-top {
+      display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px;
+    }
+    .wh-check {
+      width: 16px; height: 16px; border-radius: 4px;
+      border: 1.5px solid rgba(255,255,255,.18);
+      background: transparent; cursor: pointer; flex-shrink: 0;
+      margin-top: 1px; transition: all .15s; appearance: none;
+    }
+    .wh-check:checked { background: var(--accent); border-color: var(--accent); }
+    .wh-card-meta { flex: 1; min-width: 0; }
+    .wh-pins {
+      font-size: 13px; font-weight: 600; color: var(--text);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      margin-bottom: 3px;
+    }
+    .wh-date { font-size: 10px; color: var(--muted); }
+    .wh-radius-badge {
+      font-size: 10px; font-weight: 600; color: var(--muted);
+      background: rgba(255,255,255,.05); border-radius: 5px;
+      padding: 2px 7px; flex-shrink: 0;
+    }
+    .wh-stats {
+      display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px;
+    }
+    .wh-stat {
+      background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.07);
+      border-radius: 6px; padding: 4px 8px;
+      font-size: 10px; color: var(--text2);
+      display: flex; align-items: center; gap: 4px;
+    }
+    .wh-stat-val { font-weight: 700; color: var(--text); }
+    .wh-stat.wh-jl { border-color: rgba(90,184,122,.2); }
+    .wh-stat.wh-jl .wh-stat-val { color: var(--accent); }
+    .wh-actions { display: flex; gap: 8px; }
+    .wh-btn {
+      flex: 1; padding: 7px 10px; border-radius: 7px;
+      font-size: 11px; font-weight: 600; cursor: pointer;
+      font-family: inherit; transition: all .15s;
+      display: flex; align-items: center; justify-content: center; gap: 5px;
+    }
+    .wh-btn-map {
+      background: rgba(90,184,122,.1); border: 1px solid rgba(90,184,122,.2);
+      color: var(--accent);
+    }
+    .wh-btn-map:hover { background: rgba(90,184,122,.18); border-color: rgba(90,184,122,.35); }
+    .wh-btn-dl {
+      background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1);
+      color: var(--text2);
+    }
+    .wh-btn-dl:hover { border-color: rgba(255,255,255,.22); color: var(--text); }
+
+    /* ── Compare bar ── */
+    #wh-compare-bar {
+      display: none; padding: 12px 16px;
+      border-top: 1px solid rgba(255,255,255,.06);
+      background: rgba(90,184,122,.04); flex-shrink: 0;
+    }
+    #wh-compare-bar.show { display: block; }
+    #wh-cmp-btn {
+      width: 100%; padding: 10px; border-radius: 8px;
+      background: var(--brand2); border: none;
+      color: #fff; font-size: 13px; font-weight: 700;
+      cursor: pointer; font-family: inherit; transition: background .15s;
+      display: flex; align-items: center; justify-content: center; gap: 7px;
+    }
+    #wh-cmp-btn:hover { background: var(--accent); }
+    #wh-cmp-hint { font-size: 10px; color: var(--muted); text-align: center; margin-top: 6px; }
+
+    /* ── Diff result panel ── */
+    #wh-diff-panel {
+      display: none; padding: 16px 20px;
+      border-top: 1px solid rgba(255,255,255,.06);
+      flex-shrink: 0; background: rgba(0,0,0,.3);
+    }
+    #wh-diff-panel.show { display: block; }
+    .diff-title { font-size: 11px; font-weight: 700; color: var(--text2);
+      text-transform: uppercase; letter-spacing: .6px; margin-bottom: 10px; }
+    .diff-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .diff-card { border-radius: 8px; padding: 10px 12px; text-align: center; }
+    .diff-new  { background: rgba(90,184,122,.08); border: 1px solid rgba(90,184,122,.2); }
+    .diff-lost { background: rgba(220,60,60,.08); border: 1px solid rgba(220,60,60,.2); }
+    .diff-same { background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.08); }
+    .diff-val { font-size: 20px; font-weight: 800; color: #fff; }
+    .diff-new  .diff-val { color: var(--accent); }
+    .diff-lost .diff-val { color: #ff8a80; }
+    .diff-lbl { font-size: 9px; color: var(--muted); margin-top: 2px;
+      text-transform: uppercase; letter-spacing: .5px; }
+    .diff-names {
+      margin-top: 10px; max-height: 100px; overflow-y: auto;
+      font-size: 11px; color: var(--text2); line-height: 1.6;
+    }
+    .diff-names .dn-new  { color: #5ab87a; }
+    .diff-names .dn-lost { color: #ff8a80; }
+
     /* ── Pin marker ── */
     .pin-marker {
       width: 30px; height: 30px;
@@ -670,6 +905,10 @@
   <button class="settings-btn" onclick="openManual()" style="background:rgba(90,184,122,.12);border-color:rgba(90,184,122,.25);color:var(--accent);">
     <i class="fa-solid fa-book-open"></i> User Manual
   </button>
+  <button class="settings-btn" id="wh-header-btn" onclick="openWarehouse()" title="Results Archive">
+    <i class="fa-solid fa-database"></i> Archive
+    <span id="wh-header-count" style="display:none;background:rgba(90,184,122,.15);color:var(--accent);border:1px solid rgba(90,184,122,.2);padding:1px 6px;border-radius:10px;font-size:9px;font-weight:700;margin-left:2px;"></span>
+  </button>
   <button class="settings-btn" onclick="openSettings()">
     <i class="fa-solid fa-gear"></i> Settings
   </button>
@@ -703,7 +942,7 @@
     </div>
 
     <div class="sidebar-section">
-      <div class="section-label">Scrape Radius</div>
+      <div class="section-label">Analysis Radius</div>
       <div id="radius-wrap">
         <label>Radius around each pin</label>
         <input id="radius-input" class="si" type="number" value="10" min="1" max="30" />
@@ -748,7 +987,7 @@
             <span id="progress-vendors" style="font-size:10px; color:var(--accent); font-weight:600;"></span>
           </div>
         </div>
-        <div id="ss-idle-msg">No active scrape</div>
+        <div id="ss-idle-msg">No active analysis</div>
       </div>
 
       <div id="result-summary">
@@ -765,6 +1004,10 @@
             <div class="rc-val" id="result-jl" style="color:#5ab87a;">–</div>
             <div class="rc-lbl">Just Landed</div>
           </div>
+        </div>
+        <div class="talabat-source">
+          <span class="talabat-t">t</span>
+          Data sourced from Talabat UAE
         </div>
       </div>
 
@@ -793,10 +1036,16 @@
         <span class="kp-dot-live"></span> KP Facilities
         <span id="kp-badge" style="margin-left:4px; font-size:10px; opacity:.7;">18 Live · 7 Future</span>
       </button>
-      <button id="heatmap-toggle" onclick="toggleHeatmap()" style="display:none;">
-        <i class="fa-solid fa-fire" style="color:#ff7043;"></i> Vendor Heatmap
-      </button>
+      <div id="vendor-layer-btns">
+        <button id="heat-mode-btn" class="map-mode-btn active" onclick="setMapMode('heat')">
+          <i class="fa-solid fa-fire" style="color:#FF6600;"></i> Heat
+        </button>
+        <button id="dots-mode-btn" class="map-mode-btn" onclick="setMapMode('dots')">
+          <i class="fa-solid fa-circle-dot"></i> Vendors
+        </button>
+      </div>
     </div>
+    <div id="cuisine-legend"></div>
   </div>
 </div>
 
@@ -814,12 +1063,12 @@
 
       <div class="man-section">
         <div class="man-step"><span class="man-num">1</span><span class="man-title">Drop a Pin</span></div>
-        <div class="man-body">Click anywhere on the map to place a scrape pin, or type a location name in the search bar. A dialog will ask you to name the pin (e.g. <em>"Business Bay"</em>). You can add multiple pins to compare several areas in one run. Drag a pin to reposition it.</div>
+        <div class="man-body">Click anywhere on the map to place an analysis pin, or type a location name in the search bar. A dialog will ask you to name the pin (e.g. <em>"Business Bay"</em>). You can add multiple pins to compare several areas in one run. Drag a pin to reposition it.</div>
       </div>
 
       <div class="man-section">
         <div class="man-step"><span class="man-num">2</span><span class="man-title">Set the Radius</span></div>
-        <div class="man-body">The <strong>Radius</strong> field controls how far around each pin we pull restaurants (1–30 km). All Talabat delivery areas whose centre falls within that circle are scraped. Smaller radius = faster run, more targeted data. Start with <strong>10 km</strong> for a typical kitchen park coverage zone.</div>
+        <div class="man-body">The <strong>Radius</strong> field controls how far around each pin we pull restaurant data (1–30 km). All Talabat delivery areas whose centre falls within that circle are included. Smaller radius = faster run, more targeted data. Start with <strong>10 km</strong> for a typical kitchen park coverage zone.</div>
       </div>
 
       <div class="man-section">
@@ -829,7 +1078,7 @@
 
       <div class="man-section">
         <div class="man-step"><span class="man-num">4</span><span class="man-title">Run the Analysis</span></div>
-        <div class="man-body">Click <strong>Run Whitespace Analysis</strong>. The job runs in the background — you can close the browser and come back. The status card in the sidebar shows live progress: current area, page X / Y, and vendor count. A scrape covering 9 areas typically takes 25–40 minutes.</div>
+        <div class="man-body">Click <strong>Run Whitespace Analysis</strong>. The job runs in the background — you can close the browser and come back. The status card in the sidebar shows live progress: current area, page X / Y, and vendor count. An analysis covering 9 areas typically takes 25–40 minutes.</div>
       </div>
 
       <div class="man-section">
@@ -844,18 +1093,39 @@
       </div>
 
       <div class="man-section">
-        <div class="man-step"><span class="man-num">6</span><span class="man-title">Vendor Heatmap</span></div>
-        <div class="man-body">After a scrape completes, a <strong>🔥 Vendor Heatmap</strong> button appears in the top-left of the map. Click it to overlay restaurant density — green is sparse, yellow is moderate, red is dense. Click again to hide.</div>
+        <div class="man-step"><span class="man-num">6</span><span class="man-title">Interactive Vendor Map</span></div>
+        <div class="man-body">After an analysis completes, two map buttons appear in the top-right:
+          <ul class="man-list">
+            <li><strong><i class="fa-solid fa-fire" style="color:#FF6600;"></i> Heat</strong> — density heatmap with a Talabat orange gradient. Dark = sparse, gold = dense hotspot.</li>
+            <li><strong><i class="fa-solid fa-circle-dot"></i> Vendors</strong> — individual coloured dots, one per restaurant, colour-coded by cuisine type. A legend appears bottom-right. Click any dot to open a popup with the brand name, rating, review count, distance from pin, and a direct <em>View on Talabat →</em> link.</li>
+          </ul>
+        </div>
       </div>
 
       <div class="man-section">
-        <div class="man-step"><span class="man-num">7</span><span class="man-title">KP Facilities Layer</span></div>
-        <div class="man-body">The <strong>KP Facilities</strong> toggle in the map shows all Kitchen Park locations. <span style="color:var(--accent);">●</span> Pulsing green = Live. <span style="color:rgba(255,255,255,.4);">◌</span> Spinning dashed = Coming Soon. Hover any marker for a Street View photo. Click a marker and hit <strong>Set as Scrape Target</strong> to instantly drop a pin at that facility.</div>
+        <div class="man-step"><span class="man-num">7</span><span class="man-title">Results Archive</span></div>
+        <div class="man-body">Click <strong><i class="fa-solid fa-database"></i> Archive</strong> in the header to open your results warehouse. Every completed analysis is saved here permanently with its pin names, radius, timestamp, brand count, record count, and unique SKU count. From any past result you can:
+          <ul class="man-list">
+            <li><strong>Load on Map</strong> — instantly re-plot that result's vendor layer without re-running.</li>
+            <li><strong>Excel</strong> — re-download the full report at any time.</li>
+            <li><strong>Compare</strong> — tick any two results and click <em>Compare</em> to see a diff: new brands that entered the market, brands that left, and the retained overlap. Uses the stable <code>namaa_id</code> for accurate matching.</li>
+          </ul>
+        </div>
       </div>
 
       <div class="man-section">
-        <div class="man-step"><span class="man-num">8</span><span class="man-title">Understanding namaa_id</span></div>
-        <div class="man-body">Every branch row in the Excel carries a stable unique identifier in the format <code>NBT-0012345</code> (NAMAA Branch Talabat). Use this to track the same branch across multiple scrape runs and build a longitudinal database over time.</div>
+        <div class="man-step"><span class="man-num">8</span><span class="man-title">KP Facilities Layer</span></div>
+        <div class="man-body">The <strong>KP Facilities</strong> toggle in the map shows all Kitchen Park locations. <span style="color:var(--accent);">●</span> Pulsing green = Live. <span style="color:rgba(255,255,255,.4);">◌</span> Spinning dashed = Coming Soon. Hover any marker for a Street View photo. Click a marker and hit <strong>Analyse this Location</strong> to instantly drop a pin at that facility.</div>
+      </div>
+
+      <div class="man-section">
+        <div class="man-step"><span class="man-num">9</span><span class="man-title">Understanding namaa_id</span></div>
+        <div class="man-body">Every branch row in the Excel carries a stable unique identifier in the format <code>NBT-0012345</code> (NAMAA Branch Talabat). Use this to track the same branch across multiple analysis runs, power the Archive compare feature, and build a longitudinal market database over time.</div>
+      </div>
+
+      <div class="man-section">
+        <div class="man-step"><span class="man-num">10</span><span class="man-title">Coverage Warning</span></div>
+        <div class="man-body">If a pin is placed in a desert or uncovered area (no Talabat delivery zones within the chosen radius), the tool will show a <strong style="color:#ffc107;">⚠ Coverage Warning</strong> banner instead of silently returning 0 results. Move the pin to an urban area or increase the radius and re-run.</div>
       </div>
 
     </div>
@@ -873,7 +1143,7 @@
     <div class="form-row">
       <label>API Server URL</label>
       <input id="cfg-url" type="text" placeholder="https://178.105.56.187/api" />
-      <div class="hint">The URL of your Talabat scraper API server</div>
+      <div class="hint">The URL of your analytics API server</div>
     </div>
     <div class="form-row">
       <label>API Key</label>
@@ -884,6 +1154,45 @@
       <button class="btn-secondary" onclick="closeSettings()">Cancel</button>
       <button class="btn-primary" onclick="saveSettings()">Save Settings</button>
     </div>
+  </div>
+</div>
+
+<!-- Warehouse Drawer -->
+<div id="wh-overlay" onclick="closeWarehouse()"></div>
+<div id="warehouse-drawer">
+  <div id="wh-header">
+    <h3><i class="fa-solid fa-database"></i> Results Archive <span id="wh-count-badge"></span></h3>
+    <button id="wh-close-btn" onclick="closeWarehouse()"><i class="fa-solid fa-xmark"></i></button>
+  </div>
+  <div id="wh-search">
+    <input type="text" placeholder="Search by pin name…" oninput="whFilter(this.value)" />
+  </div>
+  <div id="wh-list">
+    <div id="wh-empty"><i class="fa-solid fa-database"></i>No completed analyses yet.<br>Run an analysis to start building your archive.</div>
+  </div>
+  <div id="wh-compare-bar">
+    <button id="wh-cmp-btn" onclick="runWHCompare()">
+      <i class="fa-solid fa-code-compare"></i> Compare Selected Results
+    </button>
+    <div id="wh-cmp-hint">Select exactly 2 results to compare</div>
+  </div>
+  <div id="wh-diff-panel">
+    <div class="diff-title"><i class="fa-solid fa-code-compare"></i> Comparison Result</div>
+    <div class="diff-grid">
+      <div class="diff-card diff-new">
+        <div class="diff-val" id="diff-new-count">–</div>
+        <div class="diff-lbl">New Brands</div>
+      </div>
+      <div class="diff-card diff-lost">
+        <div class="diff-val" id="diff-lost-count">–</div>
+        <div class="diff-lbl">Left Market</div>
+      </div>
+      <div class="diff-card diff-same">
+        <div class="diff-val" id="diff-same-count">–</div>
+        <div class="diff-lbl">Retained</div>
+      </div>
+    </div>
+    <div class="diff-names" id="diff-names-list"></div>
   </div>
 </div>
 
@@ -999,7 +1308,7 @@ KP_FACILITIES.forEach(fac => {
         font-size:12px; font-weight:600; display:flex; align-items:center; justify-content:center; gap:6px;
         transition:all .2s;
       " onmouseover="this.style.background='rgba(90,184,122,.22)'" onmouseout="this.style.background='rgba(90,184,122,.12)'">
-        <i class='fa-solid fa-crosshairs'></i> Set as Scrape Target
+        <i class='fa-solid fa-crosshairs'></i> Analyse this Location
       </button>
     </div>
   `);
@@ -1268,6 +1577,8 @@ function pollJob(jobId, totalPins, createdAt) {
         document.getElementById('run-btn').classList.remove('running');
         document.getElementById('run-btn').innerHTML = '<i class="fa-solid fa-play"></i> Run Whitespace Analysis';
         showResults(result_summary);
+        // Refresh archive badge
+        apiFetch('/analyze','GET').then(r => { if(r.ok) _updateWHHeaderCount((r.jobs||[]).filter(j=>j.status==='complete').length); }).catch(()=>{});
       } else if (status === 'failed') {
         clearInterval(state.pollTimer);
         if (_elapsedTimer) clearInterval(_elapsedTimer);
@@ -1308,7 +1619,7 @@ async function initScrapeStatus() {
       showResults(target.result_summary);
     } else if (target.status === 'failed') {
       _setBadge('failed', 'Failed');
-      document.getElementById('ss-idle-msg').textContent = target.error || 'Last scrape failed';
+      document.getElementById('ss-idle-msg').textContent = target.error || 'Last analysis failed';
     }
   } catch { /* no jobs yet */ }
 }
@@ -1412,6 +1723,25 @@ function showResults(summary) {
   document.getElementById('result-summary').style.display = '';
   animateCount(document.getElementById('result-brands'), brands);
   animateCount(document.getElementById('result-rows'), rows);
+
+  // Show per-pin coverage warnings
+  const pinErrors = summary?.pin_errors || {};
+  const errorEntries = Object.entries(pinErrors);
+  if (errorEntries.length > 0) {
+    const msgs = errorEntries.map(([pin, err]) => `<b>${pin}:</b> ${err}`).join('<br>');
+    let warn = document.getElementById('pin-warn-box');
+    if (!warn) {
+      warn = document.createElement('div');
+      warn.id = 'pin-warn-box';
+      warn.style.cssText = 'background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px 16px;margin-bottom:12px;font-size:13px;color:#856404;line-height:1.5;';
+      document.getElementById('result-summary').prepend(warn);
+    }
+    warn.innerHTML = `<b>⚠ Coverage Warning</b><br>${msgs}`;
+    warn.style.display = '';
+  } else {
+    const warn = document.getElementById('pin-warn-box');
+    if (warn) warn.style.display = 'none';
+  }
   const jlCard = document.getElementById('result-jl-card');
   if (jlCount > 0) {
     jlCard.style.display = '';
@@ -1424,49 +1754,145 @@ function showResults(summary) {
   animateCount(document.getElementById('hstat-records'), rows);
   document.getElementById('download-btn').style.display = 'flex';
 
-  // Build heatmap if coordinates available
-  const coords = summary?.vendor_coords;
-  if (coords && coords.length > 0) {
-    buildHeatmap(coords);
-    document.getElementById('heatmap-toggle').style.display = '';
+  // Build interactive vendor layer if points available
+  const pts = summary?.vendor_points || [];
+  const coords = summary?.vendor_coords || [];
+  if (pts.length > 0) {
+    _mapMode = 'heat';
+    buildVendorLayer(pts);
+  } else if (coords.length > 0) {
+    // fallback: heat only, no dots
+    _mapMode = 'heat';
+    buildVendorLayer(coords.map(([lat,lng]) => ({lat,lng,n:'',c:'',r:null,rv:null,d:0,u:''})));
   }
 }
 
-// ── Heatmap ──
-let _heatLayer = null;
-let _heatVisible = false;
+// ── Vendor Layer (Heat + Dots dual-mode) ──
+let _heatLayer   = null;
+let _dotsGroup   = null;
+let _mapMode     = 'heat';   // 'heat' | 'dots' | null (off)
+let _vendorPts   = [];
 
-function buildHeatmap(coords) {
-  if (_heatLayer) { map.removeLayer(_heatLayer); _heatLayer = null; }
-  const points = coords.map(([lat, lng]) => [lat, lng, 1]);
-  _heatLayer = L.heatLayer(points, {
-    radius: 22, blur: 18, maxZoom: 14,
-    gradient: { 0.2: '#1B3A26', 0.4: '#2d7a45', 0.6: '#5ab87a', 0.8: '#ffd166', 1.0: '#ef476f' },
+const CUISINE_COLORS = {
+  burger:   '#e67e22', pizza:    '#e74c3c', sushi:    '#3498db',
+  arabic:   '#f39c12', chinese:  '#e91e63', indian:   '#ff9800',
+  coffee:   '#795548', dessert:  '#9c27b0', grocery:  '#4caf50',
+  healthy:  '#8bc34a', italian:  '#ff5722', mexican:  '#cddc39',
+  seafood:  '#00bcd4', chicken:  '#ffc107', shawarma: '#ff7043',
+  american: '#e53935', japanese: '#42a5f5', turkish:  '#ab47bc',
+  default:  '#FF6600',
+};
+
+function _cuisineColor(str) {
+  if (!str) return CUISINE_COLORS.default;
+  const l = str.toLowerCase();
+  for (const [k, v] of Object.entries(CUISINE_COLORS)) {
+    if (k !== 'default' && l.includes(k)) return v;
+  }
+  return CUISINE_COLORS.default;
+}
+
+function _vendorPopup(pt) {
+  const stars = pt.r ? `⭐ ${pt.r.toFixed(1)}` : '';
+  const revs  = pt.rv ? `· ${pt.rv.toLocaleString()} reviews` : '';
+  const dist  = pt.d  ? `· ${pt.d} km` : '';
+  const link  = pt.u  ? `<a class="vp-link" href="${pt.u}" target="_blank" rel="noopener">View on Talabat →</a>` : '';
+  return `<div class="vendor-popup">
+    <div class="vp-header"><span class="vp-talabat-badge"><span style="font-weight:900;font-size:11px;">t</span>&nbsp;talabat</span></div>
+    <div class="vp-name">${pt.n || 'Unknown'}</div>
+    ${pt.c ? `<div class="vp-cuisine">${pt.c}</div>` : ''}
+    ${(stars||dist) ? `<div class="vp-stats">${[stars, revs, dist].filter(Boolean).join(' ')}</div>` : ''}
+    ${link}
+  </div>`;
+}
+
+function buildVendorLayer(points) {
+  _clearVendorLayers();
+  _vendorPts = points || [];
+  if (!_vendorPts.length) return;
+
+  // Heat layer — Talabat orange gradient
+  const heatPts = _vendorPts.map(p => [p.lat, p.lng, 1]);
+  _heatLayer = L.heatLayer(heatPts, {
+    radius: 28, blur: 22, maxZoom: 16,
+    gradient: { 0.15: '#1a0800', 0.35: '#7a2200', 0.55: '#cc4400', 0.75: '#FF6600', 1.0: '#ffd000' },
   });
-  _heatVisible = false;
+
+  // Dots layer — colored by cuisine with animated entrance
+  _dotsGroup = L.featureGroup();
+  const seen = {};
+  _vendorPts.forEach((pt, i) => {
+    const color = _cuisineColor(pt.c);
+    const key   = `${Math.round(pt.lat*1000)}_${Math.round(pt.lng*1000)}`;
+    const jitter = seen[key] ? 0.0002 * (seen[key] % 6) : 0;
+    seen[key] = (seen[key] || 0) + 1;
+    const circle = L.circleMarker([pt.lat + jitter, pt.lng + jitter], {
+      radius: 7, color: '#000', weight: 1, opacity: 0.5,
+      fillColor: color, fillOpacity: 0.85,
+      className: 'vendor-dot',
+    });
+    circle.bindPopup(_vendorPopup(pt), { maxWidth: 260, className: 'dark-popup' });
+    _dotsGroup.addLayer(circle);
+  });
+
+  // Apply current mode
+  _applyMapMode();
+  _buildCuisineLegend(_vendorPts);
+  document.getElementById('vendor-layer-btns').style.display = 'flex';
 }
 
-function toggleHeatmap() {
-  if (!_heatLayer) return;
-  const btn = document.getElementById('heatmap-toggle');
-  if (_heatVisible) {
-    map.removeLayer(_heatLayer);
-    _heatVisible = false;
-    btn.classList.remove('active');
-  } else {
-    _heatLayer.addTo(map);
-    _heatVisible = true;
-    btn.classList.add('active');
-  }
+function _clearVendorLayers() {
+  if (_heatLayer)  { map.removeLayer(_heatLayer);  _heatLayer = null; }
+  if (_dotsGroup)  { map.removeLayer(_dotsGroup);  _dotsGroup = null; }
 }
+
+function _applyMapMode() {
+  if (_mapMode === 'heat' && _heatLayer)  { _heatLayer.addTo(map);  if (_dotsGroup) map.removeLayer(_dotsGroup); }
+  if (_mapMode === 'dots' && _dotsGroup)  { _dotsGroup.addTo(map);  if (_heatLayer) map.removeLayer(_heatLayer); }
+  document.getElementById('heat-mode-btn').classList.toggle('active', _mapMode === 'heat');
+  document.getElementById('dots-mode-btn').classList.toggle('active', _mapMode === 'dots');
+  const leg = document.getElementById('cuisine-legend');
+  if (leg) leg.style.display = _mapMode === 'dots' ? '' : 'none';
+}
+
+function setMapMode(mode) {
+  _mapMode = mode;
+  _applyMapMode();
+}
+
+function _buildCuisineLegend(points) {
+  const counts = {};
+  points.forEach(p => {
+    const col = _cuisineColor(p.c);
+    const lbl = p.c ? p.c.split(',')[0].trim() : 'Other';
+    if (!counts[col]) counts[col] = { lbl, n: 0 };
+    counts[col].n++;
+  });
+  const top = Object.entries(counts)
+    .sort((a, b) => b[1].n - a[1].n)
+    .slice(0, 8);
+  const leg = document.getElementById('cuisine-legend');
+  if (!leg) return;
+  leg.innerHTML = `<div class="legend-title">Cuisine</div>` +
+    top.map(([color, {lbl, n}]) =>
+      `<div class="legend-row"><span class="legend-dot" style="background:${color}"></span>${lbl} <span style="margin-left:auto;opacity:.5;font-size:10px;">${n}</span></div>`
+    ).join('');
+  leg.style.display = _mapMode === 'dots' ? '' : 'none';
+}
+
+// legacy alias kept so old code paths don't break
+function toggleHeatmap() { setMapMode(_mapMode === 'heat' ? 'dots' : 'heat'); }
 
 function resetResults() {
   document.getElementById('result-summary').style.display = 'none';
   document.getElementById('download-btn').style.display = 'none';
   document.getElementById('header-stats').style.display = 'none';
-  document.getElementById('heatmap-toggle').style.display = 'none';
+  document.getElementById('vendor-layer-btns').style.display = 'none';
   document.getElementById('result-jl-card').style.display = 'none';
-  if (_heatLayer) { map.removeLayer(_heatLayer); _heatLayer = null; _heatVisible = false; }
+  const leg = document.getElementById('cuisine-legend');
+  if (leg) leg.style.display = 'none';
+  _clearVendorLayers();
+  _vendorPts = [];
 }
 
 function showError(msg) { document.getElementById('error-msg').textContent = msg; document.getElementById('error-box').style.display = 'flex'; }
@@ -1511,6 +1937,238 @@ if (!localStorage.getItem('kp_api_url') && !location.origin.startsWith('file')) 
 setTimeout(() => { document.getElementById('map-hint').style.opacity = 0; }, 8000);
 renderPinList();
 initScrapeStatus();
+
+// Auto-bootstrap API key from server config (so all users work without manual Settings)
+(async () => {
+  try {
+    if (!localStorage.getItem('kp_api_key')) {
+      const configRes = await fetch(cfg.url + '/ui/config');
+      if (configRes.ok) {
+        const config = await configRes.json();
+        if (config.api_key) {
+          localStorage.setItem('kp_api_key', config.api_key);
+        }
+      }
+    }
+  } catch { /* no connection yet */ }
+  // Populate archive badge count silently on load
+  try {
+    const res = await apiFetch('/analyze', 'GET');
+    if (res.ok) {
+      const n = (res.jobs || []).filter(j => j.status === 'complete').length;
+      _updateWHHeaderCount(n);
+    }
+  } catch { /* no connection yet */ }
+})();
+
+// ── Warehouse ──────────────────────────────────────────────────────────────
+let _whJobs = [];        // all loaded jobs
+let _whSelected = [];    // job_ids selected for compare (max 2)
+
+function openWarehouse() {
+  document.getElementById('wh-overlay').classList.add('open');
+  document.getElementById('warehouse-drawer').classList.add('open');
+  loadWarehouseJobs();
+}
+
+function closeWarehouse() {
+  document.getElementById('wh-overlay').classList.remove('open');
+  document.getElementById('warehouse-drawer').classList.remove('open');
+}
+
+async function loadWarehouseJobs() {
+  try {
+    const res = await apiFetch('/analyze', 'GET');
+    if (!res.ok) return;
+    _whJobs = (res.jobs || []).filter(j => j.status === 'complete');
+    _whSelected = [];
+    _renderWHList(_whJobs);
+    _updateWHHeaderCount(_whJobs.length);
+  } catch { /* no connection */ }
+}
+
+function _updateWHHeaderCount(n) {
+  const badge = document.getElementById('wh-count-badge');
+  const hbadge = document.getElementById('wh-header-count');
+  if (badge)  { badge.textContent = n; }
+  if (hbadge) { hbadge.textContent = n; hbadge.style.display = n > 0 ? '' : 'none'; }
+}
+
+function whFilter(q) {
+  const lq = q.toLowerCase();
+  const filtered = lq
+    ? _whJobs.filter(j => _whPinNames(j).toLowerCase().includes(lq))
+    : _whJobs;
+  _renderWHList(filtered);
+}
+
+function _whPinNames(job) {
+  return (job.pins || []).map(p => p.name || '?').join(', ') || 'Unnamed';
+}
+
+function _whRadius(job) {
+  const radii = (job.pins || []).map(p => p.radius_km || 10);
+  const unique = [...new Set(radii)];
+  return unique.length === 1 ? `${unique[0]} km` : `${Math.min(...radii)}–${Math.max(...radii)} km`;
+}
+
+function _whFormatDate(iso) {
+  try {
+    const d = new Date(iso);
+    const now = new Date();
+    const diff = (now - d) / 1000;
+    if (diff < 3600)  return `${Math.round(diff/60)}m ago`;
+    if (diff < 86400) return `${Math.round(diff/3600)}h ago`;
+    if (diff < 604800) return `${Math.round(diff/86400)}d ago`;
+    return d.toLocaleDateString('en-AE', {day:'2-digit',month:'short',year:'numeric'});
+  } catch { return iso; }
+}
+
+function _whSKUCount(job) {
+  const pts = job.result_summary?.vendor_points || [];
+  const ids = new Set(pts.map(p => p.bid).filter(Boolean));
+  return ids.size || job.result_summary?.raw_rows || 0;
+}
+
+function _renderWHList(jobs) {
+  const list = document.getElementById('wh-list');
+  const empty = document.getElementById('wh-empty');
+  if (!jobs.length) {
+    empty.style.display = '';
+    list.innerHTML = '';
+    list.appendChild(empty);
+    return;
+  }
+  empty.style.display = 'none';
+  list.innerHTML = jobs.map(j => {
+    const s = j.result_summary || {};
+    const pins = _whPinNames(j);
+    const radius = _whRadius(j);
+    const date = _whFormatDate(j.created_at);
+    const brands = s.brands || 0;
+    const records = s.raw_rows || 0;
+    const jl = s.just_landed_count || 0;
+    const skus = _whSKUCount(j);
+    const sel = _whSelected.includes(j.job_id);
+    return `<div class="wh-card${sel?' wh-selected':''}" id="whc-${j.job_id}">
+      <div class="wh-card-top">
+        <input type="checkbox" class="wh-check" ${sel?'checked':''} onchange="toggleWHSelect('${j.job_id}',this)" />
+        <div class="wh-card-meta">
+          <div class="wh-pins" title="${escHtml(pins)}">${escHtml(pins)}</div>
+          <div class="wh-date">${date}</div>
+        </div>
+        <span class="wh-radius-badge">${radius}</span>
+      </div>
+      <div class="wh-stats">
+        <div class="wh-stat"><span class="wh-stat-val">${brands.toLocaleString()}</span> Brands</div>
+        <div class="wh-stat"><span class="wh-stat-val">${records.toLocaleString()}</span> Records</div>
+        <div class="wh-stat"><span class="wh-stat-val">${skus.toLocaleString()}</span> SKUs</div>
+        ${jl>0?`<div class="wh-stat wh-jl"><span class="wh-stat-val">${jl}</span> Just Landed</div>`:''}
+      </div>
+      <div class="wh-actions">
+        <button class="wh-btn wh-btn-map" onclick="whLoadMap('${j.job_id}')">
+          <i class="fa-solid fa-map-location-dot"></i> Load on Map
+        </button>
+        <button class="wh-btn wh-btn-dl" onclick="whDownload('${j.job_id}')">
+          <i class="fa-solid fa-file-excel"></i> Excel
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleWHSelect(jobId, cb) {
+  if (cb.checked) {
+    if (_whSelected.length >= 2) {
+      cb.checked = false;
+      return;
+    }
+    _whSelected.push(jobId);
+  } else {
+    _whSelected = _whSelected.filter(id => id !== jobId);
+  }
+  // update card highlight
+  document.querySelectorAll('.wh-card').forEach(el => el.classList.remove('wh-selected'));
+  _whSelected.forEach(id => document.getElementById('whc-' + id)?.classList.add('wh-selected'));
+
+  const bar = document.getElementById('wh-compare-bar');
+  const btn = document.getElementById('wh-cmp-btn');
+  const hint = document.getElementById('wh-cmp-hint');
+  if (_whSelected.length === 2) {
+    bar.classList.add('show');
+    btn.disabled = false;
+    hint.textContent = 'Ready — click Compare';
+    document.getElementById('wh-diff-panel').classList.remove('show');
+  } else if (_whSelected.length === 1) {
+    bar.classList.add('show');
+    btn.disabled = true;
+    hint.textContent = 'Select one more result to compare';
+  } else {
+    bar.classList.remove('show');
+    document.getElementById('wh-diff-panel').classList.remove('show');
+  }
+}
+
+async function whLoadMap(jobId) {
+  try {
+    const res = await apiFetch(`/analyze/${jobId}`, 'GET');
+    if (res.status !== 'complete' || !res.result_summary) return;
+    showResults(res.result_summary);
+    state.jobId = jobId;
+    closeWarehouse();
+  } catch { /* ignore */ }
+}
+
+function whDownload(jobId) {
+  fetch(`${cfg.url}/analyze/${jobId}/download`, {
+    headers: cfg.key ? { 'X-API-Key': cfg.key } : {}
+  }).then(r => {
+    if (!r.ok) throw new Error();
+    return r.blob();
+  }).then(blob => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `namaa_analysis_${jobId.slice(0,8)}.xlsx`;
+    a.click();
+  }).catch(() => showError('Download failed — job may have expired'));
+}
+
+async function runWHCompare() {
+  if (_whSelected.length !== 2) return;
+  const [idA, idB] = _whSelected;
+  try {
+    const [rA, rB] = await Promise.all([
+      apiFetch(`/analyze/${idA}`, 'GET'),
+      apiFetch(`/analyze/${idB}`, 'GET'),
+    ]);
+    const ptsA = rA.result_summary?.vendor_points || [];
+    const ptsB = rB.result_summary?.vendor_points || [];
+
+    // Use branch_id (bid) as the unique key; fall back to vendor name
+    const keyFn = p => p.bid ? `bid:${p.bid}` : `name:${(p.n||'').toLowerCase().trim()}`;
+    const setA = new Map(ptsA.map(p => [keyFn(p), p]));
+    const setB = new Map(ptsB.map(p => [keyFn(p), p]));
+
+    const newBrands  = [...setB.entries()].filter(([k]) => !setA.has(k)).map(([,p]) => p.n);
+    const lostBrands = [...setA.entries()].filter(([k]) => !setB.has(k)).map(([,p]) => p.n);
+    const retained   = [...setA.keys()].filter(k => setB.has(k)).length;
+
+    document.getElementById('diff-new-count').textContent  = newBrands.length;
+    document.getElementById('diff-lost-count').textContent = lostBrands.length;
+    document.getElementById('diff-same-count').textContent = retained;
+
+    const namesList = document.getElementById('diff-names-list');
+    const topNew  = newBrands.slice(0,6).map(n => `<span class="dn-new">+ ${escHtml(n)}</span>`).join('<br>');
+    const topLost = lostBrands.slice(0,6).map(n => `<span class="dn-lost">− ${escHtml(n)}</span>`).join('<br>');
+    const moreNew  = newBrands.length  > 6 ? `<span style="opacity:.4">+${newBrands.length-6} more</span>` : '';
+    const moreLost = lostBrands.length > 6 ? `<span style="opacity:.4">+${lostBrands.length-6} more</span>` : '';
+    namesList.innerHTML = [topNew, moreNew, topLost, moreLost].filter(Boolean).join('<br>') || '<span style="opacity:.4">No difference — same vendors in both results</span>';
+
+    document.getElementById('wh-diff-panel').classList.add('show');
+  } catch (e) {
+    showError('Compare failed: ' + e.message);
+  }
+}
 </script>
 
 <!-- KP facility hover card -->

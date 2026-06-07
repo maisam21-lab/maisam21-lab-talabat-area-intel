@@ -86,7 +86,7 @@ def _persist_job(job_id: str, job: dict) -> None:
 
 
 def _load_persisted_jobs() -> None:
-    """On startup reload completed/failed jobs; mark interrupted ones as failed."""
+    """On startup reload completed/failed jobs; recover interrupted ones whose Excel was already written."""
     import json
     for p in _ANALYZE_JOBS_DIR.glob("job_*.json"):
         try:
@@ -95,8 +95,20 @@ def _load_persisted_jobs() -> None:
             if not job_id:
                 continue
             if data.get("status") in ("running", "queued"):
-                data["status"] = "failed"
-                data["error"] = "Server restarted while job was running — please submit again."
+                # If Excel was already written before the restart, the job is actually complete.
+                excel_path = data.get("output_file") or ""
+                if excel_path and Path(excel_path).exists():
+                    data["status"] = "complete"
+                    if not data.get("result_summary"):
+                        data["result_summary"] = {
+                            "brands": 0, "raw_rows": 0, "pins": len(data.get("pins", [])),
+                            "just_landed_count": 0, "vendor_coords": [], "vendor_points": [],
+                            "pin_errors": {},
+                            "note": "Recovered after server restart — Excel report is ready to download.",
+                        }
+                else:
+                    data["status"] = "failed"
+                    data["error"] = "Server restarted while job was running — please submit again."
                 p.write_text(json.dumps(data, default=str), encoding="utf-8")
             with _ANALYZE_JOBS_LOCK:
                 _ANALYZE_JOBS[job_id] = data
@@ -347,6 +359,13 @@ def _geocode_nominatim(query: str) -> dict | None:
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
+
+
+@app.get("/ui/config")
+async def ui_config():
+    """Public endpoint — returns bootstrap config for the NAMAA frontend (no auth required)."""
+    key = os.getenv("SCRAPER_API_KEY", "").strip()
+    return JSONResponse({"has_key": bool(key), "api_key": key})
 
 
 @app.get("/health/scrape-config")
@@ -987,6 +1006,14 @@ def submit_analyze(
     if not payload.pins:
         raise HTTPException(status_code=400, detail="pins list cannot be empty")
 
+    with _ANALYZE_JOBS_LOCK:
+        running = [j for j in _ANALYZE_JOBS.values() if j.get("status") == "running"]
+    if running:
+        raise HTTPException(
+            status_code=429,
+            detail="An analysis is already running. Please wait for it to complete before submitting a new one.",
+        )
+
     job_id = uuid.uuid4().hex
     job: dict = {
         "job_id": job_id,
@@ -1080,6 +1107,77 @@ def download_analyze(
 KP_TENANT_RADIUS_KM = 1.5  # vendor within this distance from a KP facility = KP tenant
 
 
+def _compute_lead_scores(matrix_df: "pd.DataFrame", raw_df: "pd.DataFrame") -> "pd.DataFrame":
+    """Add lead_score (0-100) and lead_priority columns to matrix_df."""
+    import pandas as pd
+
+    # Aggregate avg delivery time per brand from raw records
+    delivery_agg: dict = {}
+    if not raw_df.empty and "restaurant_id" in raw_df.columns and "avg_delivery_min" in raw_df.columns:
+        def _parse_delivery(v):
+            try:
+                m = str(v or "")
+                import re as _re
+                nums = _re.findall(r'\d+', m)
+                return float(nums[0]) if nums else None
+            except Exception:
+                return None
+        raw_copy = raw_df.copy()
+        raw_copy["_del"] = raw_copy["avg_delivery_min"].apply(_parse_delivery)
+        delivery_agg = (
+            raw_copy.dropna(subset=["_del"])
+            .groupby("restaurant_id")["_del"]
+            .mean()
+            .round(1)
+            .to_dict()
+        )
+
+    scores, priorities = [], []
+    for _, row in matrix_df.iterrows():
+        if row.get("kp_tenant") == "Yes":
+            scores.append(0)
+            priorities.append("")
+            continue
+
+        score = 0.0
+
+        # Volume: Talabat reviews (0-35)
+        reviews = float(row.get("total_reviews") or 0)
+        score += min(reviews / 500, 1.0) * 35
+
+        # Quality: Talabat rating (0-30)
+        rating = float(row.get("avg_rating") or 0)
+        if rating > 0:
+            score += max(0.0, (rating - 1.0) / 4.0) * 30
+
+        # Operations: delivery time (0-20) — lower is better
+        rid = row.get("restaurant_id")
+        delivery = float(delivery_agg.get(rid, 0) or 0)
+        if delivery > 0:
+            score += max(0.0, (70.0 - delivery) / 50.0) * 20
+        else:
+            score += 10  # unknown = neutral
+
+        # Google corroboration (0-15)
+        try:
+            g_rev = float(str(row.get("google_reviews") or "").strip() or 0)
+        except (ValueError, TypeError):
+            g_rev = 0
+        if g_rev >= 200:
+            score += 15
+        elif g_rev >= 50:
+            score += 8
+
+        score = min(100, round(score))
+        scores.append(score)
+        priorities.append("🔥 Hot Lead" if score >= 60 else "⭐ Warm Lead" if score >= 30 else "❄️ Cold Lead")
+
+    matrix_df = matrix_df.copy()
+    matrix_df["lead_score"] = scores
+    matrix_df["lead_priority"] = priorities
+    return matrix_df
+
+
 def _enrich_kp_proximity(
     matrix_df: "pd.DataFrame",
     raw_df: "pd.DataFrame",
@@ -1156,10 +1254,43 @@ def _run_analyze_job(job_id: str) -> None:
     from scrape_network import requests_proxies_from_env as _proxies_from_env
     _job_session = _requests.Session()
     _job_session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+    _job_session.verify = False
     _proxies = _proxies_from_env()
     if _proxies:
         _job_session.proxies.update(_proxies)
         logger.info("analyze_job using proxy: %s", list(_proxies.keys()))
+
+    # ── Smoke-test build_matrix + export pipeline before wasting hours scraping ──
+    try:
+        _smoke_vendors = [{
+            "restaurantId": 1, "name": "Test Brand", "cuisineString": "Burgers",
+            "rating": "4.5", "reviewsCount": "100", "latitude": pins[0]["lat"],
+            "longitude": pins[0]["lng"],
+        }]
+        _smoke_fv = {"_smoke_pin": _smoke_vendors}
+        _smoke_matrix, _smoke_raw = build_matrix(_smoke_fv)
+        if not _smoke_matrix.empty:
+            _fac_cols = [c for c in _smoke_matrix.columns if c not in
+                         ("restaurant_id", "brand_name", "cuisine", "avg_rating", "total_reviews")]
+            _smoke_matrix["_tb"] = _smoke_matrix[_fac_cols].sum(axis=1)
+            _smoke_matrix["_tf"] = (_smoke_matrix[_fac_cols] > 0).sum(axis=1)
+        import tempfile, os as _os
+        _tmp = tempfile.mktemp(suffix=".xlsx")
+        try:
+            export_excel(_smoke_matrix, _smoke_raw, [], {}, _tmp, radius_km=10.0)
+        finally:
+            if _os.path.exists(_tmp):
+                _os.remove(_tmp)
+        logger.info("analyze_job smoke_test passed job_id=%s", job_id)
+    except Exception as _smoke_exc:
+        tb = traceback.format_exc()
+        logger.error("analyze_job smoke_test FAILED job_id=%s: %s\n%s", job_id, _smoke_exc, tb)
+        with _ANALYZE_JOBS_LOCK:
+            job["status"] = "failed"
+            job["error"] = f"[Pre-run check failed — bug detected before scraping started] {_smoke_exc}"
+            job["traceback"] = tb
+        _persist_job(job_id, job)
+        return
 
     try:
         for i, pin in enumerate(pins):
@@ -1185,11 +1316,21 @@ def _run_analyze_job(job_id: str) -> None:
                         areas_in_radius.append((_aid, _aslug))
 
                 if not areas_in_radius:
-                    # Fallback: use nearest area regardless of distance
+                    # Fallback: use nearest area, but only if it's reasonably close
                     resolved = find_nearest_registry_area(lat, lng)
                     if resolved is None:
                         raise ValueError("No areas in registry")
-                    _, _aid, _aslug, _ = resolved
+                    _, _aid, _aslug, nearest_dist = resolved
+                    # If the nearest Talabat area is more than 25 km away, the pin
+                    # is in a desert / uncovered zone — fail clearly instead of
+                    # silently returning 0 vendors.
+                    if nearest_dist > 25.0:
+                        raise ValueError(
+                            f"No Talabat coverage within {radius_km:.0f} km of '{name}'. "
+                            f"The nearest covered area ({_aslug.replace('-', ' ').title()}) "
+                            f"is {nearest_dist:.0f} km away. "
+                            f"Move the pin to an urban area or increase the radius."
+                        )
                     areas_in_radius = [(_aid, _aslug)]
 
                 logger.info("analyze_job pin=%r scraping %d areas: %s",
@@ -1201,38 +1342,78 @@ def _run_analyze_job(job_id: str) -> None:
                 total_area_vendors = 0
                 last_meta: dict = {}
 
-                for _aid, _aslug in areas_in_radius:
-                    with _ANALYZE_JOBS_LOCK:
-                        job["progress"]["current_pin"] = f"{name} ({_aslug})"
-                        job["progress"]["area_page"] = 0
-                        job["progress"]["area_pages_total"] = 0
-                        job["progress"]["vendors_collected"] = 0
+                # Parallel area scraping — each area gets its own session clone
+                from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
 
-                    def _page_cb(page: int, total_pages: int, vendors_so_far: int,
-                                 _job=job, _aslug=_aslug) -> None:
+                _areas_done = [0]
+                # Per-area progress: aslug -> (current_page, total_pages)
+                _area_progress: dict = {}
+
+                def _scrape_one_area(area_args):
+                    _aid, _aslug = area_args
+
+                    def _cb(page, total_pages, vendors_so_far, _s=_aslug):
                         with _ANALYZE_JOBS_LOCK:
-                            _job["progress"]["area_page"] = page
-                            _job["progress"]["area_pages_total"] = total_pages
-                            _job["progress"]["vendors_collected"] = vendors_so_far
+                            _area_progress[_s] = (page, total_pages)
+                            pages_done = sum(p for p, _ in _area_progress.values())
+                            known_totals = [t for _, t in _area_progress.values()]
+                            avg = sum(known_totals) // len(known_totals)
+                            remaining = len(areas_in_radius) - len(_area_progress)
+                            grand_total = sum(known_totals) + remaining * avg
+                            job["progress"]["area_page"] = pages_done
+                            job["progress"]["area_pages_total"] = grand_total
+                            job["progress"]["current_pin"] = (
+                                f"{name} — {_areas_done[0]}/{len(areas_in_radius)} areas done, "
+                                f"page {pages_done}/{grand_total}"
+                            )
 
-                    area_vendors, last_meta = _scrape_area_vendors(_aid, _aslug, page_delay=0.5, session=_job_session, page_cb=_page_cb)
-                    total_area_vendors += len(area_vendors)
-                    for v in area_vendors:
-                        bid = v.get("branchId") or v.get("branch_id")
-                        if bid and bid in seen_branch_ids:
-                            continue
-                        if bid:
-                            seen_branch_ids.add(bid)
+                    result = _scrape_area_vendors(
+                        _aid, _aslug,
+                        page_delay=0.2,
+                        session=None,
+                        page_cb=_cb,
+                        pin_lat=lat,
+                        pin_lng=lng,
+                        radius_km=radius_km,
+                    )
+                    return result
+
+                with _ANALYZE_JOBS_LOCK:
+                    job["progress"]["current_pin"] = f"{name} — starting {len(areas_in_radius)} areas in parallel…"
+                    job["progress"]["area_page"] = 0
+                    job["progress"]["area_pages_total"] = 1
+                    job["progress"]["vendors_collected"] = 0
+
+                with ThreadPoolExecutor(max_workers=4) as _pool:
+                    _futures = {_pool.submit(_scrape_one_area, (aid, aslug)): (aid, aslug)
+                                for aid, aslug in areas_in_radius}
+                    for _fut in _as_completed(_futures):
+                        _aid, _aslug = _futures[_fut]
                         try:
-                            vlat = float(v.get("latitude") or 0)
-                            vlng = float(v.get("longitude") or 0)
-                        except (TypeError, ValueError):
-                            vlat = vlng = 0.0
-                        if vlat == 0.0 and vlng == 0.0:
-                            vendors.append(v)  # no coords — include, area membership is enough
-                        elif _hav(lat, lng, vlat, vlng) <= radius_km:
-                            v["_distance_km"] = round(_hav(lat, lng, vlat, vlng), 3)
-                            vendors.append(v)
+                            area_vendors, last_meta = _fut.result()
+                        except Exception as _area_exc:
+                            logger.error("analyze_job pin=%r area=%r failed: %s", name, _aslug, _area_exc)
+                            area_vendors = []
+                        _areas_done[0] += 1
+                        total_area_vendors += len(area_vendors)
+                        for v in area_vendors:
+                            bid = v.get("branchId") or v.get("branch_id")
+                            if bid and bid in seen_branch_ids:
+                                continue
+                            if bid:
+                                seen_branch_ids.add(bid)
+                            try:
+                                vlat = float(v.get("latitude") or 0)
+                                vlng = float(v.get("longitude") or 0)
+                            except (TypeError, ValueError):
+                                vlat = vlng = 0.0
+                            if vlat == 0.0 and vlng == 0.0:
+                                vendors.append(v)
+                            elif _hav(lat, lng, vlat, vlng) <= radius_km:
+                                v["_distance_km"] = round(_hav(lat, lng, vlat, vlng), 3)
+                                vendors.append(v)
+                        with _ANALYZE_JOBS_LOCK:
+                            job["progress"]["vendors_collected"] = len(vendors)
 
                 # Apply Just Landed filter if requested
                 if job.get("just_landed_only"):
@@ -1267,7 +1448,7 @@ def _run_analyze_job(job_id: str) -> None:
         matrix_df, raw_df = build_matrix(facility_vendors)
 
         if not matrix_df.empty:
-            fac_cols = [c for c in matrix_df.columns if c not in ("restaurant_id", "brand_name", "cuisine")]
+            fac_cols = [c for c in matrix_df.columns if c not in ("restaurant_id", "brand_name", "cuisine", "avg_rating", "total_reviews")]
             matrix_df["_tb"] = matrix_df[fac_cols].sum(axis=1)
             matrix_df["_tf"] = (matrix_df[fac_cols] > 0).sum(axis=1)
             matrix_df = (
@@ -1280,6 +1461,9 @@ def _run_analyze_job(job_id: str) -> None:
         # ── KP facility proximity enrichment ─────────────────────────────────
         matrix_df, raw_df = _enrich_kp_proximity(matrix_df, raw_df, FACILITIES)
 
+        # ── Lead scoring ──────────────────────────────────────────────────────
+        matrix_df = _compute_lead_scores(matrix_df, raw_df)
+
         # ── Google Places enrichment (phone, address, legal name) ─────────────
         with _ANALYZE_JOBS_LOCK:
             job["progress"]["current_pin"] = "Enriching with Google Maps…"
@@ -1291,7 +1475,8 @@ def _run_analyze_job(job_id: str) -> None:
 
         # Propagate enrichment to matrix (first non-empty per brand)
         if not matrix_df.empty and not raw_df.empty and "restaurant_id" in raw_df.columns:
-            for col in ["contact_phone", "legal_name", "google_address", "google_maps_link", "data_source"]:
+            for col in ["google_phone", "legal_name", "google_rating", "google_reviews",
+                        "google_address", "google_maps_link", "data_source"]:
                 if col in raw_df.columns:
                     first_val = (
                         raw_df[raw_df[col].astype(str).str.strip() != ""]
@@ -1301,18 +1486,98 @@ def _run_analyze_job(job_id: str) -> None:
                     matrix_df[col] = matrix_df["restaurant_id"].map(first_val).fillna(
                         "Talabat" if col == "data_source" else ""
                     )
+            # talabat_phone: not available from public listing — placeholder for manual/tenant data merge
+            if "talabat_phone" not in matrix_df.columns:
+                matrix_df["talabat_phone"] = ""
+            if "talabat_phone" not in raw_df.columns:
+                raw_df["talabat_phone"] = ""
+
+        # ── Google Gaps: find restaurants on Google Maps but not on Talabat ──────
+        import pandas as _pd
+        google_gaps_df = _pd.DataFrame()
+        _gmap_key = (os.getenv("GOOGLE_MAPS_API_KEY") or "").strip()
+        if _gmap_key:
+            from google_nearby import google_nearby_tiled, diff_vs_talabat, place_to_row
+            with _ANALYZE_JOBS_LOCK:
+                job["progress"]["current_pin"] = "Finding restaurants missing from Talabat…"
+            _gap_rows: list = []
+            for _pin in pins:
+                _plat = float(_pin["lat"])
+                _plng = float(_pin["lng"])
+                _pradius = float(_pin.get("radius_km", 10.0))
+                logger.info("google_nearby_tiled pin=%r radius=%.1fkm", _pin.get("name"), _pradius)
+                _gplaces = google_nearby_tiled(_plat, _plng, _pradius, _gmap_key)
+                _gaps = diff_vs_talabat(_gplaces, raw_df, _plat, _plng, radius_km=_pradius)
+                for _g in _gaps:
+                    _gap_rows.append(place_to_row(_g, _plat, _plng))
+            if _gap_rows:
+                google_gaps_df = _pd.DataFrame(_gap_rows).drop_duplicates(subset=["place_id"])
+                google_gaps_df = google_gaps_df.sort_values("distance_km")
+                logger.info("google_gaps total=%d", len(google_gaps_df))
+        else:
+            logger.info("google_gaps skipped — GOOGLE_MAPS_API_KEY not set")
 
         output_file = str(_ANALYZE_JOBS_DIR / f"analysis_{job_id}.xlsx")
-        export_excel(matrix_df, raw_df, facilities_meta_list, facility_meta, output_file, radius_km=10.0)
+        export_excel(matrix_df, raw_df, facilities_meta_list, facility_meta, output_file,
+                     radius_km=10.0, google_gaps_df=google_gaps_df)
 
-        # Build vendor coordinate list for frontend heatmap
+        # Persist output_file path immediately — if container restarts here the Excel is recoverable.
+        with _ANALYZE_JOBS_LOCK:
+            job["output_file"] = output_file
+        _persist_job(job_id, job)
+
+        # Build vendor coordinate list + rich points for frontend heatmap/dots
         vendor_coords: list = []
+        vendor_points: list = []
         if not raw_df.empty and "latitude" in raw_df.columns and "longitude" in raw_df.columns:
             coords = raw_df[["latitude", "longitude"]].dropna()
             coords = coords[(coords["latitude"] != 0) & (coords["longitude"] != 0)]
             vendor_coords = coords.values.tolist()
 
+            _vp_cols = [c for c in ["latitude", "longitude", "name", "cuisines", "branch_id",
+                                     "branch_url", "restaurant_slug", "distance_km",
+                                     "rating", "total_reviews"]
+                        if c in raw_df.columns]
+            for _, vrow in raw_df[_vp_cols].iterrows():
+                try:
+                    vlat = float(vrow.get("latitude") or 0)
+                    vlng = float(vrow.get("longitude") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if vlat == 0 or vlng == 0:
+                    continue
+                bid = vrow.get("branch_id")
+                burl = str(vrow.get("branch_url") or "")
+                rslug = str(vrow.get("restaurant_slug") or "")
+                if not burl and rslug and bid:
+                    burl = f"https://www.talabat.com/uae/restaurant/{rslug}/{bid}"
+                try:
+                    rating = float(vrow.get("rating") or 0) or None
+                    reviews = int(vrow.get("total_reviews") or 0) or None
+                    dist = round(float(vrow.get("distance_km") or 0), 2)
+                except (TypeError, ValueError):
+                    rating = reviews = None
+                    dist = 0.0
+                vendor_points.append({
+                    "lat": round(vlat, 6),
+                    "lng": round(vlng, 6),
+                    "n": str(vrow.get("name") or ""),
+                    "c": str(vrow.get("cuisines") or ""),
+                    "r": rating,
+                    "rv": reviews,
+                    "d": dist,
+                    "u": burl,
+                    "bid": int(bid) if bid else None,
+                })
+
         just_landed_count = int((raw_df["is_new"] == True).sum()) if not raw_df.empty and "is_new" in raw_df.columns else 0  # noqa: E712
+
+        # Collect per-pin errors so the frontend can warn the user
+        pin_errors = {
+            name: meta["error"]
+            for name, meta in facility_meta.items()
+            if "error" in meta
+        }
 
         with _ANALYZE_JOBS_LOCK:
             job["status"] = "complete"
@@ -1324,13 +1589,17 @@ def _run_analyze_job(job_id: str) -> None:
                 "pins": len(pins),
                 "just_landed_count": just_landed_count,
                 "vendor_coords": vendor_coords,
+                "vendor_points": vendor_points,
+                "pin_errors": pin_errors,
             }
         _persist_job(job_id, job)
         logger.info("analyze_job complete job_id=%s brands=%d raw=%d", job_id, len(matrix_df), len(raw_df))
 
     except Exception as exc:
-        logger.error("analyze_job failed job_id=%s: %s\n%s", job_id, exc, traceback.format_exc())
+        tb = traceback.format_exc()
+        logger.error("analyze_job failed job_id=%s: %s\n%s", job_id, exc, tb)
         with _ANALYZE_JOBS_LOCK:
             job["status"] = "failed"
             job["error"] = str(exc)
+            job["traceback"] = tb
         _persist_job(job_id, job)
