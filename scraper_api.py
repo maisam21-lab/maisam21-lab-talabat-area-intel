@@ -1488,10 +1488,17 @@ def _run_analyze_job(job_id: str) -> None:
             ].reset_index(drop=True)
         raw_df = enrich_df_with_google_places(raw_df, centre_lat, centre_lng)
 
+        # Website contact scraping (phone, email, WhatsApp, social from restaurant websites)
+        from website_scrape import enrich_df_with_website_contacts as _enrich_website
+        with _ANALYZE_JOBS_LOCK:
+            job["progress"]["current_pin"] = "Scraping restaurant websites for contacts…"
+        _enrich_website(raw_df, max_websites=500)
+
         # Propagate enrichment to matrix (first non-empty per brand)
         if not matrix_df.empty and not raw_df.empty and "restaurant_id" in raw_df.columns:
             for col in ["google_phone", "legal_name", "google_rating", "google_reviews",
-                        "google_address", "google_maps_link", "data_source"]:
+                        "google_address", "google_maps_link", "data_source",
+                        "website_mobile", "website_email", "website_whatsapp", "website_instagram"]:
                 if col in raw_df.columns:
                     first_val = (
                         raw_df[raw_df[col].astype(str).str.strip() != ""]

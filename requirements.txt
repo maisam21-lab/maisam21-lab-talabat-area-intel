@@ -8,3 +8,5 @@ folium
 fastapi
 uvicorn
 requests
+beautifulsoup4
+lxml
