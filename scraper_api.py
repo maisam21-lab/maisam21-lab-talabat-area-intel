@@ -1379,9 +1379,6 @@ def _run_analyze_job(job_id: str) -> None:
                         page_delay=0.2,
                         session=None,
                         page_cb=_cb,
-                        pin_lat=lat,
-                        pin_lng=lng,
-                        radius_km=radius_km,
                     )
                     return result
 
