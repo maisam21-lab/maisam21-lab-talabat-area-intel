@@ -7,8 +7,10 @@ Requires GOOGLE_MAPS_API_KEY with Places API enabled. Runs when the scrape reque
 
 from __future__ import annotations
 
+import json
 import os
 import time
+from pathlib import Path
 import requests
 
 from geo_utils import haversine_km
@@ -16,6 +18,26 @@ from models import RestaurantRecord
 
 TEXT_SEARCH_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
 DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
+
+# Persistent cache — survives container restarts (stored on the host-mounted volume).
+_CACHE_PATH = Path(os.getenv("GOOGLE_PLACES_CACHE_PATH", "/app/analyze_jobs/google_places_cache.json"))
+
+
+def _load_disk_cache() -> dict:
+    try:
+        if _CACHE_PATH.exists():
+            return json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_disk_cache(cache: dict) -> None:
+    try:
+        _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _truthy(val: str | None) -> bool:
@@ -268,7 +290,8 @@ def enrich_df_with_google_places(
         return df
 
     session = requests.Session()
-    brand_cache: dict = {}  # restaurant_id → enrichment dict or None
+    brand_cache: dict = {}  # restaurant_id → enrichment dict or None (in-memory this run)
+    disk_cache: dict = _load_disk_cache()  # persisted across all runs
     done = 0
 
     for idx in df.index:
@@ -278,9 +301,21 @@ def enrich_df_with_google_places(
         if not name or len(name) < 2:
             continue
 
-        # Apply cached result for same brand
+        # 1. Check in-memory cache (same brand seen earlier this run)
         if rid is not None and rid in brand_cache:
             result = brand_cache[rid]
+            if result:
+                for col, val in result.items():
+                    if val and not str(df.at[idx, col]).strip():
+                        df.at[idx, col] = val
+                df.at[idx, "data_source"] = "Talabat + Google Maps"
+            continue
+
+        # 2. Check persistent disk cache (enriched in a previous run — free)
+        _cache_key = str(rid) if rid is not None else name
+        if _cache_key in disk_cache:
+            result = disk_cache[_cache_key]
+            brand_cache[rid] = result
             if result:
                 for col, val in result.items():
                     if val and not str(df.at[idx, col]).strip():
@@ -369,6 +404,9 @@ def enrich_df_with_google_places(
             "google_maps_link": maps_url,
         }
         brand_cache[rid] = enrichment
+        disk_cache[_cache_key] = enrichment  # persist for future runs
+        if done % 20 == 0:
+            _save_disk_cache(disk_cache)  # save every 20 new enrichments
 
         for col, val in enrichment.items():
             if val and not str(df.at[idx, col]).strip():
@@ -378,4 +416,5 @@ def enrich_df_with_google_places(
         done += 1
         time.sleep(0.12)
 
+    _save_disk_cache(disk_cache)  # final save
     return df
