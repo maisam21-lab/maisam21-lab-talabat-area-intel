@@ -241,7 +241,7 @@ def export_excel(
             # Replace counts with ✓ / blank for readability (keep counts as tooltips via cell value)
             display_df = matrix_df.copy()
             for col in facility_cols:
-                display_df[col] = display_df[col].apply(lambda x: "✓" if x > 0 else "")
+                display_df[col] = pd.to_numeric(display_df[col], errors="coerce").fillna(0).apply(lambda x: "✓" if x > 0 else "")
 
             display_df.to_excel(writer, sheet_name="Matrix", index=False)
 
