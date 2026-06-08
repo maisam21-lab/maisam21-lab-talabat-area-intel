@@ -197,9 +197,9 @@ def enrich_df_with_website_contacts(df, *, max_websites: int = 500) -> None:
         if col not in df.columns:
             df[col] = ""
 
-    # google_maps_link column holds website in some setups; check both
+    # Check for website URL column — places_enrich.py stores it as vendor_website / google_business_website
     url_col = None
-    for candidate in ("website", "google_website", "website_url"):
+    for candidate in ("vendor_website", "google_business_website", "website", "google_website", "website_url"):
         if candidate in df.columns:
             url_col = candidate
             break

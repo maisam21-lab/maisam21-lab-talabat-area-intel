@@ -281,7 +281,7 @@ def enrich_df_with_google_places(
 
     # Always stamp the source column first
     df = df.copy()
-    for col in ["contact_phone", "legal_name", "google_address", "google_maps_link", "data_source"]:
+    for col in ["contact_phone", "legal_name", "google_address", "google_maps_link", "vendor_website", "data_source"]:
         if col not in df.columns:
             df[col] = ""
     df["data_source"] = "Talabat"
@@ -396,12 +396,14 @@ def enrich_df_with_google_places(
         gname = (res.get("name") or "").strip()
         faddr = (res.get("formatted_address") or "").strip()
         maps_url = (res.get("url") or "").strip()
+        website = (res.get("website") or "").strip()
 
         enrichment = {
             "contact_phone": phone,
             "legal_name": gname,
             "google_address": faddr,
             "google_maps_link": maps_url,
+            "vendor_website": website,
         }
         brand_cache[rid] = enrichment
         disk_cache[_cache_key] = enrichment  # persist for future runs

@@ -1496,9 +1496,10 @@ def _run_analyze_job(job_id: str) -> None:
 
         # Propagate enrichment to matrix (first non-empty per brand)
         if not matrix_df.empty and not raw_df.empty and "restaurant_id" in raw_df.columns:
-            for col in ["google_phone", "legal_name", "google_rating", "google_reviews",
-                        "google_address", "google_maps_link", "data_source",
-                        "website_mobile", "website_email", "website_whatsapp", "website_instagram"]:
+            for col in ["contact_phone", "legal_name", "google_rating", "google_reviews",
+                        "google_address", "google_maps_link", "vendor_website", "data_source",
+                        "website_mobile", "website_email", "website_whatsapp", "website_instagram",
+                        "website_facebook", "website_tiktok"]:
                 if col in raw_df.columns:
                     first_val = (
                         raw_df[raw_df[col].astype(str).str.strip() != ""]
@@ -1515,7 +1516,12 @@ def _run_analyze_job(job_id: str) -> None:
                 raw_df["talabat_phone"] = ""
 
         # ── Phone type: flag UAE mobile numbers (start with 05 / +9715 / 009715) ──
+        # Also backfill contact_phone from website_mobile if still empty (maximise coverage).
         import re as _re
+        for _df in (matrix_df, raw_df):
+            if "contact_phone" in _df.columns and "website_mobile" in _df.columns:
+                _mask = _df["contact_phone"].astype(str).str.strip() == ""
+                _df.loc[_mask, "contact_phone"] = _df.loc[_mask, "website_mobile"]
         def _uae_phone_type(phone: str) -> str:
             if not phone or not str(phone).strip():
                 return ""
