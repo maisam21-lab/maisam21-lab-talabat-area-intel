@@ -1475,6 +1475,17 @@ def _run_analyze_job(job_id: str) -> None:
         pin_lngs = [float(p["lng"]) for p in pins]
         centre_lat = sum(pin_lats) / len(pin_lats)
         centre_lng = sum(pin_lngs) / len(pin_lngs)
+        # Sort by popularity before enrichment — the 300-brand cap goes to the most
+        # reviewed/rated restaurants first (more likely to have a phone on Google Maps).
+        import pandas as _pd_sort
+        _sort_cols = [c for c in ("reviews", "rating", "estimated_orders") if c in raw_df.columns]
+        if _sort_cols:
+            _sort_df = raw_df.copy()
+            for _sc in _sort_cols:
+                _sort_df[_sc] = _pd_sort.to_numeric(_sort_df[_sc], errors="coerce")
+            raw_df = raw_df.iloc[
+                _sort_df[_sort_cols].apply(tuple, axis=1).argsort()[::-1].values
+            ].reset_index(drop=True)
         raw_df = enrich_df_with_google_places(raw_df, centre_lat, centre_lng)
 
         # Propagate enrichment to matrix (first non-empty per brand)
