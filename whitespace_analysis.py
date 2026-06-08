@@ -209,6 +209,7 @@ def export_excel(
     facility_meta: dict[str, dict],
     output_path: str,
     radius_km: float,
+    google_gaps_df=None,
 ) -> None:
     """Write the three-sheet Excel report."""
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
@@ -321,7 +322,11 @@ def export_excel(
             ws2.column_dimensions["B"].width = 22
             ws2.freeze_panes = "A2"
 
-        # ── Sheet 3: Raw Records ─────────────────────────────────────────────
+        # ── Sheet 3: Google Gaps ─────────────────────────────────────────────
+        if google_gaps_df is not None and not google_gaps_df.empty:
+            google_gaps_df.to_excel(writer, sheet_name="Google Gaps", index=False)
+
+        # ── Sheet 4: Raw Records ─────────────────────────────────────────────
         if not raw_df.empty:
             raw_df.to_excel(writer, sheet_name="Raw Records", index=False)
 
