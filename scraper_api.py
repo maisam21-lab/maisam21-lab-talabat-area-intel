@@ -1499,6 +1499,20 @@ def _run_analyze_job(job_id: str) -> None:
             if "talabat_phone" not in raw_df.columns:
                 raw_df["talabat_phone"] = ""
 
+        # ── Phone type: flag UAE mobile numbers (start with 05 / +9715 / 009715) ──
+        import re as _re
+        def _uae_phone_type(phone: str) -> str:
+            if not phone or not str(phone).strip():
+                return ""
+            p = _re.sub(r"[\s\-\(\)\.]+", "", str(phone))
+            if (p.startswith("05") or p.startswith("+9715") or
+                    p.startswith("009715") or p.startswith("9715")):
+                return "Mobile 📱"
+            return "Landline ☎"
+        for _df in (matrix_df, raw_df):
+            if "contact_phone" in _df.columns:
+                _df["phone_type"] = _df["contact_phone"].apply(_uae_phone_type)
+
         # ── Google Gaps: find restaurants on Google Maps but not on Talabat ──────
         import pandas as _pd
         google_gaps_df = _pd.DataFrame()
