@@ -234,7 +234,7 @@ def export_excel(
         # ── Sheet 1: Matrix ───────────────────────────────────────────────────
         if not matrix_df.empty:
             _kp_extra = [c for c in ("kp_tenant", "kp_facilities", "opportunity") if c in matrix_df.columns]
-            _enrich_extra = [c for c in ("contact_phone", "phone_type", "talabat_phone", "talabat_whatsapp", "website_mobile", "website_email", "website_whatsapp", "website_instagram", "vendor_website", "legal_name", "google_maps_link", "data_source") if c in matrix_df.columns]
+            _enrich_extra = [c for c in ("contact_phone", "phone_type", "ig_bio_mobile", "ig_bio_whatsapp", "website_mobile", "website_email", "website_whatsapp", "website_instagram", "vendor_website", "legal_name", "google_maps_link", "data_source") if c in matrix_df.columns]
             _fixed = ["restaurant_id", "brand_name", "cuisine"] + _kp_extra + _enrich_extra
             facility_cols = [c for c in matrix_df.columns if c not in _fixed]
 
@@ -286,7 +286,7 @@ def export_excel(
                         if cell.value and "Opportunity" in str(cell.value):
                             cell.fill = _kp_opp_fill
             # Widths for enrichment columns
-            _enrich_widths = {"contact_phone": 18, "phone_type": 14, "talabat_phone": 18, "talabat_whatsapp": 18, "website_mobile": 18, "website_email": 26, "website_whatsapp": 18, "website_instagram": 24, "vendor_website": 32, "legal_name": 28, "google_maps_link": 14, "data_source": 18}
+            _enrich_widths = {"contact_phone": 18, "phone_type": 14, "ig_bio_mobile": 18, "ig_bio_whatsapp": 18, "website_mobile": 18, "website_email": 26, "website_whatsapp": 18, "website_instagram": 24, "vendor_website": 32, "legal_name": 28, "google_maps_link": 14, "data_source": 18}
             for i, col_name in enumerate(_enrich_extra, start=4 + len(_kp_extra)):
                 col_letter = ws.cell(row=1, column=i).column_letter
                 ws.column_dimensions[col_letter].width = _enrich_widths.get(col_name, 18)

@@ -1494,11 +1494,11 @@ def _run_analyze_job(job_id: str) -> None:
             job["progress"]["current_pin"] = "Scraping restaurant websites for contacts…"
         _enrich_website(raw_df, max_websites=500)
 
-        # Talabat vendor page scraping (phone/WhatsApp from restaurant's own Talabat page)
-        from talabat_vendor_scrape import enrich_df_with_talabat_contacts as _enrich_talabat
+        # Instagram bio scraping (phones/WhatsApp from restaurant Instagram bios)
+        from instagram_bio_scrape import enrich_df_with_instagram_bios as _enrich_ig
         with _ANALYZE_JOBS_LOCK:
-            job["progress"]["current_pin"] = "Scraping Talabat vendor pages for contacts…"
-        _enrich_talabat(raw_df, max_pages=2000)
+            job["progress"]["current_pin"] = "Scraping Instagram bios for contacts…"
+        _enrich_ig(raw_df, max_profiles=500)
 
         # Propagate enrichment to matrix (first non-empty per brand)
         if not matrix_df.empty and not raw_df.empty and "restaurant_id" in raw_df.columns:
@@ -1506,7 +1506,8 @@ def _run_analyze_job(job_id: str) -> None:
                         "google_address", "google_maps_link", "vendor_website", "data_source",
                         "website_mobile", "website_email", "website_whatsapp", "website_instagram",
                         "website_facebook", "website_tiktok",
-                        "talabat_phone", "talabat_whatsapp", "talabat_address"]:
+                        "talabat_phone", "talabat_whatsapp", "talabat_address",
+                        "ig_bio_mobile", "ig_bio_whatsapp"]:
                 if col in raw_df.columns:
                     first_val = (
                         raw_df[raw_df[col].astype(str).str.strip() != ""]
@@ -1521,7 +1522,7 @@ def _run_analyze_job(job_id: str) -> None:
         # Backfill contact_phone from website_mobile then talabat_phone (maximise coverage).
         import re as _re
         for _df in (matrix_df, raw_df):
-            for _src_col in ("website_mobile", "talabat_phone"):
+            for _src_col in ("website_mobile", "talabat_phone", "ig_bio_mobile", "ig_bio_whatsapp"):
                 if "contact_phone" in _df.columns and _src_col in _df.columns:
                     _mask = _df["contact_phone"].astype(str).str.strip() == ""
                     _df.loc[_mask, "contact_phone"] = _df.loc[_mask, _src_col]
