@@ -1494,12 +1494,19 @@ def _run_analyze_job(job_id: str) -> None:
             job["progress"]["current_pin"] = "Scraping restaurant websites for contacts…"
         _enrich_website(raw_df, max_websites=500)
 
+        # Talabat vendor page scraping (phone/WhatsApp from restaurant's own Talabat page)
+        from talabat_vendor_scrape import enrich_df_with_talabat_contacts as _enrich_talabat
+        with _ANALYZE_JOBS_LOCK:
+            job["progress"]["current_pin"] = "Scraping Talabat vendor pages for contacts…"
+        _enrich_talabat(raw_df, max_pages=2000)
+
         # Propagate enrichment to matrix (first non-empty per brand)
         if not matrix_df.empty and not raw_df.empty and "restaurant_id" in raw_df.columns:
             for col in ["contact_phone", "legal_name", "google_rating", "google_reviews",
                         "google_address", "google_maps_link", "vendor_website", "data_source",
                         "website_mobile", "website_email", "website_whatsapp", "website_instagram",
-                        "website_facebook", "website_tiktok"]:
+                        "website_facebook", "website_tiktok",
+                        "talabat_phone", "talabat_whatsapp", "talabat_address"]:
                 if col in raw_df.columns:
                     first_val = (
                         raw_df[raw_df[col].astype(str).str.strip() != ""]
@@ -1509,19 +1516,15 @@ def _run_analyze_job(job_id: str) -> None:
                     matrix_df[col] = matrix_df["restaurant_id"].map(first_val).fillna(
                         "Talabat" if col == "data_source" else ""
                     )
-            # talabat_phone: not available from public listing — placeholder for manual/tenant data merge
-            if "talabat_phone" not in matrix_df.columns:
-                matrix_df["talabat_phone"] = ""
-            if "talabat_phone" not in raw_df.columns:
-                raw_df["talabat_phone"] = ""
 
         # ── Phone type: flag UAE mobile numbers (start with 05 / +9715 / 009715) ──
-        # Also backfill contact_phone from website_mobile if still empty (maximise coverage).
+        # Backfill contact_phone from website_mobile then talabat_phone (maximise coverage).
         import re as _re
         for _df in (matrix_df, raw_df):
-            if "contact_phone" in _df.columns and "website_mobile" in _df.columns:
-                _mask = _df["contact_phone"].astype(str).str.strip() == ""
-                _df.loc[_mask, "contact_phone"] = _df.loc[_mask, "website_mobile"]
+            for _src_col in ("website_mobile", "talabat_phone"):
+                if "contact_phone" in _df.columns and _src_col in _df.columns:
+                    _mask = _df["contact_phone"].astype(str).str.strip() == ""
+                    _df.loc[_mask, "contact_phone"] = _df.loc[_mask, _src_col]
         def _uae_phone_type(phone: str) -> str:
             if not phone or not str(phone).strip():
                 return ""
