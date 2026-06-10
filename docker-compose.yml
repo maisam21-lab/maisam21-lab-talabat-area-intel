@@ -22,6 +22,7 @@ services:
       # Outbound proxy: SCRAPER_HTTP_PROXY=... OR Scrape.do: SCRAPE_DO_TOKEN=... in .env (see scrape_network.py).
       # Verify after deploy: GET /api/health/scrape-config → outbound_proxy_configured, outbound_proxy_source.
       SCRAPER_VENDOR_PAGE_ENRICH: "1"
+      GEOAPIFY_API_KEY: "61a2a04d1407438aa8dbfed2df839547"
       # Small-VM defaults: heavy Playwright + 150 samples OOMs; .env can raise caps on bigger workers.
       MAX_SCRAPE_SAMPLE_POINTS: "20"
       SCRAPER_HIGH_VOLUME: "0"

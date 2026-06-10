@@ -1488,9 +1488,15 @@ def _run_analyze_job(job_id: str) -> None:
             ].reset_index(drop=True)
         raw_df = enrich_df_with_google_places(raw_df, centre_lat, centre_lng)
 
+        # Geoapify enrichment — fills phones for brands Google Places missed (free, OSM-based)
+        from geoapify_enrich import enrich_df_with_geoapify as _enrich_geoapify
+        with _ANALYZE_JOBS_LOCK:
+            job["progress"]["current_pin"] = "Enriching contacts via Geoapify…"
+        _enrich_geoapify(raw_df, max_brands=3000)
+
         # Propagate enrichment to matrix (first non-empty per brand)
         if not matrix_df.empty and not raw_df.empty and "restaurant_id" in raw_df.columns:
-            for col in ["contact_phone", "legal_name", "google_address", "google_maps_link", "data_source"]:
+            for col in ["contact_phone", "legal_name", "google_address", "google_maps_link", "geoapify_phone", "data_source"]:
                 if col in raw_df.columns:
                     first_val = (
                         raw_df[raw_df[col].astype(str).str.strip() != ""]
