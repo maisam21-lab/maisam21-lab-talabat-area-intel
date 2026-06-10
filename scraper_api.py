@@ -1488,26 +1488,9 @@ def _run_analyze_job(job_id: str) -> None:
             ].reset_index(drop=True)
         raw_df = enrich_df_with_google_places(raw_df, centre_lat, centre_lng)
 
-        # Website contact scraping (phone, email, WhatsApp, social from restaurant websites)
-        from website_scrape import enrich_df_with_website_contacts as _enrich_website
-        with _ANALYZE_JOBS_LOCK:
-            job["progress"]["current_pin"] = "Scraping restaurant websites for contacts…"
-        _enrich_website(raw_df, max_websites=500)
-
-        # Instagram bio scraping (phones/WhatsApp from restaurant Instagram bios)
-        from instagram_bio_scrape import enrich_df_with_instagram_bios as _enrich_ig
-        with _ANALYZE_JOBS_LOCK:
-            job["progress"]["current_pin"] = "Scraping Instagram bios for contacts…"
-        _enrich_ig(raw_df, max_profiles=500)
-
         # Propagate enrichment to matrix (first non-empty per brand)
         if not matrix_df.empty and not raw_df.empty and "restaurant_id" in raw_df.columns:
-            for col in ["contact_phone", "legal_name", "google_rating", "google_reviews",
-                        "google_address", "google_maps_link", "vendor_website", "data_source",
-                        "website_mobile", "website_email", "website_whatsapp", "website_instagram",
-                        "website_facebook", "website_tiktok",
-                        "talabat_phone", "talabat_whatsapp", "talabat_address",
-                        "ig_bio_mobile", "ig_bio_whatsapp"]:
+            for col in ["contact_phone", "legal_name", "google_address", "google_maps_link", "data_source"]:
                 if col in raw_df.columns:
                     first_val = (
                         raw_df[raw_df[col].astype(str).str.strip() != ""]
@@ -1518,14 +1501,8 @@ def _run_analyze_job(job_id: str) -> None:
                         "Talabat" if col == "data_source" else ""
                     )
 
-        # ── Phone type: flag UAE mobile numbers (start with 05 / +9715 / 009715) ──
-        # Backfill contact_phone from website_mobile then talabat_phone (maximise coverage).
+        # ── Phone type: Mobile / Landline only — strip 600/800 service numbers ──
         import re as _re
-        for _df in (matrix_df, raw_df):
-            for _src_col in ("website_mobile", "talabat_phone", "ig_bio_mobile", "ig_bio_whatsapp"):
-                if "contact_phone" in _df.columns and _src_col in _df.columns:
-                    _mask = _df["contact_phone"].astype(str).str.strip() == ""
-                    _df.loc[_mask, "contact_phone"] = _df.loc[_mask, _src_col]
         def _uae_phone_type(phone: str) -> str:
             """Classify UAE phone number. Returns empty string for service/600/800 numbers."""
             if not phone or not str(phone).strip():
