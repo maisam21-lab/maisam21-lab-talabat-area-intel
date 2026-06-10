@@ -1527,16 +1527,28 @@ def _run_analyze_job(job_id: str) -> None:
                     _mask = _df["contact_phone"].astype(str).str.strip() == ""
                     _df.loc[_mask, "contact_phone"] = _df.loc[_mask, _src_col]
         def _uae_phone_type(phone: str) -> str:
+            """Classify UAE phone number. Returns empty string for service/600/800 numbers."""
             if not phone or not str(phone).strip():
                 return ""
             p = _re.sub(r"[\s\-\(\)\.]+", "", str(phone))
+            # UAE mobile: 05X / +9715X / 009715X
             if (p.startswith("05") or p.startswith("+9715") or
                     p.startswith("009715") or p.startswith("9715")):
                 return "Mobile 📱"
+            # UAE service/toll-free numbers (600 XXXXXX / 800 XXXXXX) — call center, not useful for outreach
+            if (p.startswith("+971600") or p.startswith("971600") or p.startswith("600")
+                    or p.startswith("+971800") or p.startswith("971800") or p.startswith("800")):
+                return "Service 📞"
+            # UAE landline (02/03/04/06/07/09)
             return "Landline ☎"
+
         for _df in (matrix_df, raw_df):
             if "contact_phone" in _df.columns:
                 _df["phone_type"] = _df["contact_phone"].apply(_uae_phone_type)
+                # Clear service/600/800 numbers from contact_phone — useless for outreach
+                _service_mask = _df["phone_type"] == "Service 📞"
+                _df.loc[_service_mask, "contact_phone"] = ""
+                _df.loc[_service_mask, "phone_type"] = ""
 
         # ── Google Gaps: find restaurants on Google Maps but not on Talabat ──────
         import pandas as _pd
