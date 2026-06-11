@@ -77,6 +77,34 @@ def _save_cache(data: dict) -> None:
 
 # ── Main fetch ────────────────────────────────────────────────────────────────
 
+def _read_env_file() -> dict[str, str]:
+    """Read key=value pairs from .env file — used when env vars aren't set in process."""
+    env_path = Path(__file__).parent / ".env"
+    result: dict[str, str] = {}
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                result[k.strip()] = v.strip()
+    except Exception:
+        pass
+    return result
+
+
+def _get_sf_creds() -> tuple[str, str, str]:
+    """Get SF credentials from env vars, falling back to .env file."""
+    client_id     = os.getenv("SF_CLIENT_ID", "").strip()
+    client_secret = os.getenv("SF_CLIENT_SECRET", "").strip()
+    instance_url  = os.getenv("SF_INSTANCE_URL", "").strip()
+    if not all([client_id, client_secret, instance_url]):
+        env = _read_env_file()
+        client_id     = client_id     or env.get("SF_CLIENT_ID", "")
+        client_secret = client_secret or env.get("SF_CLIENT_SECRET", "")
+        instance_url  = instance_url  or env.get("SF_INSTANCE_URL", "")
+    return client_id, client_secret, instance_url
+
+
 def fetch_sf_data(*, force_refresh: bool = False) -> dict:
     """
     Fetch kitchen + tenant data from SF.
@@ -97,9 +125,7 @@ def fetch_sf_data(*, force_refresh: bool = False) -> dict:
         ]
       }
     """
-    client_id     = os.getenv("SF_CLIENT_ID", "").strip()
-    client_secret = os.getenv("SF_CLIENT_SECRET", "").strip()
-    instance_url  = os.getenv("SF_INSTANCE_URL", "").strip()
+    client_id, client_secret, instance_url = _get_sf_creds()
 
     empty = {"tenant_names": set(), "kitchens": []}
     if not all([client_id, client_secret, instance_url]):
