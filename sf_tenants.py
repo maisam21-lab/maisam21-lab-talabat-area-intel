@@ -227,9 +227,10 @@ def fetch_sf_data(*, force_refresh: bool = False) -> dict:
             fac_name = facility.get("Name", "")
             country  = r.get("Facility_Country__c", "")
 
-            # SF BillingLatitude is often missing for UAE KP facilities.
-            # Fall back to verified hardcoded lookup.
-            if country == "UAE" and (lat is None or lng is None):
+            # For UAE KP facilities, always prefer our verified coordinate lookup.
+            # SF BillingLatitude/BillingLongitude is often wrong (many facilities
+            # incorrectly inherit JLT's coordinates).
+            if country == "UAE":
                 coords = _lookup_coords(fac_name)
                 if coords:
                     lat, lng = coords
