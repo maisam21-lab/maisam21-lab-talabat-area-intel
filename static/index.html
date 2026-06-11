@@ -1314,15 +1314,22 @@ function toggleDemographics() {
   _demoVisible = !_demoVisible;
   if (_demoVisible) {
     if (!_demoLayer) {
-      // WorldPop 2020 population density — free, open, global (WMS)
-      _demoLayer = L.tileLayer.wms('https://ogc.worldpop.org/geoserver/wpGlobal/ows', {
-        layers: 'wpGlobal:ppp_2020_1km_Aggregated',
-        format: 'image/png',
-        transparent: true,
-        opacity: 0.65,
-        maxZoom: 14,
-        attribution: 'Population 2020 &copy; <a href="https://www.worldpop.org">WorldPop</a>',
-      });
+      // ArcGIS Human Geography basemap — shows population/urban density as a styled overlay
+      // Uses the user's ArcGIS key; falls back to WorldPop WMS if no key
+      const arcKey = cfg.arcgis_key;
+      if (arcKey) {
+        _demoLayer = L.tileLayer(
+          `https://basemaps-api.arcgis.com/arcgis/rest/services/styles/ArcGIS:HumanGeography/static/{z}/{x}/{y}.png?token=${arcKey}`,
+          { opacity: 0.75, maxZoom: 18, attribution: 'Demographics &copy; <a href="https://www.esri.com">Esri</a>' }
+        );
+      } else {
+        _demoLayer = L.tileLayer.wms('https://ogc.worldpop.org/geoserver/wpGlobal/ows', {
+          layers: 'wpGlobal:ppp_2020_1km_Aggregated',
+          format: 'image/png', transparent: true,
+          opacity: 0.65, maxZoom: 14,
+          attribution: 'Population 2020 &copy; <a href="https://www.worldpop.org">WorldPop</a>',
+        });
+      }
     }
     _demoLayer.addTo(map);
   } else {
@@ -1425,7 +1432,8 @@ function _initKpMarker(fac) {
 
 async function loadKpFacilities() {
   try {
-    const data = await fetch(cfg.url + '/api/sf/kitchens').then(r => r.json());
+    // Use relative URL — avoids cfg.url being wrong in localStorage
+    const data = await fetch('/api/sf/kitchens').then(r => r.json());
     if (!data.ok || !data.kitchens || !data.kitchens.length) throw new Error('empty');
 
     // Group by facility, UAE only
