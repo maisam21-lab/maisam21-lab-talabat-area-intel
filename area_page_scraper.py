@@ -116,9 +116,15 @@ _AREA_ALIASES: dict[str, str] = {
 
 
 def _make_session(scrape_do_token: str | None = None) -> requests.Session:
+    from scrape_network import requests_proxies_from_env as _proxies_from_env
     s = requests.Session()
     s.headers.update(_HEADERS)
     s.verify = False  # talabat.com intermittently drops intermediate cert; safe for public scraping
+    # Always apply outbound proxy from env (SCRAPE_DO_TOKEN / SCRAPER_HTTP_PROXY etc.)
+    # so every area-page session goes through the same proxy as the parent job session.
+    _proxies = _proxies_from_env()
+    if _proxies:
+        s.proxies.update(_proxies)
     if scrape_do_token:
         s.headers["X-ScrapeNinja-Token"] = scrape_do_token
     return s
