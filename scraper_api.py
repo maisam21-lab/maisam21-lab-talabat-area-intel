@@ -1528,10 +1528,10 @@ def _run_analyze_job(job_id: str) -> None:
         for _df in (matrix_df, raw_df):
             if "contact_phone" in _df.columns:
                 _df["phone_type"] = _df["contact_phone"].apply(_uae_phone_type)
-                # Clear service/600/800 numbers from contact_phone — useless for outreach
-                _service_mask = _df["phone_type"] == "Service 📞"
-                _df.loc[_service_mask, "contact_phone"] = ""
-                _df.loc[_service_mask, "phone_type"] = ""
+                # Keep ONLY mobile numbers — clear landlines and service/600/800 numbers
+                _non_mobile_mask = _df["phone_type"].isin(["Landline ☎", "Service 📞"])
+                _df.loc[_non_mobile_mask, "contact_phone"] = ""
+                _df.loc[_non_mobile_mask, "phone_type"] = ""
 
         # ── Google Gaps: find restaurants on Google Maps but not on Talabat ──────
         import pandas as _pd
