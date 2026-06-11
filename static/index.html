@@ -1055,7 +1055,7 @@
         <span class="kp-dot-live"></span>
         <span class="kp-dot-future" style="margin-left:3px;"></span>
         KP Facilities
-        <span id="kp-badge" style="margin-left:4px; font-size:10px;"></span>
+        <span id="kp-badge" style="margin-left:4px; font-size:10px; opacity:.6;">Loading…</span>
       </button>
       <div id="vendor-layer-btns">
         <button id="heat-mode-btn" class="map-mode-btn active" onclick="setMapMode('heat')">
@@ -1507,6 +1507,7 @@ function _initKpMarker(fac) {
 function _setKpBadge(liveN, futureN) {
   const badge = document.getElementById('kp-badge');
   if (!badge) return;
+  badge.style.opacity = '1';
   let html = `<span style="color:#5ab87a;">${liveN} Live</span>`;
   if (futureN > 0)
     html += ` · <span style="color:#fbbf24;">${futureN} Coming Soon</span>`;
