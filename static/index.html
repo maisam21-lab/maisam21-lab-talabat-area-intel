@@ -1027,6 +1027,10 @@
       <button id="download-btn" onclick="downloadResults()">
         <i class="fa-solid fa-file-excel"></i> Download Excel Report
       </button>
+
+      <button id="reset-analysis-btn" onclick="resetAnalysis()" style="display:none; background:none; border:1px solid rgba(255,255,255,.1); color:rgba(255,255,255,.35); width:100%; padding:9px; border-radius:10px; font-size:12px; font-family:Inter,sans-serif; cursor:pointer; transition:all .2s;" onmouseover="this.style.borderColor='rgba(255,255,255,.25)';this.style.color='rgba(255,255,255,.6)'" onmouseout="this.style.borderColor='rgba(255,255,255,.1)';this.style.color='rgba(255,255,255,.35)'">
+        <i class="fa-solid fa-rotate-left"></i> New Analysis
+      </button>
     </div>
   </div>
 
@@ -1373,9 +1377,15 @@ async function loadKpFacilities() {
     if (!facilities.length) throw new Error('no UAE facilities');
     facilities.forEach(_initKpMarker);
     console.log(`KP: loaded ${facilities.length} UAE facilities from SF`);
+    const badge = document.getElementById('kp-badge');
+    if (badge) badge.textContent = `${facilities.length} Live`;
   } catch (e) {
     console.warn('KP SF load failed, using fallback:', e.message);
     KP_FACILITIES.forEach(fac => _initKpMarker({ ...fac, total: 0, occupied: 0, vacant: 0 }));
+    const live = KP_FACILITIES.filter(f => f.status === 'Live').length;
+    const future = KP_FACILITIES.filter(f => f.status === 'Future').length;
+    const badge = document.getElementById('kp-badge');
+    if (badge) badge.textContent = future > 0 ? `${live} Live · ${future} Future` : `${live} Live`;
   }
 }
 
@@ -1795,6 +1805,7 @@ function showResults(summary) {
   const brands = summary?.brands || 0, rows = summary?.raw_rows || 0;
   const jlCount = summary?.just_landed_count || 0;
   document.getElementById('result-summary').style.display = '';
+  document.getElementById('reset-analysis-btn').style.display = '';
   animateCount(document.getElementById('result-brands'), brands);
   animateCount(document.getElementById('result-rows'), rows);
 
@@ -1960,6 +1971,7 @@ function toggleHeatmap() { setMapMode(_mapMode === 'heat' ? 'dots' : 'heat'); }
 function resetResults() {
   document.getElementById('result-summary').style.display = 'none';
   document.getElementById('download-btn').style.display = 'none';
+  document.getElementById('reset-analysis-btn').style.display = 'none';
   document.getElementById('header-stats').style.display = 'none';
   document.getElementById('vendor-layer-btns').style.display = 'none';
   document.getElementById('result-jl-card').style.display = 'none';
@@ -1967,6 +1979,16 @@ function resetResults() {
   if (leg) leg.style.display = 'none';
   _clearVendorLayers();
   _vendorPts = [];
+}
+
+function resetAnalysis() {
+  if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
+  state.jobId = null;
+  localStorage.removeItem('last_job_id');
+  resetResults();
+  setStatusIdle();
+  setRunning(false);
+  clearError();
 }
 
 function showError(msg) { document.getElementById('error-msg').textContent = msg; document.getElementById('error-box').style.display = 'flex'; }
