@@ -520,13 +520,14 @@
     #kp-toggle:hover { border-color: rgba(255,255,255,.22); }
     .kp-dot-live {
       width: 9px; height: 9px; border-radius: 50%;
-      background: var(--accent); flex-shrink: 0;
-      box-shadow: 0 0 6px rgba(90,184,122,.6);
+      background: #5ab87a; flex-shrink: 0;
+      box-shadow: 0 0 6px rgba(90,184,122,.7);
     }
     .kp-dot-future {
       width: 9px; height: 9px; border-radius: 50%;
-      background: transparent; flex-shrink: 0;
-      border: 2px dashed rgba(251,191,36,.7);
+      background: #fbbf24; flex-shrink: 0;
+      box-shadow: 0 0 6px rgba(251,191,36,.6);
+      border: 1.5px dashed rgba(251,191,36,.5);
     }
     #kp-toggle.active { border-color: rgba(90,184,122,.3); color: var(--text); }
     #kp-toggle.active .kp-dot-live { background: var(--accent); }
@@ -545,41 +546,47 @@
     }
     #map-hint i { color: var(--accent); }
 
-    /* ── KP facility marker styles (pulsing dots) ── */
+    /* ── KP facility marker styles ── */
+
+    /* Live — green pulsing dot */
     .kp-marker-live {
       position: relative;
-      width: 14px; height: 14px;
+      width: 20px; height: 20px;
     }
     .kp-marker-live .kp-core {
-      position: absolute; inset: 3px;
-      background: var(--accent); border-radius: 50%;
-      border: 2px solid rgba(255,255,255,.9);
+      position: absolute; inset: 5px;
+      background: #5ab87a; border-radius: 50%;
+      border: 2px solid #fff;
+      box-shadow: 0 0 8px rgba(90,184,122,.9), 0 0 3px rgba(90,184,122,1);
     }
     .kp-marker-live .kp-ring {
       position: absolute; inset: 0;
-      border: 2px solid var(--accent);
+      border: 2px solid #5ab87a;
       border-radius: 50%;
-      animation: kp-pulse 2.5s ease-out infinite;
+      animation: kp-pulse 2.2s ease-out infinite;
     }
     @keyframes kp-pulse {
-      0%   { transform: scale(1);   opacity: .8; }
-      70%  { transform: scale(2.8); opacity: 0; }
-      100% { transform: scale(2.8); opacity: 0; }
+      0%   { transform: scale(1);   opacity: .9; }
+      70%  { transform: scale(2.6); opacity: 0; }
+      100% { transform: scale(2.6); opacity: 0; }
     }
+
+    /* Coming Soon — amber dashed ring with amber core */
     .kp-marker-future {
-      width: 14px; height: 14px;
-      background: rgba(255,255,255,.08);
-      border-radius: 50%;
-      border: 2px dashed rgba(255,255,255,.35);
       position: relative;
+      width: 20px; height: 20px;
     }
-    .kp-marker-future::after {
-      content: '';
-      position: absolute;
-      inset: -6px;
-      border: 1.5px dashed rgba(255,255,255,.15);
+    .kp-marker-future .kp-future-core {
+      position: absolute; inset: 6px;
+      background: #fbbf24; border-radius: 50%;
+      box-shadow: 0 0 7px rgba(251,191,36,.9), 0 0 3px rgba(251,191,36,1);
+    }
+    .kp-marker-future .kp-future-ring {
+      position: absolute; inset: 0;
+      border: 2.5px dashed #fbbf24;
       border-radius: 50%;
-      animation: future-spin 9s linear infinite;
+      animation: future-spin 5s linear infinite;
+      opacity: .85;
     }
     @keyframes future-spin {
       from { transform: rotate(0deg); }
@@ -1434,10 +1441,10 @@ function makeKpIcon(status) {
     className: '',
     html: live
       ? `<div class="kp-marker-live"><div class="kp-ring"></div><div class="kp-core"></div></div>`
-      : `<div class="kp-marker-future"></div>`,
-    iconSize:    live ? [14, 14] : [12, 12],
-    iconAnchor:  live ? [7, 7]   : [6, 6],
-    popupAnchor: [0, -10],
+      : `<div class="kp-marker-future"><div class="kp-future-ring"></div><div class="kp-future-core"></div></div>`,
+    iconSize:   [20, 20],
+    iconAnchor: [10, 10],
+    popupAnchor:[0, -12],
   });
 }
 
