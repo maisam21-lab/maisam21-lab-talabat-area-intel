@@ -361,6 +361,42 @@ def health() -> dict:
     return {"ok": True}
 
 
+class SFCredsRequest(BaseModel):
+    client_id: str
+    client_secret: str
+    instance_url: str
+
+
+@app.post("/admin/set-sf-creds")
+def set_sf_creds(payload: SFCredsRequest, x_api_key: str | None = Header(default=None)):
+    """Write SF credentials to .env — protected by SCRAPER_API_KEY."""
+    verify_api_key(x_api_key)
+    env_path = Path(__file__).parent / ".env"
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    keys_to_set = {
+        "SF_CLIENT_ID": payload.client_id.strip(),
+        "SF_CLIENT_SECRET": payload.client_secret.strip(),
+        "SF_INSTANCE_URL": payload.instance_url.strip(),
+    }
+    updated = {k: False for k in keys_to_set}
+    new_lines = []
+    for line in lines:
+        matched = False
+        for k in keys_to_set:
+            if line.startswith(f"{k}=") or line.startswith(f"{k} ="):
+                new_lines.append(f"{k}={keys_to_set[k]}")
+                updated[k] = True
+                matched = True
+                break
+        if not matched:
+            new_lines.append(line)
+    for k, v in keys_to_set.items():
+        if not updated[k]:
+            new_lines.append(f"{k}={v}")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    return {"ok": True, "written": list(keys_to_set.keys())}
+
+
 @app.get("/config")
 async def ui_config():
     """Public endpoint — returns bootstrap config for the NAMAA frontend (no auth required)."""
