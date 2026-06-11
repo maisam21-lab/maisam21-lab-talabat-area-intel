@@ -7,8 +7,6 @@
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyA-wBQ5OlhNcqLet2OM6kJLBRInSXEtijw&language=en&region=AE"></script>
-  <script src="https://unpkg.com/leaflet.gridlayer.googlemutant@0.14.0/dist/Leaflet.GoogleMutant.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" />
@@ -1252,7 +1250,10 @@ let pinIdSeq = 0;
 
 const map = L.map('map', { center: [25.2048, 55.2708], zoom: 11, zoomControl: false });
 L.control.zoom({ position: 'bottomright' }).addTo(map);
-L.gridLayer.googleMutant({ type: 'roadmap', maxZoom: 21 }).addTo(map);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 21,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+}).addTo(map);
 
 map.on('click', (e) => {
   if (state.dragging) return;
