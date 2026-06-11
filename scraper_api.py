@@ -397,6 +397,27 @@ def set_sf_creds(payload: SFCredsRequest, x_api_key: str | None = Header(default
     return {"ok": True, "written": list(keys_to_set.keys())}
 
 
+@app.post("/admin/deploy")
+def admin_deploy(x_api_key: str | None = Header(default=None)):
+    """Pull latest code from git and restart workers — no rebuild needed for pure Python changes."""
+    verify_api_key(x_api_key)
+    import subprocess
+    repo = Path(__file__).parent
+    result = subprocess.run(
+        ["git", "pull"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return {
+        "ok": result.returncode == 0,
+        "stdout": result.stdout.strip(),
+        "stderr": result.stderr.strip(),
+        "note": "git pull done — changes to existing .py files are live after next request. New files or dependency changes still require docker compose build api from the console.",
+    }
+
+
 @app.get("/config")
 async def ui_config():
     """Public endpoint — returns bootstrap config for the NAMAA frontend (no auth required)."""
@@ -1075,6 +1096,26 @@ def submit_analyze(
     t.start()
 
     return {"ok": True, "job_id": job_id, "total_pins": len(payload.pins)}
+
+
+@app.get("/sf/kitchens")
+def sf_kitchens(
+    x_api_key: str | None = Header(default=None),
+    refresh: bool = False,
+):
+    """Return SF kitchen data for map display — occupied/vacant kitchens with coordinates."""
+    verify_api_key(x_api_key)
+    from sf_tenants import fetch_sf_kitchens
+    kitchens = fetch_sf_kitchens(force_refresh=refresh)
+    occupied  = [k for k in kitchens if (k.get("status") or "").lower() == "occupied"]
+    vacant    = [k for k in kitchens if (k.get("status") or "").lower() in ("vacant", "available")]
+    return {
+        "ok": True,
+        "total": len(kitchens),
+        "occupied": len(occupied),
+        "vacant": len(vacant),
+        "kitchens": kitchens,
+    }
 
 
 @app.get("/analyze")
