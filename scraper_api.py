@@ -1669,7 +1669,13 @@ def _run_analyze_job(job_id: str) -> None:
             ].reset_index(drop=True)
         raw_df = enrich_df_with_google_places(raw_df, centre_lat, centre_lng)
 
-        # Geoapify enrichment — fills phones for brands Google Places missed (free, OSM-based)
+        # ArcGIS Places enrichment — primary phone source (Esri global POI database)
+        from arcgis_places_enrich import enrich_df_with_arcgis_places as _enrich_arcgis
+        with _ANALYZE_JOBS_LOCK:
+            job["progress"]["current_pin"] = "Enriching contacts via ArcGIS Places…"
+        _enrich_arcgis(raw_df, max_brands=3000)
+
+        # Geoapify enrichment — fills phones for brands ArcGIS Places missed (OSM-based fallback)
         from geoapify_enrich import enrich_df_with_geoapify as _enrich_geoapify
         with _ANALYZE_JOBS_LOCK:
             job["progress"]["current_pin"] = "Enriching contacts via Geoapify…"
