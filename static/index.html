@@ -861,6 +861,17 @@
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.1); border-radius: 2px; }
 
+    /* Leaflet dark tooltip (demographics layer) */
+    .leaflet-tooltip-dark {
+      background: var(--s2) !important;
+      border: 1px solid rgba(255,255,255,.12) !important;
+      color: var(--text) !important;
+      font-size: 12px;
+      border-radius: 6px;
+      box-shadow: 0 4px 16px rgba(0,0,0,.5) !important;
+    }
+    .leaflet-tooltip-dark::before { border-top-color: rgba(255,255,255,.12) !important; }
+
     /* Leaflet popup dark theme */
     .leaflet-popup-content-wrapper {
       background: var(--s2) !important;
@@ -1304,36 +1315,85 @@ function toggleSatellite() {
   _applyBasemap();
 }
 
-// ── Demographics layer (Esri public World Population service) ─────────────────
+// ── Demographics layer (ArcGIS GeoEnrichment — population density choropleth) ──
 let _demoLayer   = null;
 let _demoVisible = false;
+
+function _demoColor(density, maxDensity) {
+  if (!density || maxDensity <= 0) return '#444';
+  const t = Math.min(density / maxDensity, 1);
+  // Blue (low) → Teal → Green → Yellow → Red (high density)
+  if (t < 0.2)  return '#2b7bba';
+  if (t < 0.4)  return '#43a87d';
+  if (t < 0.6)  return '#5ab87a';
+  if (t < 0.8)  return '#f4b942';
+  return '#e85d5d';
+}
+
+async function _loadDemographicsLayer() {
+  const btn = document.getElementById('demo-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Loading…';
+
+  try {
+    const b = map.getBounds();
+    const params = new URLSearchParams({
+      min_lat: b.getSouth().toFixed(6),
+      min_lng: b.getWest().toFixed(6),
+      max_lat: b.getNorth().toFixed(6),
+      max_lng: b.getEast().toFixed(6),
+      grid: 5,
+    });
+
+    const resp = await fetch(`/api/geoenrich?${params}`);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    const geojson = await resp.json();
+    if (!geojson.ok || !geojson.features || !geojson.features.length)
+      throw new Error('No population data returned for this area');
+
+    const densities = geojson.features.map(f => f.properties.density).filter(d => d > 0);
+    const maxD = densities.length ? Math.max(...densities) : 1;
+
+    if (_demoLayer) { map.removeLayer(_demoLayer); _demoLayer = null; }
+
+    _demoLayer = L.geoJSON(geojson, {
+      style: feat => ({
+        fillColor: _demoColor(feat.properties.density, maxD),
+        fillOpacity: 0.45,
+        color: 'transparent',
+        weight: 0,
+      }),
+      onEachFeature: (feat, layer) => {
+        const pop = (feat.properties.population || 0).toLocaleString();
+        const den = Math.round(feat.properties.density || 0).toLocaleString();
+        layer.bindTooltip(
+          `<b>Population:</b> ${pop}<br><b>Density:</b> ${den} /km²`,
+          { sticky: true, className: 'leaflet-tooltip-dark' }
+        );
+      },
+    }).addTo(map);
+
+  } catch (e) {
+    showError('Demographics failed: ' + (e.message || 'unknown error'));
+    _demoVisible = false;
+    document.getElementById('demo-btn').classList.remove('active');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fa-solid fa-people-group"></i> Demographics';
+  }
+}
 
 function toggleDemographics() {
   clearError();
   const btn = document.getElementById('demo-btn');
   _demoVisible = !_demoVisible;
   if (_demoVisible) {
-    if (!_demoLayer) {
-      // ArcGIS Human Geography basemap — shows population/urban density as a styled overlay
-      // Uses the user's ArcGIS key; falls back to WorldPop WMS if no key
-      const arcKey = cfg.arcgis_key;
-      if (arcKey) {
-        _demoLayer = L.tileLayer(
-          `https://basemaps-api.arcgis.com/arcgis/rest/services/styles/ArcGIS:HumanGeography/static/{z}/{x}/{y}.png?token=${arcKey}`,
-          { opacity: 0.75, maxZoom: 18, attribution: 'Demographics &copy; <a href="https://www.esri.com">Esri</a>' }
-        );
-      } else {
-        _demoLayer = L.tileLayer.wms('https://ogc.worldpop.org/geoserver/wpGlobal/ows', {
-          layers: 'wpGlobal:ppp_2020_1km_Aggregated',
-          format: 'image/png', transparent: true,
-          opacity: 0.65, maxZoom: 14,
-          attribution: 'Population 2020 &copy; <a href="https://www.worldpop.org">WorldPop</a>',
-        });
-      }
-    }
-    _demoLayer.addTo(map);
+    _loadDemographicsLayer();
   } else {
-    if (_demoLayer) map.removeLayer(_demoLayer);
+    if (_demoLayer) { map.removeLayer(_demoLayer); _demoLayer = null; }
   }
   btn.classList.toggle('active', _demoVisible);
 }

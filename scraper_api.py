@@ -317,9 +317,25 @@ def _nominatim_enabled() -> bool:
     return os.getenv("GEOCODE_FALLBACK_NOMINATIM", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
+def _get_arcgis_key() -> str:
+    """Read ARCGIS_API_KEY from env or .env file."""
+    key = os.getenv("ARCGIS_API_KEY", "").strip()
+    if not key:
+        env_path = Path(__file__).parent / ".env"
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("ARCGIS_API_KEY="):
+                    key = line.split("=", 1)[1].strip()
+                    break
+        except Exception:
+            pass
+    return key
+
+
 def _arcgis_geocode(query: str) -> dict | None:
     """ArcGIS World Geocoding Service — used when ARCGIS_API_KEY is configured."""
-    api_key = os.getenv("ARCGIS_API_KEY", "").strip()
+    api_key = _get_arcgis_key()
     if not api_key:
         return None
     try:
@@ -1207,6 +1223,90 @@ def sf_kitchens(refresh: bool = False):
         "vacant": len(vacant),
         "kitchens": kitchens,
     }
+
+
+@app.get("/geoenrich")
+def geoenrich_viewport(
+    min_lat: float, min_lng: float, max_lat: float, max_lng: float,
+    grid: int = 4,
+):
+    """
+    Use ArcGIS GeoEnrichment (Data enrichment privilege) to get population density
+    for a grid of cells covering the given bounding box.
+    Returns GeoJSON FeatureCollection with TOTPOP + TOTPOP_DENSIT per cell.
+    """
+    import json as _json
+
+    api_key = _get_arcgis_key()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ARCGIS_API_KEY not configured")
+
+    # Clamp grid to 2–6 (we send all cells in one API call)
+    grid = max(2, min(grid, 6))
+
+    lat_step = (max_lat - min_lat) / grid
+    lng_step = (max_lng - min_lng) / grid
+
+    study_areas = []
+    for i in range(grid):
+        for j in range(grid):
+            r0 = min_lat + i * lat_step
+            r1 = r0 + lat_step
+            c0 = min_lng + j * lng_step
+            c1 = c0 + lng_step
+            study_areas.append({
+                "geometry": {
+                    "rings": [[[c0, r0], [c1, r0], [c1, r1], [c0, r1], [c0, r0]]],
+                    "spatialReference": {"wkid": 4326},
+                }
+            })
+
+    try:
+        r = requests.post(
+            "https://geoenrich.arcgis.com/arcgis/rest/services/World/geoenrichmentserver/GeoEnrichment/enrich",
+            data={
+                "studyAreas": _json.dumps(study_areas),
+                "analysisVariables": _json.dumps(["KeyGlobalFacts.TOTPOP", "KeyGlobalFacts.TOTPOP_DENSIT"]),
+                "returnGeometry": "true",
+                "token": api_key,
+                "f": "json",
+            },
+            timeout=60,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except requests.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"GeoEnrichment HTTP error: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"GeoEnrichment request failed: {exc}") from exc
+
+    if "error" in data:
+        err = data["error"]
+        raise HTTPException(status_code=400, detail=f"GeoEnrichment API error {err.get('code')}: {err.get('message')}")
+
+    # Parse Esri response → GeoJSON FeatureCollection
+    features = []
+    try:
+        for result in data.get("results", []):
+            for feat_set in (result.get("value") or {}).get("FeatureSet", []):
+                for feat in feat_set.get("features", []):
+                    attrs = feat.get("attributes", {})
+                    geom  = feat.get("geometry", {})
+                    rings = geom.get("rings", [])
+                    if not rings:
+                        continue
+                    features.append({
+                        "type": "Feature",
+                        "properties": {
+                            "population": int(attrs.get("TOTPOP") or 0),
+                            "density":    float(attrs.get("TOTPOP_DENSIT") or 0),
+                        },
+                        "geometry": {"type": "Polygon", "coordinates": rings},
+                    })
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"GeoEnrichment parse error: {exc}") from exc
+
+    return {"ok": True, "type": "FeatureCollection", "features": features}
 
 
 @app.get("/analyze")
