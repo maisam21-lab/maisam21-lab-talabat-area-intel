@@ -1314,17 +1314,14 @@ function toggleDemographics() {
   _demoVisible = !_demoVisible;
   if (_demoVisible) {
     if (!_demoLayer) {
-      // Public Esri World Population Density choropleth — no API key required
-      _demoLayer = L.esri.tiledMapLayer({
-        url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Demographics/World_Population_Density/MapServer',
+      // WorldPop 2020 population density — free, open, global (WMS)
+      _demoLayer = L.tileLayer.wms('https://ogc.worldpop.org/geoserver/wpGlobal/ows', {
+        layers: 'wpGlobal:ppp_2020_1km_Aggregated',
+        format: 'image/png',
+        transparent: true,
         opacity: 0.65,
-        maxZoom: 13,
-        attribution: 'Population &copy; <a href="https://www.esri.com">Esri</a>',
-      });
-      _demoLayer.on('tileerror', () => {
-        showError('Demographics layer failed to load — try zooming in or out');
-        _demoVisible = false;
-        btn.classList.remove('active');
+        maxZoom: 14,
+        attribution: 'Population 2020 &copy; <a href="https://www.worldpop.org">WorldPop</a>',
       });
     }
     _demoLayer.addTo(map);
