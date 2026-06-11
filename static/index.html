@@ -1294,29 +1294,34 @@ function toggleSatellite() {
     : '<i class="fa-solid fa-satellite"></i> Satellite';
 }
 
-// ── Demographics layer (ArcGIS Living Atlas) ─────────────────────────────────
+// ── Demographics layer (Esri public World Population service) ─────────────────
 let _demoLayer   = null;
 let _demoVisible = false;
 
 function toggleDemographics() {
-  if (!cfg.arcgis_key) {
-    showError('Add your ArcGIS API key in Settings ⚙ to enable the demographics layer');
-    return;
-  }
+  clearError();
+  const btn = document.getElementById('demo-btn');
   _demoVisible = !_demoVisible;
   if (_demoVisible) {
     if (!_demoLayer) {
-      _demoLayer = L.esri.dynamicMapLayer({
-        url: 'https://demographics2.arcgis.com/arcgis/rest/services/World_Population_Density/MapServer',
-        token: cfg.arcgis_key,
+      // Public Esri World Population Density — no API key required
+      _demoLayer = L.esri.tiledMapLayer({
+        url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Demographics/World_Population/MapServer',
         opacity: 0.55,
+        maxZoom: 14,
+        attribution: 'Population &copy; <a href="https://www.esri.com">Esri</a>',
+      });
+      _demoLayer.on('tileerror', () => {
+        showError('Demographics layer failed to load — try zooming in or out');
+        _demoVisible = false;
+        btn.classList.remove('active');
       });
     }
     _demoLayer.addTo(map);
   } else {
     if (_demoLayer) map.removeLayer(_demoLayer);
   }
-  document.getElementById('demo-btn').classList.toggle('active', _demoVisible);
+  btn.classList.toggle('active', _demoVisible);
 }
 
 map.on('click', (e) => {
