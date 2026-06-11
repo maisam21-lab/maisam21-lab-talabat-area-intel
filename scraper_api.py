@@ -1177,7 +1177,7 @@ def _compute_lead_scores(matrix_df: "pd.DataFrame", raw_df: "pd.DataFrame") -> "
 
         score = min(100, round(score))
         scores.append(score)
-        priorities.append("🔥 Hot Lead" if score >= 60 else "⭐ Warm Lead" if score >= 30 else "❄️ Cold Lead")
+        priorities.append("High Priority" if score >= 60 else "Medium Priority" if score >= 30 else "Low Priority")
 
     matrix_df = matrix_df.copy()
     matrix_df["lead_score"] = scores
