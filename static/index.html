@@ -1315,67 +1315,50 @@ function toggleSatellite() {
   _applyBasemap();
 }
 
-// ── Demographics layer (ArcGIS GeoEnrichment — population density choropleth) ──
-let _demoLayer   = null;
+// ── Demographics layer ────────────────────────────────────────────────────────
+// Primary:  ArcGIS HumanGeographyDetail tiles (Basemaps privilege, instant)
+//           + ArcGIS HumanGeographyBase tiles for the settlement tone layer
+// Fallback: ArcGIS GeoEnrichment choropleth (server-side, Data enrichment privilege)
+let _demoLayers  = [];   // array of Leaflet layers currently on the map
 let _demoVisible = false;
 
+// ── GeoEnrichment fallback (used only when no arcgis_key in localStorage) ──
 function _demoColor(density, maxDensity) {
   if (!density || maxDensity <= 0) return '#444';
   const t = Math.min(density / maxDensity, 1);
-  // Blue (low) → Teal → Green → Yellow → Red (high density)
-  if (t < 0.2)  return '#2b7bba';
-  if (t < 0.4)  return '#43a87d';
-  if (t < 0.6)  return '#5ab87a';
-  if (t < 0.8)  return '#f4b942';
+  if (t < 0.2) return '#2b7bba';
+  if (t < 0.4) return '#43a87d';
+  if (t < 0.6) return '#5ab87a';
+  if (t < 0.8) return '#f4b942';
   return '#e85d5d';
 }
 
-async function _loadDemographicsLayer() {
+async function _loadGeoEnrichFallback() {
   const btn = document.getElementById('demo-btn');
   btn.disabled = true;
   btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Loading…';
-
   try {
     const b = map.getBounds();
     const params = new URLSearchParams({
-      min_lat: b.getSouth().toFixed(6),
-      min_lng: b.getWest().toFixed(6),
-      max_lat: b.getNorth().toFixed(6),
-      max_lng: b.getEast().toFixed(6),
+      min_lat: b.getSouth().toFixed(6), min_lng: b.getWest().toFixed(6),
+      max_lat: b.getNorth().toFixed(6), max_lng: b.getEast().toFixed(6),
       grid: 5,
     });
-
     const resp = await fetch(`/api/geoenrich?${params}`);
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error(err.detail || `HTTP ${resp.status}`);
-    }
+    if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.detail || `HTTP ${resp.status}`); }
     const geojson = await resp.json();
-    if (!geojson.ok || !geojson.features || !geojson.features.length)
-      throw new Error('No population data returned for this area');
-
-    const densities = geojson.features.map(f => f.properties.density).filter(d => d > 0);
-    const maxD = densities.length ? Math.max(...densities) : 1;
-
-    if (_demoLayer) { map.removeLayer(_demoLayer); _demoLayer = null; }
-
-    _demoLayer = L.geoJSON(geojson, {
-      style: feat => ({
-        fillColor: _demoColor(feat.properties.density, maxD),
-        fillOpacity: 0.45,
-        color: 'transparent',
-        weight: 0,
-      }),
-      onEachFeature: (feat, layer) => {
+    if (!geojson.ok || !geojson.features?.length) throw new Error('No data for this area');
+    const dens = geojson.features.map(f => f.properties.density).filter(d => d > 0);
+    const maxD = dens.length ? Math.max(...dens) : 1;
+    const layer = L.geoJSON(geojson, {
+      style: feat => ({ fillColor: _demoColor(feat.properties.density, maxD), fillOpacity: 0.45, color: 'transparent', weight: 0 }),
+      onEachFeature: (feat, lyr) => {
         const pop = (feat.properties.population || 0).toLocaleString();
         const den = Math.round(feat.properties.density || 0).toLocaleString();
-        layer.bindTooltip(
-          `<b>Population:</b> ${pop}<br><b>Density:</b> ${den} /km²`,
-          { sticky: true, className: 'leaflet-tooltip-dark' }
-        );
+        lyr.bindTooltip(`<b>Population:</b> ${pop}<br><b>Density:</b> ${den} /km²`, { sticky: true, className: 'leaflet-tooltip-dark' });
       },
     }).addTo(map);
-
+    _demoLayers.push(layer);
   } catch (e) {
     showError('Demographics failed: ' + (e.message || 'unknown error'));
     _demoVisible = false;
@@ -1386,14 +1369,38 @@ async function _loadDemographicsLayer() {
   }
 }
 
+function _removeDemoLayers() {
+  _demoLayers.forEach(l => { try { map.removeLayer(l); } catch {} });
+  _demoLayers = [];
+}
+
 function toggleDemographics() {
   clearError();
   const btn = document.getElementById('demo-btn');
   _demoVisible = !_demoVisible;
+
   if (_demoVisible) {
-    _loadDemographicsLayer();
+    _removeDemoLayers();
+    const arcKey = cfg.arcgis_key;
+    if (arcKey) {
+      // ── Fast tile approach (Basemaps privilege enabled) ──────────────────
+      // HumanGeographyBase: muted settlement-tone canvas
+      const base = L.tileLayer(
+        `https://basemaps-api.arcgis.com/arcgis/rest/services/styles/ArcGIS:HumanGeographyBase/static/{z}/{x}/{y}.png?token=${arcKey}`,
+        { opacity: 0.55, maxZoom: 19, attribution: 'Demographics &copy; <a href="https://www.esri.com">Esri</a>', pane: 'shadowPane' }
+      ).addTo(map);
+      // HumanGeographyDetail: settlement detail, urban patterns, labels
+      const detail = L.tileLayer(
+        `https://basemaps-api.arcgis.com/arcgis/rest/services/styles/ArcGIS:HumanGeographyDetail/static/{z}/{x}/{y}.png?token=${arcKey}`,
+        { opacity: 0.75, maxZoom: 19, attribution: '' }
+      ).addTo(map);
+      _demoLayers = [base, detail];
+    } else {
+      // ── Fallback: server-side GeoEnrichment choropleth ───────────────────
+      _loadGeoEnrichFallback();
+    }
   } else {
-    if (_demoLayer) { map.removeLayer(_demoLayer); _demoLayer = null; }
+    _removeDemoLayers();
   }
   btn.classList.toggle('active', _demoVisible);
 }
@@ -2158,8 +2165,8 @@ function saveSettings() {
   if (url)        localStorage.setItem('kp_api_url',  url);
   if (key)        localStorage.setItem('kp_api_key',  key);
   if (arcgis_key) localStorage.setItem('arcgis_key', arcgis_key);
-  // Reset demo layer so it picks up new key on next toggle
-  if (_demoLayer) { try { map.removeLayer(_demoLayer); } catch {} _demoLayer = null; _demoVisible = false; document.getElementById('demo-btn').classList.remove('active'); }
+  // Reset demo layers so they pick up the new key on next toggle
+  if (_demoLayers.length) { _removeDemoLayers(); _demoVisible = false; document.getElementById('demo-btn').classList.remove('active'); }
   closeSettings();
 }
 document.getElementById('settings-modal').addEventListener('click', e => { if (e.target === document.getElementById('settings-modal')) closeSettings(); });
