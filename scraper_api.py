@@ -1151,8 +1151,14 @@ KP_TENANT_RADIUS_KM = 1.5  # vendor within this distance from a KP facility = KP
 
 
 def _compute_lead_scores(matrix_df: "pd.DataFrame", raw_df: "pd.DataFrame") -> "pd.DataFrame":
-    """Add lead_score (0-100) and lead_priority columns to matrix_df."""
+    """Add lead_score (0-100) and lead_priority columns to matrix_df.
+    Also updates kp_tenant using live Salesforce data where available.
+    """
     import pandas as pd
+    from sf_tenants import fetch_sf_tenants, is_sf_tenant
+
+    # Pull active SF tenants (cached 24h) — empty set if SF not configured
+    sf_tenant_names = fetch_sf_tenants()
 
     # Aggregate avg delivery time per brand from raw records
     delivery_agg: dict = {}
@@ -1175,9 +1181,17 @@ def _compute_lead_scores(matrix_df: "pd.DataFrame", raw_df: "pd.DataFrame") -> "
             .to_dict()
         )
 
+    matrix_df = matrix_df.copy()
+
     scores, priorities = [], []
-    for _, row in matrix_df.iterrows():
-        if row.get("kp_tenant") == "Yes":
+    for idx, row in matrix_df.iterrows():
+        brand = str(row.get("brand_name") or "").strip()
+
+        # Check SF first — overrides proximity-based kp_tenant flag
+        if sf_tenant_names and is_sf_tenant(brand, sf_tenant_names):
+            matrix_df.at[idx, "kp_tenant"] = "Yes"
+
+        if row.get("kp_tenant") == "Yes" or matrix_df.at[idx, "kp_tenant"] == "Yes":
             scores.append(0)
             priorities.append("")
             continue
@@ -1215,7 +1229,6 @@ def _compute_lead_scores(matrix_df: "pd.DataFrame", raw_df: "pd.DataFrame") -> "
         scores.append(score)
         priorities.append("High Priority" if score >= 60 else "Medium Priority" if score >= 30 else "Low Priority")
 
-    matrix_df = matrix_df.copy()
     matrix_df["lead_score"] = scores
     matrix_df["lead_priority"] = priorities
     return matrix_df
