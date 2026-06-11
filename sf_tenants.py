@@ -130,8 +130,7 @@ def fetch_sf_data(*, force_refresh: bool = False) -> dict:
                 Facility__r.BillingLongitude,
                 Currently_Occupied_Opportunity__r.Account.Name
             FROM Kitchen_Number__c
-            WHERE Facility_Country__c IN ('UAE', 'AE', 'QA', 'BH', 'KW', 'SA')
-              AND Kitchen_Type__c NOT IN ('CloudRetail', 'Virtual')
+            WHERE Facility_Country__c IN ('UAE', 'Saudi Arabia', 'Kuwait', 'Qatar', 'Bahrain')
         """
         records = _soql_query(instance_url, token, soql.strip())
 
