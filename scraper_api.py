@@ -399,9 +399,12 @@ def set_sf_creds(payload: SFCredsRequest, x_api_key: str | None = Header(default
 
 @app.post("/admin/deploy")
 def admin_deploy(x_api_key: str | None = Header(default=None)):
-    """Pull latest code from git and restart workers — no rebuild needed for pure Python changes."""
+    """git pull + graceful restart. Source is volume-mounted so no rebuild needed."""
     verify_api_key(x_api_key)
+    import signal
     import subprocess
+    import threading
+
     repo = Path(__file__).parent
     result = subprocess.run(
         ["git", "pull"],
@@ -410,11 +413,20 @@ def admin_deploy(x_api_key: str | None = Header(default=None)):
         text=True,
         timeout=60,
     )
+    if result.returncode != 0:
+        return {"ok": False, "stdout": result.stdout.strip(), "stderr": result.stderr.strip()}
+
+    # Send SIGTERM after response is delivered — Docker restarts the container with fresh code
+    def _restart():
+        import time
+        time.sleep(1.5)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=_restart, daemon=True).start()
     return {
-        "ok": result.returncode == 0,
+        "ok": True,
         "stdout": result.stdout.strip(),
-        "stderr": result.stderr.strip(),
-        "note": "git pull done — changes to existing .py files are live after next request. New files or dependency changes still require docker compose build api from the console.",
+        "message": "Restarting with new code — back online in ~15s",
     }
 
 

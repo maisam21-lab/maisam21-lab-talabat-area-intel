@@ -41,6 +41,7 @@ services:
     env_file:
       - .env
     volumes:
+      - .:/app
       - ./data/scrape_jobs:/app/data/scrape_jobs
       - ./analyze_jobs:/app/analyze_jobs
     expose:
