@@ -67,6 +67,18 @@ _STATIC_DIR = Path(__file__).parent / "static"
 _STATIC_DIR.mkdir(exist_ok=True)
 app.mount("/ui", StaticFiles(directory=str(_STATIC_DIR), html=True), name="static")
 
+
+@app.middleware("http")
+async def no_cache_ui(request: Request, call_next):
+    """Prevent browsers and Cloudflare from caching the UI HTML so deploys take effect immediately."""
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/ui") and not any(path.endswith(ext) for ext in (".js", ".css", ".png", ".ico", ".woff", ".woff2")):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 _ANALYZE_JOBS: dict[str, dict] = {}
 _ANALYZE_JOBS_LOCK = threading.Lock()
 _ANALYZE_JOBS_DIR = Path(__file__).parent / "analyze_jobs"
@@ -1111,12 +1123,8 @@ def submit_analyze(
 
 
 @app.get("/sf/kitchens")
-def sf_kitchens(
-    x_api_key: str | None = Header(default=None),
-    refresh: bool = False,
-):
-    """Return SF kitchen data for map display — occupied/vacant kitchens with coordinates."""
-    verify_api_key(x_api_key)
+def sf_kitchens(refresh: bool = False):
+    """Return SF kitchen data for map display — public endpoint for the NAMAA frontend."""
     from sf_tenants import fetch_sf_kitchens
     kitchens = fetch_sf_kitchens(force_refresh=refresh)
     occupied  = [k for k in kitchens if (k.get("status") or "").lower() == "occupied"]
