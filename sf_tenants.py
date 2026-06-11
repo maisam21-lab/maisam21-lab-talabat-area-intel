@@ -99,16 +99,17 @@ _UAE_KP_COORDS: dict[str, tuple[float, float]] = {
     "uaeshjmuwailehek":      (25.3045405, 55.4698694),
 }
 
-# Facilities that are not yet open — "Coming Soon" on the map
-_UAE_KP_FUTURE: frozenset[str] = frozenset({
-    "uaedxbdic",
-    "uaedxbjabalali",
-    "uaedxbwarsan",
-    "uaeadnahyan",
-    "uaeadjimi",
-    "uaeadfalah",
-    "uaeadshamkha",
-})
+# Facility name substrings (lowercase) that identify "Coming Soon" / not yet open sites.
+# Matched against the raw SF facility name — case-insensitive substring.
+_UAE_KP_FUTURE_KEYWORDS: tuple[str, ...] = (
+    "jabal ali",
+    "al nahyan",
+    " jimi",          # Al Ain - Jimi; space prevents false-match on e.g. "Jimi-"
+    "falah",
+    "warsan",
+    "shamkha",
+    "- dic",          # Dubai Internet City code
+)
 
 
 def _lookup_coords(facility_name: str) -> tuple[float, float] | None:
@@ -128,11 +129,9 @@ def _lookup_coords(facility_name: str) -> tuple[float, float] | None:
 
 def _lookup_facility_status(facility_name: str) -> str:
     """Return 'Future' if this is a coming-soon facility, else 'Live'."""
-    key = _normalise(facility_name)
-    if key in _UAE_KP_FUTURE:
-        return "Future"
-    for k in _UAE_KP_FUTURE:
-        if k in key:
+    lower = (facility_name or "").lower()
+    for kw in _UAE_KP_FUTURE_KEYWORDS:
+        if kw in lower:
             return "Future"
     return "Live"
 
