@@ -447,6 +447,33 @@ def set_sf_creds(payload: SFCredsRequest, x_api_key: str | None = Header(default
     return {"ok": True, "written": list(keys_to_set.keys())}
 
 
+class SetEnvRequest(BaseModel):
+    key: str
+    value: str
+
+_ALLOWED_ENV_KEYS = {"ARCGIS_API_KEY", "GOOGLE_MAPS_API_KEY", "GEOAPIFY_API_KEY", "SCRAPER_API_KEY"}
+
+@app.post("/admin/set-env")
+def set_env_var(payload: SetEnvRequest, x_api_key: str | None = Header(default=None)):
+    """Write a single whitelisted env var to .env — protected by SCRAPER_API_KEY."""
+    verify_api_key(x_api_key)
+    if payload.key not in _ALLOWED_ENV_KEYS:
+        raise HTTPException(status_code=400, detail=f"Key not in allowlist: {_ALLOWED_ENV_KEYS}")
+    env_path = Path(__file__).parent / ".env"
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    found, new_lines = False, []
+    for line in lines:
+        if line.startswith(f"{payload.key}=") or line.startswith(f"{payload.key} ="):
+            new_lines.append(f"{payload.key}={payload.value.strip()}")
+            found = True
+        else:
+            new_lines.append(line)
+    if not found:
+        new_lines.append(f"{payload.key}={payload.value.strip()}")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    return {"ok": True, "key": payload.key}
+
+
 @app.post("/admin/deploy")
 def admin_deploy(x_api_key: str | None = Header(default=None)):
     """git pull + graceful restart. Source is volume-mounted so no rebuild needed."""
