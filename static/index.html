@@ -523,6 +523,11 @@
       background: var(--accent); flex-shrink: 0;
       box-shadow: 0 0 6px rgba(90,184,122,.6);
     }
+    .kp-dot-future {
+      width: 9px; height: 9px; border-radius: 50%;
+      background: transparent; flex-shrink: 0;
+      border: 2px dashed rgba(251,191,36,.7);
+    }
     #kp-toggle.active { border-color: rgba(90,184,122,.3); color: var(--text); }
     #kp-toggle.active .kp-dot-live { background: var(--accent); }
 
@@ -1047,8 +1052,10 @@
   <div id="map" style="position:relative;">
     <div id="map-controls">
       <button id="kp-toggle" class="active" onclick="toggleKpLayer()">
-        <span class="kp-dot-live"></span> KP Facilities
-        <span id="kp-badge" style="margin-left:4px; font-size:10px; opacity:.7;">18 Live · 7 Future</span>
+        <span class="kp-dot-live"></span>
+        <span class="kp-dot-future" style="margin-left:3px;"></span>
+        KP Facilities
+        <span id="kp-badge" style="margin-left:4px; font-size:10px;"></span>
       </button>
       <div id="vendor-layer-btns">
         <button id="heat-mode-btn" class="map-mode-btn active" onclick="setMapMode('heat')">
@@ -1473,13 +1480,13 @@ function _initKpMarker(fac) {
       <div style="font-weight:700; font-size:14px; color:#f0f7f3; margin-bottom:2px;">${escHtml(fac.name)}</div>
       <div style="font-size:11px; color:rgba(255,255,255,.6); margin-bottom:8px;">${fac.emirate}</div>
       <span style="
-        background:${fac.status==='Live'?'rgba(90,184,122,.12)':'rgba(255,255,255,.05)'};
-        color:${fac.status==='Live'?'#5ab87a':'rgba(255,255,255,.5)'};
-        border:1px solid ${fac.status==='Live'?'rgba(90,184,122,.3)':'rgba(255,255,255,.1)'};
+        background:${fac.status==='Live'?'rgba(90,184,122,.12)':'rgba(251,191,36,.1)'};
+        color:${fac.status==='Live'?'#5ab87a':'#fbbf24'};
+        border:1px solid ${fac.status==='Live'?'rgba(90,184,122,.3)':'rgba(251,191,36,.35)'};
         padding:3px 10px; border-radius:20px; font-size:11px; font-weight:600;
         display:inline-flex; align-items:center; gap:5px;">
-        <span style="width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block;${fac.status==='Live'?'box-shadow:0 0 4px currentColor':''}"></span>
-        ${fac.status}
+        <span style="width:6px;height:6px;border-radius:50%;${fac.status==='Live'?'background:currentColor;box-shadow:0 0 4px currentColor':'border:2px dashed currentColor'};display:inline-block;"></span>
+        ${fac.status === 'Live' ? 'Live' : 'Coming Soon'}
       </span>
       ${occBar}
       <button onclick="setKpAsTarget(${fac.lat},${fac.lng},'${escHtml(fac.name)}')" style="
@@ -1497,13 +1504,22 @@ function _initKpMarker(fac) {
   kpLayerGroup.addLayer(m);
 }
 
+function _setKpBadge(liveN, futureN) {
+  const badge = document.getElementById('kp-badge');
+  if (!badge) return;
+  let html = `<span style="color:#5ab87a;">${liveN} Live</span>`;
+  if (futureN > 0)
+    html += ` · <span style="color:#fbbf24;">${futureN} Coming Soon</span>`;
+  badge.innerHTML = html;
+}
+
 async function loadKpFacilities() {
   try {
     // Use relative URL — avoids cfg.url being wrong in localStorage
     const data = await fetch('/api/sf/kitchens').then(r => r.json());
     if (!data.ok || !data.kitchens || !data.kitchens.length) throw new Error('empty');
 
-    // Group by facility, UAE only
+    // Group by facility, UAE only — preserve facility_status from SF
     const facMap = {};
     data.kitchens
       .filter(k => k.facility_country === 'UAE' && k.facility_lat && k.facility_lng)
@@ -1511,11 +1527,11 @@ async function loadKpFacilities() {
         const key = k.facility_name;
         if (!facMap[key]) {
           facMap[key] = {
-            name: k.facility_name,
+            name:    k.facility_name,
             emirate: _deriveEmirate(k.facility_name),
-            status: 'Live',
-            lat: k.facility_lat,
-            lng: k.facility_lng,
+            status:  k.facility_status || 'Live',   // Live or Future from server
+            lat:     k.facility_lat,
+            lng:     k.facility_lng,
             total: 0, occupied: 0, vacant: 0,
           };
         }
@@ -1528,16 +1544,18 @@ async function loadKpFacilities() {
     const facilities = Object.values(facMap).filter(f => f.lat && f.lng);
     if (!facilities.length) throw new Error('no UAE facilities');
     facilities.forEach(_initKpMarker);
-    console.log(`KP: loaded ${facilities.length} UAE facilities from SF`);
-    const badge = document.getElementById('kp-badge');
-    if (badge) badge.textContent = `${facilities.length} Live`;
+
+    const liveN   = facilities.filter(f => f.status === 'Live').length;
+    const futureN = facilities.filter(f => f.status === 'Future').length;
+    _setKpBadge(liveN, futureN);
+    console.log(`KP: ${liveN} live, ${futureN} coming soon (SF)`);
+
   } catch (e) {
     console.warn('KP SF load failed, using fallback:', e.message);
     KP_FACILITIES.forEach(fac => _initKpMarker({ ...fac, total: 0, occupied: 0, vacant: 0 }));
-    const live = KP_FACILITIES.filter(f => f.status === 'Live').length;
-    const future = KP_FACILITIES.filter(f => f.status === 'Future').length;
-    const badge = document.getElementById('kp-badge');
-    if (badge) badge.textContent = future > 0 ? `${live} Live · ${future} Future` : `${live} Live`;
+    const liveN   = KP_FACILITIES.filter(f => f.status === 'Live').length;
+    const futureN = KP_FACILITIES.filter(f => f.status === 'Future').length;
+    _setKpBadge(liveN, futureN);
   }
 }
 
@@ -1568,13 +1586,13 @@ function showKpCard(fac, pageX, pageY) {
   const live = fac.status === 'Live';
   document.getElementById('kp-card-status').innerHTML = `
     <span style="
-      background:${live ? 'rgba(90,184,122,.15)' : 'rgba(255,255,255,.07)'};
-      color:${live ? '#5ab87a' : 'rgba(255,255,255,.45)'};
-      border:1px solid ${live ? 'rgba(90,184,122,.3)' : 'rgba(255,255,255,.12)'};
+      background:${live ? 'rgba(90,184,122,.15)' : 'rgba(251,191,36,.12)'};
+      color:${live ? '#5ab87a' : '#fbbf24'};
+      border:1px solid ${live ? 'rgba(90,184,122,.3)' : 'rgba(251,191,36,.35)'};
       padding:2px 9px; border-radius:20px; font-size:10px; font-weight:600;
       display:inline-flex; align-items:center; gap:4px;
     ">
-      <span style="width:5px;height:5px;border-radius:50%;background:currentColor;display:inline-block;${live ? 'box-shadow:0 0 5px currentColor;' : ''}"></span>
+      <span style="width:5px;height:5px;border-radius:50%;${live ? 'background:currentColor;box-shadow:0 0 5px currentColor' : 'border:1.5px dashed currentColor'};display:inline-block;"></span>
       ${live ? 'Live' : 'Coming Soon'}
     </span>`;
 

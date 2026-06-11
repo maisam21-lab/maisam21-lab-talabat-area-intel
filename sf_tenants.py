@@ -62,7 +62,7 @@ def _normalise(name: str) -> str:
 # Salesforce BillingLatitude/BillingLongitude is often missing on Facility records.
 # This lookup provides authoritative coordinates keyed by normalised SF facility name.
 _UAE_KP_COORDS: dict[str, tuple[float, float]] = {
-    # DXB
+    # DXB — live
     "uaedxbjlt1":            (25.0802475, 55.1512831),
     "uaedxbjlt2":            (25.0663430, 55.1376235),
     "uaedxbbusinessbay1":    (25.1894021, 55.2892571),
@@ -81,20 +81,35 @@ _UAE_KP_COORDS: dict[str, tuple[float, float]] = {
     "uaedxbwafi":            (25.2297643, 55.3189516),
     "uaedxbquoz1":           (25.1403704, 55.2446225),
     "uaedxbhessa2ek":        (25.0831785, 55.2018668),
+    # DXB — future / coming soon
     "uaedxbdic":             (25.0930000, 55.1528000),
     "uaedxbjabalali":        (24.9903930, 55.1427240),
-    # Abu Dhabi
+    "uaedxbwarsan":          (25.1651944, 55.4281111),
+    # Abu Dhabi — live
     "uaeadcityoflight":      (24.4389739, 54.5742641),
     "uaeadcol":              (24.4989329, 54.4031167),
     "uaeadraha1ek":          (24.4389739, 54.5742641),
+    # Abu Dhabi — future / coming soon
     "uaeadnahyan":           (24.3917000, 54.5117000),
     "uaeadjimi":             (24.2281000, 55.7614000),
     "uaeadfalah":            (24.4167000, 54.3833000),
     "uaeadshamkha":          (24.2667000, 54.2583000),
-    # Sharjah
+    # Sharjah — live
     "uaeshjsharjahcentre":   (25.3376961, 55.4008590),
     "uaeshjmuwailehek":      (25.3045405, 55.4698694),
 }
+
+# Facilities that are not yet open — "Coming Soon" on the map
+_UAE_KP_FUTURE: frozenset[str] = frozenset({
+    "uaedxbdic",
+    "uaedxbjabalali",
+    "uaedxbwarsan",
+    "uaeadnahyan",
+    "uaeadjimi",
+    "uaeadfalah",
+    "uaeadshamkha",
+})
+
 
 def _lookup_coords(facility_name: str) -> tuple[float, float] | None:
     """Return verified (lat, lng) for a UAE KP facility, or None if unknown."""
@@ -109,6 +124,17 @@ def _lookup_coords(facility_name: str) -> tuple[float, float] | None:
         if k in key and len(k) > best_len:
             best, best_len = v, len(k)
     return best
+
+
+def _lookup_facility_status(facility_name: str) -> str:
+    """Return 'Future' if this is a coming-soon facility, else 'Live'."""
+    key = _normalise(facility_name)
+    if key in _UAE_KP_FUTURE:
+        return "Future"
+    for k in _UAE_KP_FUTURE:
+        if k in key:
+            return "Future"
+    return "Live"
 
 
 def _load_cache() -> dict | None:
@@ -230,10 +256,12 @@ def fetch_sf_data(*, force_refresh: bool = False) -> dict:
             # For UAE KP facilities, always prefer our verified coordinate lookup.
             # SF BillingLatitude/BillingLongitude is often wrong (many facilities
             # incorrectly inherit JLT's coordinates).
+            fac_status = "Live"
             if country == "UAE":
                 coords = _lookup_coords(fac_name)
                 if coords:
                     lat, lng = coords
+                fac_status = _lookup_facility_status(fac_name)
 
             kitchens.append({
                 "kitchen_name":    r.get("Name", ""),
@@ -244,6 +272,7 @@ def fetch_sf_data(*, force_refresh: bool = False) -> dict:
                 "facility_city":   r.get("Facility_Kitchen_City__c", ""),
                 "facility_lat":    float(lat) if lat is not None else None,
                 "facility_lng":    float(lng) if lng is not None else None,
+                "facility_status": fac_status,
                 "tenant_name":     tenant_name,
             })
 
