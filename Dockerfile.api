@@ -6,6 +6,8 @@ ENV PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 # playwright-stealth is API-only (optional SCRAPER_PLAYWRIGHT_STEALTH); keep it out of Streamlit image builds.
 RUN pip install --upgrade pip && pip install -r requirements.txt \
