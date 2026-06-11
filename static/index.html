@@ -7,8 +7,6 @@
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyA-wBQ5OlhNcqLet2OM6kJLBRInSXEtijw&language=en&region=AE"></script>
-  <script src="https://unpkg.com/leaflet.gridlayer.googlemutant@0.14.0/dist/Leaflet.GoogleMutant.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" />
@@ -1269,29 +1267,41 @@ let pinIdSeq = 0;
 const map = L.map('map', { center: [25.2048, 55.2708], zoom: 11, zoomControl: false });
 L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-// ── Basemap layers ──────────────────────────────────────────────────────────
-const _streetLayer = L.gridLayer.googleMutant({ type: 'roadmap', maxZoom: 21 });
-const _satLayer    = L.tileLayer(
-  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-  { maxZoom: 19, attribution: 'Imagery &copy; <a href="https://www.esri.com">Esri</a>' }
-);
-_streetLayer.addTo(map);
-let _isSatellite = false;
+// ── Basemap layers (all public ArcGIS — no key, no watermark) ───────────────
+const _ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services';
+const _streetBase = L.tileLayer(`${_ESRI}/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}`,
+  { maxZoom: 21, attribution: 'Basemap &copy; <a href="https://www.esri.com">Esri</a>' });
+const _streetRef  = L.tileLayer(`${_ESRI}/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}`,
+  { maxZoom: 21, pane: 'overlayPane' });
+const _satLayer   = L.tileLayer(`${_ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`,
+  { maxZoom: 19, attribution: 'Imagery &copy; <a href="https://www.esri.com">Esri</a>' });
+const _satRef     = L.tileLayer(`${_ESRI}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}`,
+  { maxZoom: 19, pane: 'overlayPane' });
+
+let _isSatellite = localStorage.getItem('basemap') === 'sat';
+
+function _applyBasemap() {
+  if (_isSatellite) {
+    [_streetBase, _streetRef].forEach(l => { try { map.removeLayer(l); } catch {} });
+    _satLayer.addTo(map); _satRef.addTo(map);
+  } else {
+    [_satLayer, _satRef].forEach(l => { try { map.removeLayer(l); } catch {} });
+    _streetBase.addTo(map); _streetRef.addTo(map);
+  }
+  const btn = document.getElementById('sat-btn');
+  if (btn) {
+    btn.classList.toggle('active', _isSatellite);
+    btn.innerHTML = _isSatellite
+      ? '<i class="fa-solid fa-map"></i> Street'
+      : '<i class="fa-solid fa-satellite"></i> Satellite';
+  }
+}
+_applyBasemap();
 
 function toggleSatellite() {
   _isSatellite = !_isSatellite;
-  if (_isSatellite) {
-    map.removeLayer(_streetLayer);
-    _satLayer.addTo(map);
-  } else {
-    map.removeLayer(_satLayer);
-    _streetLayer.addTo(map);
-  }
-  const btn = document.getElementById('sat-btn');
-  btn.classList.toggle('active', _isSatellite);
-  btn.innerHTML = _isSatellite
-    ? '<i class="fa-solid fa-map"></i> Street'
-    : '<i class="fa-solid fa-satellite"></i> Satellite';
+  localStorage.setItem('basemap', _isSatellite ? 'sat' : 'street');
+  _applyBasemap();
 }
 
 // ── Demographics layer (Esri public World Population service) ─────────────────
@@ -1304,11 +1314,11 @@ function toggleDemographics() {
   _demoVisible = !_demoVisible;
   if (_demoVisible) {
     if (!_demoLayer) {
-      // Public Esri World Population Density — no API key required
+      // Public Esri World Population Density choropleth — no API key required
       _demoLayer = L.esri.tiledMapLayer({
-        url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Demographics/World_Population/MapServer',
-        opacity: 0.55,
-        maxZoom: 14,
+        url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Demographics/World_Population_Density/MapServer',
+        opacity: 0.65,
+        maxZoom: 13,
         attribution: 'Population &copy; <a href="https://www.esri.com">Esri</a>',
       });
       _demoLayer.on('tileerror', () => {
@@ -1462,13 +1472,14 @@ async function loadKpFacilities() {
 loadKpFacilities();
 
 // ── KP hover card ──
-const _GMAPS_KEY = 'AIzaSyA-wBQ5OlhNcqLet2OM6kJLBRInSXEtijw';
-
 function _kpStreetViewUrl(lat, lng) {
-  return `https://maps.googleapis.com/maps/api/streetview?size=480x280&location=${lat},${lng}&fov=80&pitch=8&source=outdoor&key=${_GMAPS_KEY}`;
+  // ArcGIS World Imagery static export — public, no key required
+  const d = 0.004;
+  return `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export?bbox=${lng-d},${lat-d},${lng+d},${lat+d}&bboxSR=4326&size=480,280&imageSR=4326&format=jpg&f=image`;
 }
 function _kpSatUrl(lat, lng) {
-  return `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=17&size=480x280&maptype=satellite&key=${_GMAPS_KEY}`;
+  const d = 0.006;
+  return `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export?bbox=${lng-d},${lat-d},${lng+d},${lat+d}&bboxSR=4326&size=480,280&imageSR=4326&format=jpg&f=image`;
 }
 
 function showKpCard(fac, pageX, pageY) {
