@@ -58,6 +58,59 @@ def _normalise(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (name or "").lower())
 
 
+# ── Verified UAE KP facility coordinates (lat, lng) ──────────────────────────
+# Salesforce BillingLatitude/BillingLongitude is often missing on Facility records.
+# This lookup provides authoritative coordinates keyed by normalised SF facility name.
+_UAE_KP_COORDS: dict[str, tuple[float, float]] = {
+    # DXB
+    "uaedxbjlt1":            (25.0802475, 55.1512831),
+    "uaedxbjlt2":            (25.0663430, 55.1376235),
+    "uaedxbbusinessbay1":    (25.1894021, 55.2892571),
+    "uaedxbbusinessbay2":    (25.1894021, 55.2892571),
+    "uaedxbmotorcity1":      (25.0469210, 55.2303106),
+    "uaedxbmotorcity2":      (25.0469210, 55.2303106),
+    "uaedxbarjan1":          (25.0645000, 55.2393000),
+    "uaedxbarjan3ek":        (25.0656802, 55.2354685),
+    "uaedxbdso":             (25.1282034, 55.3922505),
+    "uaedxbburdubai":        (25.2460615, 55.2759454),
+    "uaedxbimpz1":           (25.0383700, 55.1861500),
+    "uaedxbmirdif":          (25.2347469, 55.4310875),
+    "uaedxbuptownmirdif":    (25.2347469, 55.4310875),
+    "uaedxbsufouh":          (25.1103251, 55.1780541),
+    "uaedxbdeira":           (25.2698737, 55.3323663),
+    "uaedxbwafi":            (25.2297643, 55.3189516),
+    "uaedxbquoz1":           (25.1403704, 55.2446225),
+    "uaedxbhessa2ek":        (25.0831785, 55.2018668),
+    "uaedxbdic":             (25.0930000, 55.1528000),
+    "uaedxbjabalali":        (24.9903930, 55.1427240),
+    # Abu Dhabi
+    "uaeadcityoflight":      (24.4389739, 54.5742641),
+    "uaeadcol":              (24.4989329, 54.4031167),
+    "uaeadraha1ek":          (24.4389739, 54.5742641),
+    "uaeadnahyan":           (24.3917000, 54.5117000),
+    "uaeadjimi":             (24.2281000, 55.7614000),
+    "uaeadfalah":            (24.4167000, 54.3833000),
+    "uaeadshamkha":          (24.2667000, 54.2583000),
+    # Sharjah
+    "uaeshjsharjahcentre":   (25.3376961, 55.4008590),
+    "uaeshjmuwailehek":      (25.3045405, 55.4698694),
+}
+
+def _lookup_coords(facility_name: str) -> tuple[float, float] | None:
+    """Return verified (lat, lng) for a UAE KP facility, or None if unknown."""
+    key = _normalise(facility_name)
+    # Direct match
+    if key in _UAE_KP_COORDS:
+        return _UAE_KP_COORDS[key]
+    # Partial match — find the longest matching key
+    best: tuple[float, float] | None = None
+    best_len = 0
+    for k, v in _UAE_KP_COORDS.items():
+        if k in key and len(k) > best_len:
+            best, best_len = v, len(k)
+    return best
+
+
 def _load_cache() -> dict | None:
     try:
         if _CACHE_PATH.exists():
@@ -171,13 +224,22 @@ def fetch_sf_data(*, force_refresh: bool = False) -> dict:
 
             lat = facility.get("BillingLatitude")
             lng = facility.get("BillingLongitude")
+            fac_name = facility.get("Name", "")
+            country  = r.get("Facility_Country__c", "")
+
+            # SF BillingLatitude is often missing for UAE KP facilities.
+            # Fall back to verified hardcoded lookup.
+            if country == "UAE" and (lat is None or lng is None):
+                coords = _lookup_coords(fac_name)
+                if coords:
+                    lat, lng = coords
 
             kitchens.append({
                 "kitchen_name":    r.get("Name", ""),
                 "status":          r.get("Status__c", ""),
                 "kitchen_type":    r.get("Kitchen_Type__c", ""),
-                "facility_name":   facility.get("Name", ""),
-                "facility_country": r.get("Facility_Country__c", ""),
+                "facility_name":   fac_name,
+                "facility_country": country,
                 "facility_city":   r.get("Facility_Kitchen_City__c", ""),
                 "facility_lat":    float(lat) if lat is not None else None,
                 "facility_lng":    float(lng) if lng is not None else None,
