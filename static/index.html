@@ -13,6 +13,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" />
   <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/esri-leaflet@3.0.10/dist/esri-leaflet.js"></script>
 
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1048,6 +1049,15 @@
           <i class="fa-solid fa-circle-dot"></i> Vendors
         </button>
       </div>
+
+      <div id="basemap-btns">
+        <button id="sat-btn" class="map-mode-btn" onclick="toggleSatellite()">
+          <i class="fa-solid fa-satellite"></i> Satellite
+        </button>
+        <button id="demo-btn" class="map-mode-btn" onclick="toggleDemographics()">
+          <i class="fa-solid fa-people-group"></i> Demographics
+        </button>
+      </div>
     </div>
     <div id="cuisine-legend"></div>
   </div>
@@ -1154,6 +1164,11 @@
       <input id="cfg-key" type="password" placeholder="Your API key" />
       <div class="hint">Required to authenticate with the API</div>
     </div>
+    <div class="form-row">
+      <label>ArcGIS API Key</label>
+      <input id="cfg-arcgis-key" type="password" placeholder="Paste your ArcGIS API key" />
+      <div class="hint">For demographics layer &amp; geocoding — free at <a href="https://developers.arcgis.com" target="_blank" style="color:var(--accent)">developers.arcgis.com</a></div>
+    </div>
     <div class="modal-actions">
       <button class="btn-secondary" onclick="closeSettings()">Cancel</button>
       <button class="btn-primary" onclick="saveSettings()">Save Settings</button>
@@ -1243,8 +1258,9 @@ const KP_FACILITIES = [
 ];
 
 const cfg = {
-  get url() { return localStorage.getItem('kp_api_url') || (location.origin.startsWith('file') ? 'http://178.105.56.187:8000' : location.origin); },
-  get key() { return localStorage.getItem('kp_api_key') || ''; },
+  get url()        { return localStorage.getItem('kp_api_url')  || (location.origin.startsWith('file') ? 'http://178.105.56.187:8000' : location.origin); },
+  get key()        { return localStorage.getItem('kp_api_key')  || ''; },
+  get arcgis_key() { return localStorage.getItem('arcgis_key')  || ''; },
 };
 
 const state = { pins: [], pendingLatLng: null, jobId: null, pollTimer: null, dragging: false };
@@ -1252,7 +1268,56 @@ let pinIdSeq = 0;
 
 const map = L.map('map', { center: [25.2048, 55.2708], zoom: 11, zoomControl: false });
 L.control.zoom({ position: 'bottomright' }).addTo(map);
-L.gridLayer.googleMutant({ type: 'roadmap', maxZoom: 21 }).addTo(map);
+
+// ── Basemap layers ──────────────────────────────────────────────────────────
+const _streetLayer = L.gridLayer.googleMutant({ type: 'roadmap', maxZoom: 21 });
+const _satLayer    = L.tileLayer(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+  { maxZoom: 19, attribution: 'Imagery &copy; <a href="https://www.esri.com">Esri</a>' }
+);
+_streetLayer.addTo(map);
+let _isSatellite = false;
+
+function toggleSatellite() {
+  _isSatellite = !_isSatellite;
+  if (_isSatellite) {
+    map.removeLayer(_streetLayer);
+    _satLayer.addTo(map);
+  } else {
+    map.removeLayer(_satLayer);
+    _streetLayer.addTo(map);
+  }
+  const btn = document.getElementById('sat-btn');
+  btn.classList.toggle('active', _isSatellite);
+  btn.innerHTML = _isSatellite
+    ? '<i class="fa-solid fa-map"></i> Street'
+    : '<i class="fa-solid fa-satellite"></i> Satellite';
+}
+
+// ── Demographics layer (ArcGIS Living Atlas) ─────────────────────────────────
+let _demoLayer   = null;
+let _demoVisible = false;
+
+function toggleDemographics() {
+  if (!cfg.arcgis_key) {
+    showError('Add your ArcGIS API key in Settings ⚙ to enable the demographics layer');
+    return;
+  }
+  _demoVisible = !_demoVisible;
+  if (_demoVisible) {
+    if (!_demoLayer) {
+      _demoLayer = L.esri.dynamicMapLayer({
+        url: 'https://demographics2.arcgis.com/arcgis/rest/services/World_Population_Density/MapServer',
+        token: cfg.arcgis_key,
+        opacity: 0.55,
+      });
+    }
+    _demoLayer.addTo(map);
+  } else {
+    if (_demoLayer) map.removeLayer(_demoLayer);
+  }
+  document.getElementById('demo-btn').classList.toggle('active', _demoVisible);
+}
 
 map.on('click', (e) => {
   if (state.dragging) return;
@@ -2001,14 +2066,19 @@ document.getElementById('manual-modal').addEventListener('click', e => { if (e.t
 function openSettings() {
   document.getElementById('cfg-url').value = cfg.url;
   document.getElementById('cfg-key').value = cfg.key;
+  document.getElementById('cfg-arcgis-key').value = cfg.arcgis_key;
   document.getElementById('settings-modal').classList.add('open');
 }
 function closeSettings() { document.getElementById('settings-modal').classList.remove('open'); }
 function saveSettings() {
-  const url = document.getElementById('cfg-url').value.trim().replace(/\/$/, '');
-  const key = document.getElementById('cfg-key').value.trim();
-  if (url) localStorage.setItem('kp_api_url', url);
-  if (key) localStorage.setItem('kp_api_key', key);
+  const url        = document.getElementById('cfg-url').value.trim().replace(/\/$/, '');
+  const key        = document.getElementById('cfg-key').value.trim();
+  const arcgis_key = document.getElementById('cfg-arcgis-key').value.trim();
+  if (url)        localStorage.setItem('kp_api_url',  url);
+  if (key)        localStorage.setItem('kp_api_key',  key);
+  if (arcgis_key) localStorage.setItem('arcgis_key', arcgis_key);
+  // Reset demo layer so it picks up new key on next toggle
+  if (_demoLayer) { try { map.removeLayer(_demoLayer); } catch {} _demoLayer = null; _demoVisible = false; document.getElementById('demo-btn').classList.remove('active'); }
   closeSettings();
 }
 document.getElementById('settings-modal').addEventListener('click', e => { if (e.target === document.getElementById('settings-modal')) closeSettings(); });

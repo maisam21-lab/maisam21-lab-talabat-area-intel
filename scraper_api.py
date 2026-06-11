@@ -317,6 +317,44 @@ def _nominatim_enabled() -> bool:
     return os.getenv("GEOCODE_FALLBACK_NOMINATIM", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
+def _arcgis_geocode(query: str) -> dict | None:
+    """ArcGIS World Geocoding Service — used when ARCGIS_API_KEY is configured."""
+    api_key = os.getenv("ARCGIS_API_KEY", "").strip()
+    if not api_key:
+        return None
+    try:
+        r = requests.get(
+            "https://geocode-api.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates",
+            params={
+                "singleLine": query,
+                "token": api_key,
+                "f": "json",
+                "outFields": "Match_addr",
+                "maxLocations": 1,
+                "countryCode": "ARE,SAU,KWT,QAT,BHR,OMN",
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
+        candidates = r.json().get("candidates", [])
+        if not candidates or candidates[0].get("score", 0) < 70:
+            return None
+        c = candidates[0]
+        loc = c.get("location", {})
+        lat, lng = loc.get("y"), loc.get("x")
+        if not lat or not lng:
+            return None
+        return {
+            "ok": True,
+            "lat": float(lat),
+            "lng": float(lng),
+            "formatted_address": c.get("address", query),
+            "provider": "arcgis",
+        }
+    except Exception:
+        return None
+
+
 def _google_geocode_enabled() -> bool:
     """Set GEOCODE_USE_GOOGLE=0 to skip Google entirely (OpenStreetMap Nominatim only; no GCP needed)."""
     return os.getenv("GEOCODE_USE_GOOGLE", "1").strip().lower() not in ("0", "false", "no", "off")
@@ -492,6 +530,12 @@ def geocode(payload: GeocodeRequest, x_api_key: str | None = Header(default=None
     google_last_error: str | None = None
 
     try:
+        # ── ArcGIS geocoder (highest priority when configured) ──────────────
+        for q in attempts:
+            ag = _arcgis_geocode(q)
+            if ag:
+                return {"ok": True, "result": ag}
+
         if google_key and _google_geocode_enabled():
             for q in attempts:
                 zero_for_this_q = False
