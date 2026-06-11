@@ -1279,41 +1279,107 @@ function makeKpIcon(status) {
   });
 }
 
-KP_FACILITIES.forEach(fac => {
+function _deriveEmirate(name) {
+  if (!name) return 'UAE';
+  const n = name.toUpperCase();
+  if (n.includes('DXB') || n.includes('DUBAI')) return 'Dubai';
+  if (n.includes(' AD ') || n.includes('ABU DHABI') || n.includes('COL') || n.includes('RAHA') || n.includes('NAHYAN') || n.includes(' AN ') || n.includes('JIMI') || n.includes('FALAH') || n.includes('SHAMKHA')) return 'Abu Dhabi';
+  if (n.includes('SHJ') || n.includes('SHARJAH') || n.includes('MUWAILEH')) return 'Sharjah';
+  if (n.includes('AJM') || n.includes('AJMAN')) return 'Ajman';
+  if (n.includes('RAK')) return 'Ras Al Khaimah';
+  return 'UAE';
+}
+
+function _initKpMarker(fac) {
   const m = L.marker([fac.lat, fac.lng], { icon: makeKpIcon(fac.status) });
   m.on('mouseover', e => showKpCard(fac, e.originalEvent.pageX, e.originalEvent.pageY));
   m.on('mousemove', e => moveKpCard(e.originalEvent.pageX, e.originalEvent.pageY));
   m.on('mouseout',  () => hideKpCard());
-  const facId = `kp_${fac.lat}_${fac.lng}`.replace(/\./g,'');
-  m.bindPopup(`
-    <div style="min-width:185px; font-family:Inter,sans-serif;">
-      <div style="font-weight:700; font-size:14px; color:#f0f7f3; margin-bottom:2px;">${escHtml(fac.name)}</div>
-      <div style="font-size:11px; color:rgba(255,255,255,.6);">${fac.emirate}</div>
-      <div style="margin-top:8px; margin-bottom:10px;">
-        <span style="
-          background:${fac.status==='Live' ? 'rgba(90,184,122,.12)' : 'rgba(255,255,255,.05)'};
-          color:${fac.status==='Live' ? '#5ab87a' : 'rgba(255,255,255,.5)'};
-          border:1px solid ${fac.status==='Live' ? 'rgba(90,184,122,.3)' : 'rgba(255,255,255,.1)'};
-          padding:3px 10px; border-radius:20px; font-size:11px; font-weight:600;
-          display:inline-flex; align-items:center; gap:5px;
-        ">
-          <span style="width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block;${fac.status==='Live'?'box-shadow:0 0 4px currentColor':''}"></span>
-          ${fac.status}
-        </span>
+
+  const occPct = fac.total > 0 ? Math.round(fac.occupied / fac.total * 100) : null;
+  const occColor = occPct >= 70 ? '#5ab87a' : occPct >= 40 ? '#f59e0b' : '#ef4444';
+  const occBar = fac.total > 0 ? `
+    <div style="margin:8px 0 10px; padding:8px; background:rgba(255,255,255,.05); border-radius:6px;">
+      <div style="display:flex; justify-content:space-between; font-size:10px; color:rgba(255,255,255,.5); margin-bottom:5px;">
+        <span>Occupancy</span><span style="color:${occColor}; font-weight:700;">${occPct}%</span>
       </div>
+      <div style="background:rgba(255,255,255,.1); border-radius:10px; height:4px; overflow:hidden; margin-bottom:6px;">
+        <div style="height:100%; width:${occPct}%; background:${occColor}; border-radius:10px; transition:width .4s;"></div>
+      </div>
+      <div style="display:flex; gap:12px; font-size:10px;">
+        <span style="color:#5ab87a;">● ${fac.occupied} Occupied</span>
+        <span style="color:rgba(255,255,255,.4);">○ ${fac.vacant} Vacant</span>
+        <span style="color:rgba(255,255,255,.25);">${fac.total} Total</span>
+      </div>
+    </div>` : '<div style="margin-bottom:10px;"></div>';
+
+  m.bindPopup(`
+    <div style="min-width:210px; font-family:Inter,sans-serif;">
+      <div style="font-weight:700; font-size:14px; color:#f0f7f3; margin-bottom:2px;">${escHtml(fac.name)}</div>
+      <div style="font-size:11px; color:rgba(255,255,255,.6); margin-bottom:8px;">${fac.emirate}</div>
+      <span style="
+        background:${fac.status==='Live'?'rgba(90,184,122,.12)':'rgba(255,255,255,.05)'};
+        color:${fac.status==='Live'?'#5ab87a':'rgba(255,255,255,.5)'};
+        border:1px solid ${fac.status==='Live'?'rgba(90,184,122,.3)':'rgba(255,255,255,.1)'};
+        padding:3px 10px; border-radius:20px; font-size:11px; font-weight:600;
+        display:inline-flex; align-items:center; gap:5px;">
+        <span style="width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block;${fac.status==='Live'?'box-shadow:0 0 4px currentColor':''}"></span>
+        ${fac.status}
+      </span>
+      ${occBar}
       <button onclick="setKpAsTarget(${fac.lat},${fac.lng},'${escHtml(fac.name)}')" style="
         width:100%; padding:8px; cursor:pointer; font-family:Inter,sans-serif;
         background:rgba(90,184,122,.12); color:#5ab87a;
         border:1px solid rgba(90,184,122,.3); border-radius:8px;
         font-size:12px; font-weight:600; display:flex; align-items:center; justify-content:center; gap:6px;
-        transition:all .2s;
-      " onmouseover="this.style.background='rgba(90,184,122,.22)'" onmouseout="this.style.background='rgba(90,184,122,.12)'">
+        transition:all .2s;"
+        onmouseover="this.style.background='rgba(90,184,122,.22)'"
+        onmouseout="this.style.background='rgba(90,184,122,.12)'">
         <i class='fa-solid fa-crosshairs'></i> Analyse this Location
       </button>
     </div>
   `);
   kpLayerGroup.addLayer(m);
-});
+}
+
+async function loadKpFacilities() {
+  try {
+    const data = await fetch(cfg.url + '/api/sf/kitchens').then(r => r.json());
+    if (!data.ok || !data.kitchens || !data.kitchens.length) throw new Error('empty');
+
+    // Group by facility, UAE only
+    const facMap = {};
+    data.kitchens
+      .filter(k => k.facility_country === 'UAE' && k.facility_lat && k.facility_lng)
+      .forEach(k => {
+        const key = k.facility_name;
+        if (!facMap[key]) {
+          facMap[key] = {
+            name: k.facility_name,
+            emirate: _deriveEmirate(k.facility_name),
+            status: 'Live',
+            lat: k.facility_lat,
+            lng: k.facility_lng,
+            total: 0, occupied: 0, vacant: 0,
+          };
+        }
+        facMap[key].total++;
+        const s = (k.status || '').toLowerCase();
+        if (s === 'occupied') facMap[key].occupied++;
+        else if (s === 'vacant' || s === 'available') facMap[key].vacant++;
+      });
+
+    const facilities = Object.values(facMap).filter(f => f.lat && f.lng);
+    if (!facilities.length) throw new Error('no UAE facilities');
+    facilities.forEach(_initKpMarker);
+    console.log(`KP: loaded ${facilities.length} UAE facilities from SF`);
+  } catch (e) {
+    console.warn('KP SF load failed, using fallback:', e.message);
+    KP_FACILITIES.forEach(fac => _initKpMarker({ ...fac, total: 0, occupied: 0, vacant: 0 }));
+  }
+}
+
+loadKpFacilities();
 
 // ── KP hover card ──
 const _GMAPS_KEY = 'AIzaSyA-wBQ5OlhNcqLet2OM6kJLBRInSXEtijw';
