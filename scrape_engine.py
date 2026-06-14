@@ -1201,15 +1201,105 @@ def _digits_only(s: str) -> str:
     return re.sub(r"\D", "", s or "")
 
 
+# ── Phone quality helpers ─────────────────────────────────────────────────────
+
+_PHONE_STRIP_RE = re.compile(r"[\s\-\(\)\.]+")
+_ASCENDING_SEQ  = "01234567890123456789"   # long enough to find any 8-char window
+_DESCENDING_SEQ = "98765432109876543210"
+
+
+def _normalise_uae_mobile(phone: str) -> str:
+    """
+    Normalise a UAE mobile number to local 10-digit form (05XXXXXXXX).
+    Returns '' if the number is not in a recognised UAE mobile format.
+    """
+    p = _PHONE_STRIP_RE.sub("", phone)
+    if p.startswith("+9715"):
+        return "0" + p[4:]       # +971 = 4 chars; p[4:] = "5XXXXXXXX"
+    if p.startswith("009715"):
+        return "0" + p[5:]      # 00971 = 5 chars; p[5:] = "5XXXXXXXX"
+    if p.startswith("9715"):
+        return "0" + p[3:]       # 971 = 3 chars; p[3:] = "5XXXXXXXX"
+    if p.startswith("05"):
+        return p
+    return ""
+
+
+def _is_dummy_uae_mobile(local10: str) -> bool:
+    """
+    Return True if a normalised 10-digit UAE mobile number (05XXXXXXXX) looks
+    like a placeholder or dummy value.
+    """
+    if len(local10) != 10:
+        return True   # malformed → treat as unusable
+    suffix = local10[2:]   # 8 digits after "05"
+    # All same digit: 00000000, 55555555, 99999999 …
+    if len(set(suffix)) <= 1:
+        return True
+    # Ascending or descending sequential run: 12345678, 87654321, 23456789 …
+    if suffix in _ASCENDING_SEQ or suffix in _DESCENDING_SEQ:
+        return True
+    # Repeating 2-digit block: 12121212, 55885588 …
+    if suffix[:2] * 4 == suffix:
+        return True
+    # Repeating 4-digit block: 12341234 …
+    if suffix[:4] * 2 == suffix:
+        return True
+    # Near-all-zero subscriber portion: 00000001, 00000010 …
+    if suffix.count("0") >= 7:
+        return True
+    return False
+
+
+def _is_valid_uae_mobile(phone: str) -> bool:
+    """Return True for a real (non-dummy) UAE mobile number."""
+    local = _normalise_uae_mobile(phone)
+    return bool(local) and not _is_dummy_uae_mobile(local)
+
+
 def _pick_best_phone(cands: list[str]) -> str:
-    best = ""
-    best_d = 0
+    """
+    Pick the best phone number from a list of raw candidates.
+
+    Priority:
+      1. Real UAE mobile number (05X / +9715X) that is not a dummy/placeholder.
+      2. Any other number with ≥ 8 digits that is not a dummy.
+
+    Dummy patterns rejected early: all-same-digit, sequential runs,
+    repeating blocks, near-all-zeros.
+    """
+    mobile_best = ""
+    mobile_len  = 0
+    other_best  = ""
+    other_len   = 0
+
     for c in cands:
         c = re.sub(r"\s+", " ", (c or "").strip())
         d = _digits_only(c)
-        if len(d) >= 8 and len(d) >= best_d:
-            best, best_d = c, len(d)
-    return best
+        if len(d) < 8:
+            continue   # too short to be a real number
+
+        # Dummy check for UAE mobile (normalized form)
+        local = _normalise_uae_mobile(c)
+        if local:
+            if _is_dummy_uae_mobile(local):
+                continue   # valid UAE mobile format but dummy content
+            if len(d) >= mobile_len:
+                mobile_best, mobile_len = c, len(d)
+        else:
+            # Non-UAE-mobile: lightweight dummy check on last 8 digits
+            chunk = d[-8:]
+            if (len(set(chunk)) <= 1
+                    or chunk in _ASCENDING_SEQ
+                    or chunk in _DESCENDING_SEQ
+                    or chunk[:2] * 4 == chunk):
+                continue   # dummy non-mobile — skip
+            if len(d) >= other_len:
+                other_best, other_len = c, len(d)
+
+    # UAE mobile only — returning a landline here would block enrichment from
+    # overwriting with a mobile (enrichers skip rows that already have a phone).
+    return mobile_best
 
 
 def _merge_vendor_html_into_accumulator(html: str | None, acc: dict[str, list]) -> None:
