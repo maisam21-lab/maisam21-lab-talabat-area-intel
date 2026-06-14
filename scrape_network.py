@@ -25,12 +25,27 @@ Respect Talabat terms of use: proxies are for reliability and approved infrastru
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
+
+
+def _read_dot_env_key(key: str) -> str:
+    """Read a single key from the .env file beside this module (supports runtime updates)."""
+    try:
+        env_path = Path(__file__).parent / ".env"
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith(f"{key}="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return ""
 
 
 def _scrape_do_proxy_url_from_env() -> str:
     """Build Scrape.do rotating-proxy URL when ``SCRAPE_DO_TOKEN`` is set (proxy mode)."""
-    token = (os.getenv("SCRAPE_DO_TOKEN") or "").strip().strip('"').strip("'")
+    # Read from .env file first so /admin/set-env changes take effect without restart
+    token = _read_dot_env_key("SCRAPE_DO_TOKEN") or (os.getenv("SCRAPE_DO_TOKEN") or "").strip().strip('"').strip("'")
     if not token:
         return ""
     host = (os.getenv("SCRAPE_DO_PROXY_HOST") or "proxy.scrape.do").strip()

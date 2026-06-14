@@ -1192,6 +1192,11 @@
       <input id="cfg-arcgis-key" type="password" placeholder="Paste your ArcGIS API key" />
       <div class="hint">For demographics layer &amp; geocoding — free at <a href="https://developers.arcgis.com" target="_blank" style="color:var(--accent)">developers.arcgis.com</a></div>
     </div>
+    <div class="form-row">
+      <label>Scrape.do Token</label>
+      <input id="cfg-scrape-do-token" type="password" placeholder="Leave blank to scrape directly" oninput="this.dataset.dirty='1'" />
+      <div class="hint">Outbound proxy token — clear this if scrapes return 0 results</div>
+    </div>
     <div class="modal-actions">
       <button class="btn-secondary" onclick="closeSettings()">Cancel</button>
       <button class="btn-primary" onclick="saveSettings()">Save Settings</button>
@@ -1338,13 +1343,14 @@ let _demoVisible = false;
 
 // ── GeoEnrichment fallback (used only when no arcgis_key in localStorage) ──
 function _demoColor(density, maxDensity) {
-  if (!density || maxDensity <= 0) return '#444';
+  if (!density || density <= 0 || maxDensity <= 0) return 'transparent';
   const t = Math.min(density / maxDensity, 1);
-  if (t < 0.2) return '#2b7bba';
-  if (t < 0.4) return '#43a87d';
-  if (t < 0.6) return '#5ab87a';
-  if (t < 0.8) return '#f4b942';
-  return '#e85d5d';
+  if (t < 0.10) return '#bdd7e7';   // light blue   — very sparse
+  if (t < 0.25) return '#6baed6';   // blue         — sparse
+  if (t < 0.45) return '#a8d08d';   // light green  — moderate
+  if (t < 0.65) return '#f59e0b';   // amber        — dense
+  if (t < 0.85) return '#f97316';   // orange       — very dense
+  return '#dc2626';                  // red          — extreme density
 }
 
 async function _loadGeoEnrichFallback() {
@@ -1365,7 +1371,7 @@ async function _loadGeoEnrichFallback() {
     const dens = geojson.features.map(f => f.properties.density).filter(d => d > 0);
     const maxD = dens.length ? Math.max(...dens) : 1;
     const layer = L.geoJSON(geojson, {
-      style: feat => ({ fillColor: _demoColor(feat.properties.density, maxD), fillOpacity: 0.45, color: 'transparent', weight: 0 }),
+      style: feat => ({ fillColor: _demoColor(feat.properties.density, maxD), fillOpacity: 0.65, color: 'transparent', weight: 0 }),
       onEachFeature: (feat, lyr) => {
         const pop = (feat.properties.population || 0).toLocaleString();
         const den = Math.round(feat.properties.density || 0).toLocaleString();
@@ -1392,27 +1398,9 @@ function toggleDemographics() {
   clearError();
   const btn = document.getElementById('demo-btn');
   _demoVisible = !_demoVisible;
-
   if (_demoVisible) {
     _removeDemoLayers();
-    const arcKey = cfg.arcgis_key;
-    if (arcKey) {
-      // ── Fast tile approach (Basemaps privilege enabled) ──────────────────
-      // HumanGeographyBase: muted settlement-tone canvas
-      const base = L.tileLayer(
-        `https://basemaps-api.arcgis.com/arcgis/rest/services/styles/ArcGIS:HumanGeographyBase/static/{z}/{x}/{y}.png?token=${arcKey}`,
-        { opacity: 0.55, maxZoom: 19, attribution: 'Demographics &copy; <a href="https://www.esri.com">Esri</a>', pane: 'shadowPane' }
-      ).addTo(map);
-      // HumanGeographyDetail: settlement detail, urban patterns, labels
-      const detail = L.tileLayer(
-        `https://basemaps-api.arcgis.com/arcgis/rest/services/styles/ArcGIS:HumanGeographyDetail/static/{z}/{x}/{y}.png?token=${arcKey}`,
-        { opacity: 0.75, maxZoom: 19, attribution: '' }
-      ).addTo(map);
-      _demoLayers = [base, detail];
-    } else {
-      // ── Fallback: server-side GeoEnrichment choropleth ───────────────────
-      _loadGeoEnrichFallback();
-    }
+    _loadGeoEnrichFallback();
   } else {
     _removeDemoLayers();
   }
@@ -2181,18 +2169,32 @@ function openSettings() {
   document.getElementById('cfg-url').value = cfg.url;
   document.getElementById('cfg-key').value = cfg.key;
   document.getElementById('cfg-arcgis-key').value = cfg.arcgis_key;
+  document.getElementById('cfg-scrape-do-token').value = '';
   document.getElementById('settings-modal').classList.add('open');
 }
 function closeSettings() { document.getElementById('settings-modal').classList.remove('open'); }
-function saveSettings() {
+async function saveSettings() {
   const url        = document.getElementById('cfg-url').value.trim().replace(/\/$/, '');
   const key        = document.getElementById('cfg-key').value.trim();
   const arcgis_key = document.getElementById('cfg-arcgis-key').value.trim();
+  const scrape_token = document.getElementById('cfg-scrape-do-token').value.trim();
   if (url)        localStorage.setItem('kp_api_url',  url);
   if (key)        localStorage.setItem('kp_api_key',  key);
   if (arcgis_key) localStorage.setItem('arcgis_key', arcgis_key);
   // Reset demo layers so they pick up the new key on next toggle
   if (_demoLayers.length) { _removeDemoLayers(); _demoVisible = false; document.getElementById('demo-btn').classList.remove('active'); }
+  // Push Scrape.do token to server .env only if user touched the field
+  const scrapeField = document.getElementById('cfg-scrape-do-token');
+  if (scrapeField.dataset.dirty === '1') {
+    try {
+      await fetch(cfg.url + '/admin/set-env', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Api-Key': cfg.key },
+        body: JSON.stringify({ key: 'SCRAPE_DO_TOKEN', value: scrape_token }),
+      });
+    } catch (e) { console.warn('Could not update SCRAPE_DO_TOKEN on server:', e); }
+    scrapeField.dataset.dirty = '';
+  }
   closeSettings();
 }
 document.getElementById('settings-modal').addEventListener('click', e => { if (e.target === document.getElementById('settings-modal')) closeSettings(); });

@@ -467,7 +467,7 @@ class SetEnvRequest(BaseModel):
     key: str
     value: str
 
-_ALLOWED_ENV_KEYS = {"ARCGIS_API_KEY", "GOOGLE_MAPS_API_KEY", "GEOAPIFY_API_KEY", "SCRAPER_API_KEY"}
+_ALLOWED_ENV_KEYS = {"ARCGIS_API_KEY", "GOOGLE_MAPS_API_KEY", "GEOAPIFY_API_KEY", "SCRAPER_API_KEY", "SCRAPE_DO_TOKEN", "GEOAPIFY_API_KEY"}
 
 @app.post("/admin/set-env")
 def set_env_var(payload: SetEnvRequest, x_api_key: str | None = Header(default=None)):
@@ -1794,31 +1794,90 @@ def _run_analyze_job(job_id: str) -> None:
                         "Talabat" if col == "data_source" else ""
                     )
 
-        # ── Phone type: Mobile / Landline only — strip 600/800 service numbers ──
+        # ── Phone quality: keep ONLY real UAE mobile numbers; remove landlines,
+        #    service/toll-free numbers, and dummy/placeholder numbers ─────────────
         import re as _re
+
+        _PHONE_STRIP_API = _re.compile(r"[\s\-\(\)\.]+")
+        _ASC_SEQ = "01234567890123456789"   # for sequential run detection
+        _DESC_SEQ = "98765432109876543210"
+
+        def _normalise_uae_mobile_api(phone: str) -> str:
+            """Return local 10-digit form (05XXXXXXXX), or '' if not UAE mobile."""
+            p = _PHONE_STRIP_API.sub("", phone)
+            if p.startswith("+9715"):
+                return "0" + p[4:]       # +971 = 4 chars → "0" + "5XXXXXXXX"
+            if p.startswith("009715"):
+                return "0" + p[5:]      # 00971 = 5 chars → "0" + "5XXXXXXXX"
+            if p.startswith("9715"):
+                return "0" + p[3:]       # 971 = 3 chars  → "0" + "5XXXXXXXX"
+            if p.startswith("05"):
+                return p
+            return ""
+
+        def _is_dummy_uae_mobile_api(local10: str) -> bool:
+            """
+            Return True if a normalised 10-digit UAE mobile (05XXXXXXXX) is a
+            placeholder / dummy value.
+            Checks: all-same-digit, sequential run, repeating block, near-all-zeros.
+            """
+            if len(local10) != 10:
+                return True   # malformed
+            suffix = local10[2:]   # 8 digits after "05"
+            if len(set(suffix)) <= 1:             # all same: 00000000, 55555555 …
+                return True
+            if suffix in _ASC_SEQ or suffix in _DESC_SEQ:  # sequential: 12345678 …
+                return True
+            if suffix[:2] * 4 == suffix:          # repeating 2-digit: 12121212 …
+                return True
+            if suffix[:4] * 2 == suffix:          # repeating 4-digit: 12341234 …
+                return True
+            if suffix.count("0") >= 7:            # near-all-zero: 00000001 …
+                return True
+            return False
+
         def _uae_phone_type(phone: str) -> str:
-            """Classify UAE phone number. Returns empty string for service/600/800 numbers."""
+            """
+            Classify a phone number for UAE outreach quality.
+            Returns:
+              'Mobile 📱'  — real UAE mobile, non-dummy  ← keep
+              'Landline ☎' — UAE landline                ← clear
+              'Service 📞' — 600/800 toll-free, wrong length, etc. ← clear
+              'Dummy 🚫'   — UAE mobile format but placeholder content ← clear
+            """
             if not phone or not str(phone).strip():
                 return ""
-            p = _re.sub(r"[\s\-\(\)\.]+", "", str(phone))
-            # UAE mobile: 05X / +9715X / 009715X
+            p = _PHONE_STRIP_API.sub("", str(phone))
+            # UAE mobile: 05X / +9715X / 009715X / 9715X
             if (p.startswith("05") or p.startswith("+9715") or
                     p.startswith("009715") or p.startswith("9715")):
+                local = _normalise_uae_mobile_api(p)
+                if not local or len(local) != 10:
+                    return "Service 📞"   # wrong digit length
+                if _is_dummy_uae_mobile_api(local):
+                    return "Dummy 🚫"
                 return "Mobile 📱"
-            # UAE service/toll-free numbers (600 XXXXXX / 800 XXXXXX) — call center, not useful for outreach
+            # UAE service/toll-free numbers (600 XXXXXX / 800 XXXXXX)
             if (p.startswith("+971600") or p.startswith("971600") or p.startswith("600")
                     or p.startswith("+971800") or p.startswith("971800") or p.startswith("800")):
                 return "Service 📞"
             # UAE landline (02/03/04/06/07/09)
             return "Landline ☎"
 
+        _DROP_TYPES = {"Landline ☎", "Service 📞", "Dummy 🚫"}
+
         for _df in (matrix_df, raw_df):
+            # Filter contact_phone — primary enriched phone column
             if "contact_phone" in _df.columns:
                 _df["phone_type"] = _df["contact_phone"].apply(_uae_phone_type)
-                # Keep ONLY mobile numbers — clear landlines and service/600/800 numbers
-                _non_mobile_mask = _df["phone_type"].isin(["Landline ☎", "Service 📞"])
+                _non_mobile_mask = _df["phone_type"].isin(_DROP_TYPES)
                 _df.loc[_non_mobile_mask, "contact_phone"] = ""
                 _df.loc[_non_mobile_mask, "phone_type"] = ""
+            # Apply the same real-mobile filter to geoapify_phone (separate column)
+            if "geoapify_phone" in _df.columns:
+                _df["geoapify_phone"] = _df["geoapify_phone"].apply(
+                    lambda ph: ph if _uae_phone_type(str(ph or "")) == "Mobile 📱" else ""
+                )
 
         # ── Google Gaps: find restaurants on Google Maps but not on Talabat ──────
         import pandas as _pd
